@@ -116,3 +116,37 @@ Date: 2026-04-19
 ### Next
 Chat 6 — Glue Spark job: S3 bronze → S3 silver (clean + partition Parquet)
 
+## Chat 6 — Glue Spark Job: Bronze → Silver
+Date: 2026-04-19
+
+### Built
+- spark/jobs/bronze_to_silver_remotive.py — Glue PySpark job (bronze → silver)
+- spark/tests/test_bronze_to_silver_remotive.py — 45 pure-function tests (no Spark needed locally)
+- terraform/envs/dev/glue.tf — Glue IAM role, policy, job, S3 script upload
+- terraform/envs/dev/step_functions.tf — updated: RunGlueJob state + Glue perms on SF policy
+- terraform/envs/dev/outputs.tf — added glue_job_name
+
+### AWS Resources Created (6 new, 2 updated)
+- Glue job: jobpulse-bronze-to-silver-dev (G.1X, 2 workers, Glue 4.0, 10 min timeout)
+- IAM role: jobpulse-glue-exec-dev (bronze read + silver read/write + AWSGlueServiceRole)
+- IAM policy: jobpulse-glue-policy-dev
+- S3 script: s3://jobpulse-silver-dev/glue-scripts/bronze_to_silver_remotive.py
+- SF IAM policy updated: added glue:StartJobRun + glue:GetJobRun
+- SF state machine updated: CheckRemotive → RunGlueJob (startJobRun.sync) → PipelineComplete
+
+### Silver Schema
+job_id, source, snapshot_date, title, company_name, category, role_family,
+job_type, apply_url, salary_raw, location_raw, country, state, tags,
+publication_date, description, ingested_at
+Partitioned by: snapshot_date / country / role_family
+
+### Verified
+- terraform apply: 6 added, 2 changed, 0 destroyed ✓
+- Glue job manual run: SUCCEEDED, silver Parquet confirmed in S3 ✓
+- Partitions visible: snapshot_date=2026-04-18/country=US/role_family=SDE/... ✓
+- Full Step Functions run: Lambda → Glue → SUCCEEDED (~2 min) ✓
+- 45 unit tests pass, 4 skipped (PySpark not installed locally, expected) ✓
+
+### Next
+Chat 7 — dbt gold layer: Athena adapter + star schema models + dbt tests
+

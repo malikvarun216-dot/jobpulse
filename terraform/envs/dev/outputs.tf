@@ -25,3 +25,7 @@ output "eventbridge_rule_arn" {
 output "sns_topic_arn" {
   value = aws_sns_topic.alerts.arn
 }
+
+output "glue_job_name" {
+  value = aws_glue_job.bronze_to_silver.name
+}

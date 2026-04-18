@@ -16,12 +16,20 @@ resource "aws_iam_policy" "sfn_policy" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Sid      = "InvokeLambda"
-      Effect   = "Allow"
-      Action   = "lambda:InvokeFunction"
-      Resource = aws_lambda_function.remotive.arn
-    }]
+    Statement = [
+      {
+        Sid      = "InvokeLambda"
+        Effect   = "Allow"
+        Action   = "lambda:InvokeFunction"
+        Resource = aws_lambda_function.remotive.arn
+      },
+      {
+        Sid    = "StartGlueJob"
+        Effect = "Allow"
+        Action = ["glue:StartJobRun", "glue:GetJobRun", "glue:BatchStopJobRun"]
+        Resource = aws_glue_job.bronze_to_silver.arn
+      }
+    ]
   })
 }
 
@@ -50,16 +58,33 @@ resource "aws_sfn_state_machine" "ingest_pipeline" {
         Choices = [{
           Variable     = "$.remotive.status"
           StringEquals = "OK"
-          Next         = "PipelineComplete"
+          Next         = "RunGlueJob"
         }]
         Default = "PipelineFailure"
+      }
+      RunGlueJob = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::glue:startJobRun.sync"
+        Parameters = {
+          JobName = aws_glue_job.bronze_to_silver.name
+          Arguments = {
+            "--snapshot_date.$" = "$.remotive.snapshot_date"
+          }
+        }
+        ResultPath = "$.glue"
+        Next       = "PipelineComplete"
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "PipelineFailure"
+          ResultPath  = "$.error"
+        }]
       }
       PipelineComplete = {
         Type = "Succeed"
       }
       PipelineFailure = {
         Type  = "Fail"
-        Cause = "Ingestor returned non-OK status"
+        Cause = "Pipeline stage failed"
       }
     }
   })

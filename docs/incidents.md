@@ -41,6 +41,30 @@
 - Prevention: never use pytest.importorskip at module level when the file has mixed pure/Spark tests
 - Lesson: put optional-dependency guards at the test function level, not module level — pure functions should always be testable without heavy dependencies
 
+## [2026-04-19] — md5(varchar) fails in Athena — must use to_hex(md5(to_utf8(...)))
+- What happened: dbt run failed with `FUNCTION_NOT_FOUND: Unexpected parameters (varchar) for function md5. Expected: md5(varbinary)`
+- What I thought: md5() would accept a string like in most SQL dialects
+- Root cause: Athena runs on Trino/Presto — md5() requires varbinary, not varchar. Standard SQL habit doesn't apply here.
+- Fix: replaced `md5(cast(col as varchar))` with `to_hex(md5(to_utf8(col)))` in all dim models and fact joins
+- Prevention: always check Trino function signatures when writing Athena SQL
+- Lesson: Athena ≠ standard SQL. md5/sha256/etc. operate on varbinary. Use to_utf8() to convert strings first.
+
+## [2026-04-19] — current_timestamp produces timestamp with time zone, breaks Parquet CTAS
+- What happened: dbt table models failed with `NOT_SUPPORTED: Unsupported Hive type: timestamp(3) with time zone`
+- What I thought: current_timestamp is a safe generic SQL expression
+- Root cause: Athena's current_timestamp returns `timestamp(3) with time zone`. Parquet CTAS via Athena does not support timezone-aware timestamps — it only accepts plain `timestamp`.
+- Fix: replaced `current_timestamp` with `localtimestamp` in all dim models (returns `timestamp(3)` without timezone)
+- Prevention: in Athena CTAS/dbt-athena: always use `localtimestamp` or `cast(current_timestamp as timestamp)` for created_at columns
+- Lesson: Parquet type compatibility in Athena CTAS is strict. timezone-aware timestamps must be stripped before writing to Parquet.
+
+## [2026-04-19] — dim_role surrogate key not unique due to composite grain
+- What happened: `dbt test` reported `unique_dim_role_role_key` failure — 1 duplicate detected
+- What I thought: role_family alone would produce unique rows in the dim
+- Root cause: dim_role has grain `(role_family, category)` not `role_family`. The same role_family (e.g., SDE) appeared with two different categories, giving two rows with the same `role_key` (keyed only on role_family)
+- Fix: changed surrogate key to `to_hex(md5(to_utf8(concat(role_family, '|', coalesce(category, '')))))` — composite key matches the actual grain
+- Prevention: always define surrogate key on the same columns as the SELECT DISTINCT — key grain = row grain
+- Lesson: if your dim SELECT DISTINCT has N columns, your surrogate key must cover all N columns that define uniqueness
+
 ## [2026-04-18] — s3.tf trailing space in filename
 - What happened: terraform plan showed "No changes" despite 14 resources to create
 - What I thought: credentials issue or provider misconfiguration

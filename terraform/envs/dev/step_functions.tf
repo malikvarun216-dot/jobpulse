@@ -24,10 +24,13 @@ resource "aws_iam_policy" "sfn_policy" {
         Resource = aws_lambda_function.remotive.arn
       },
       {
-        Sid    = "StartGlueJob"
+        Sid    = "StartGlueJobs"
         Effect = "Allow"
         Action = ["glue:StartJobRun", "glue:GetJobRun", "glue:BatchStopJobRun"]
-        Resource = aws_glue_job.bronze_to_silver.arn
+        Resource = [
+          aws_glue_job.bronze_to_silver.arn,
+          aws_glue_job.dbt_runner.arn
+        ]
       }
     ]
   })
@@ -72,6 +75,20 @@ resource "aws_sfn_state_machine" "ingest_pipeline" {
           }
         }
         ResultPath = "$.glue"
+        Next       = "RunDbtGold"
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "PipelineFailure"
+          ResultPath  = "$.error"
+        }]
+      }
+      RunDbtGold = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::glue:startJobRun.sync"
+        Parameters = {
+          JobName = aws_glue_job.dbt_runner.name
+        }
+        ResultPath = "$.dbt"
         Next       = "PipelineComplete"
         Catch = [{
           ErrorEquals = ["States.ALL"]

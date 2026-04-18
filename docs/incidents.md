@@ -8,13 +8,14 @@
 - Prevention: test API accessibility with curl before building ingestor
 - Lesson: "Free public API" doesn't guarantee programmatic access — always curl-test before coding
 
-## [2026-04-18] — Terraform apply failed: empty worktree tfstate
-- What happened: terraform apply tried to create all 14 resources, failing with EntityAlreadyExists / BucketAlreadyOwnedByYou
-- What I thought: IAM/S3 conflict from a previous partial apply
-- Root cause: Worktree had an empty tfstate — Terraform didn't know resources already existed in AWS from Chat 3's apply
-- Fix: Copied terraform.tfstate from the main dev directory into the worktree
-- Prevention: when working in a worktree, always copy existing tfstate before apply
-- Lesson: Terraform state is the source of truth — empty state = Terraform thinks nothing exists
+## [2026-04-18/19] — Terraform worktree tfstate mismatch (recurring, Chat 4 + Chat 5)
+- What happened: terraform apply tried to recreate all existing AWS resources, failing with EntityAlreadyExists / BucketAlreadyOwnedByYou (Chat 4). In Chat 5, Lambda functions weren't in any tfstate at all — required terraform import before apply could run cleanly
+- What I thought: IAM/S3 conflict or credentials issue
+- Root cause: Each git worktree is an independent directory — tfstate lives on disk as a file, so worktrees start with no state and don't know what already exists in AWS. Chat 4's tfstate was also lost when that worktree was cleaned up, leaving Chat 5 with only Chat 3's resources in state
+- Fix (short-term): Copied tfstate from main dev dir + ran terraform import for missing Lambda resources
+- Fix (permanent): Migrated backend from local file → S3 (jobpulse-tfstate-dev bucket, versioned + AES256 encrypted) with DynamoDB state locking (jobpulse-tfstate-lock table, PAY_PER_REQUEST). Now any worktree runs terraform init and pulls real state from S3 automatically — no copying ever again
+- Prevention: S3 backend is now configured — this incident cannot recur. Bootstrap bucket created via AWS CLI (Terraform can't manage its own backend bucket)
+- Lesson: Local tfstate + git worktrees = guaranteed drift. Remote state backend (S3/GCS/Terraform Cloud) is non-negotiable in any multi-environment or multi-machine setup
 
 ## [2026-04-18] — AWS_REGION is a reserved Lambda environment variable
 - What happened: terraform apply failed with InvalidParameterValueException — reserved key AWS_REGION

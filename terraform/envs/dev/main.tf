@@ -6,8 +6,13 @@ terraform {
     }
   }
 
-  # Local state for now — we'll move to S3 backend after first apply
-  backend "local" {}
+  backend "s3" {
+    bucket         = "jobpulse-tfstate-dev"
+    key            = "envs/dev/terraform.tfstate"
+    region         = "ap-south-1"
+    dynamodb_table = "jobpulse-tfstate-lock"
+    encrypt        = true
+  }
 }
 
 provider "aws" {

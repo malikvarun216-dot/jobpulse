@@ -48,3 +48,34 @@ Date: 2026-04-18
 ### Next
 Chat 4 — Deploy Himalayas Lambda + wire IAM role + test live S3 write
 
+## Chat 4 — Lambda Deploy + Live S3 Write
+Date: 2026-04-18
+
+### Built
+- terraform/envs/dev/lambda.tf — aws_lambda_function for himalayas + remotive
+- terraform/envs/dev/builds/.gitkeep — zip output dir
+- ingestion/sources/remotive/ingest_remotive.py — Remotive ingestor
+
+### AWS Resources Created
+- Lambda: jobpulse-ingest-himalayas-dev (deployed, BLOCKED — Cloudflare on API)
+- Lambda: jobpulse-ingest-remotive-dev (deployed, LIVE — 23 jobs written to S3)
+- IAM policy updated: added s3:PutObjectTagging to bronze write permissions
+
+### Verified
+- Dry-run: status=OK, s3_uri=null ✓
+- Live invoke: status=OK, record_count=23 ✓
+- S3 object confirmed: s3://jobpulse-bronze-dev/snapshot_date=2026-04-18/source=remotive/data.json.gz (49 KB) ✓
+
+### Incidents
+- Himalayas API blocked by Cloudflare bot protection (cf-mitigated: challenge) — Lambda deployed but non-functional. Tracked as pending.
+- terraform apply failed first run: worktree had empty tfstate, existing S3+IAM resources already in AWS from Chat 3. Fixed by copying tfstate from main dev dir.
+- AWS_REGION is a reserved Lambda env var — cannot be set manually. Removed from lambda.tf; Lambda sets it automatically.
+- IAM missing s3:PutObjectTagging — put_object with Tagging param requires it as a separate permission. Added to policy.
+
+### Pending
+- Himalayas: re-enable when Cloudflare protection removed or API changes
+- EventBridge schedule: wire daily cron to trigger Remotive Lambda (Chat 5)
+
+### Next
+Chat 5 — EventBridge daily schedule + Step Functions orchestration
+

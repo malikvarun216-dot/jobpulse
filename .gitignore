@@ -208,3 +208,6 @@ __marimo__/
 terraform/envs/dev/.terraform/
 terraform/envs/dev/terraform.tfstate
 terraform/envs/dev/terraform.tfstate.backup
+terraform/envs/dev/builds/*.zip
+CLAUDE.md
+.claude/

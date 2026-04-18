@@ -1,0 +1,32 @@
+version: 2
+
+sources:
+  - name: silver
+    database: awsdatacatalog
+    schema: jobpulse_silver_dev
+    tables:
+      - name: silver_jobs
+        description: Cleaned job postings from all sources, partitioned by snapshot_date/country/role_family
+
+models:
+  - name: stg_silver_jobs
+    description: Staging view over silver_jobs — filters nulls, preserves all columns
+    columns:
+      - name: job_id
+        description: Unique job identifier from source API
+        tests:
+          - not_null
+      - name: snapshot_date
+        description: Date this snapshot was ingested
+        tests:
+          - not_null
+      - name: company_name
+        description: Hiring company name (raw, may contain casing variants)
+      - name: role_family
+        description: Normalized role category (SDE, DATA, DevOps, PM, etc.)
+        tests:
+          - not_null
+      - name: country
+        description: Normalized 2-letter country code or 'remote'
+        tests:
+          - not_null

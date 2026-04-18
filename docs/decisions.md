@@ -63,6 +63,37 @@
 - Without this, mode("overwrite") + partitionBy wipes ALL existing partitions on every run
 - Critical for idempotency: same snapshot_date re-run only touches that date's partitions
 
+## dbt-athena-community is pip-only — not on dbt Hub (Chat 7)
+- dbt Hub (packages.yml) is for macro/model packages like dbt_utils, not adapter plugins
+- Adapters (dbt-athena-community, dbt-bigquery, etc.) are pip packages installed separately
+- packages.yml is correct to have no entries until we add macro packages
+- In Glue: `--additional-python-modules` handles the pip install automatically
+
+## Surrogate key via to_hex(md5(to_utf8(...))) not md5(varchar) (Chat 7)
+- Athena's md5() function requires varbinary input, not varchar
+- Pattern: `to_hex(md5(to_utf8(lower(trim(col)))))` produces a 32-char hex string
+- Same hash function must be used in both the dim model and the fact join condition
+- Normalization: lower() + trim() before hashing ensures casing/spacing variants merge
+
+## dim_role key on (role_family, category) not role_family alone (Chat 7)
+- Silver has distinct role_family + category combos (e.g., SDE+Software Dev, SDE+Engineering)
+- Keying only on role_family produced duplicate role_key values → uniqueness test failure
+- Fix: composite key = concat(role_family, '|', coalesce(category, ''))
+- Fact join must use the same composite key expression
+
+## MSCK REPAIR TABLE before dbt run (Chat 7)
+- Glue Spark job writes Hive-partitioned Parquet but does NOT register partitions in Glue catalog
+- Athena can see the S3 files but queries return 0 rows until partitions are registered
+- Fix: run MSCK REPAIR TABLE silver_jobs in the dbt_runner.py before dbt run
+- Alternative considered: Glue crawler (adds latency + cost); partition projection (complex config)
+- MSCK REPAIR TABLE is idempotent, fast for small datasets, and zero extra AWS cost
+
+## localtimestamp over current_timestamp in Athena CTAS (Chat 7)
+- current_timestamp returns timestamp(3) WITH TIME ZONE in Athena (Trino/Presto)
+- Parquet format does not support timestamp with time zone via Athena CTAS
+- localtimestamp returns plain timestamp(3) — Parquet-compatible
+- This is an Athena-specific gotcha, not a general SQL rule
+
 ## Step Functions .sync integration for Glue (Chat 6)
 - Used arn:aws:states:::glue:startJobRun.sync (optimized/synchronous integration)
 - SF starts the Glue job, then internally polls glue:GetJobRun every ~20s until SUCCEEDED/FAILED

@@ -1,0 +1,76 @@
+version: 2
+
+models:
+  - name: dim_company
+    description: Dimension table — unique companies with surrogate key
+    columns:
+      - name: company_key
+        description: md5 surrogate key on lower(company_name)
+        tests:
+          - not_null
+          - unique
+      - name: company_name
+        description: Company name as it appears in the source data
+        tests:
+          - not_null
+
+  - name: dim_role
+    description: Dimension table — unique role_family + category combinations
+    columns:
+      - name: role_key
+        description: md5 surrogate key on lower(role_family)
+        tests:
+          - not_null
+          - unique
+      - name: role_family
+        description: Normalized role family
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [SDE, DATA, DevOps, PM, Design, Marketing, Other]
+
+  - name: dim_country
+    description: Dimension table — unique countries
+    columns:
+      - name: country_key
+        description: md5 surrogate key on lower(country)
+        tests:
+          - not_null
+          - unique
+      - name: country
+        description: Country code or 'remote'
+        tests:
+          - not_null
+
+  - name: fact_job_posting
+    description: >
+      Fact table — one row per job posting per snapshot_date.
+      FK keys join to dim_company, dim_role, dim_country.
+    columns:
+      - name: job_id
+        description: Source job identifier
+        tests:
+          - not_null
+      - name: snapshot_date
+        description: Date this row was captured
+        tests:
+          - not_null
+      - name: company_key
+        description: FK → dim_company.company_key (null if company_name was missing)
+      - name: role_key
+        description: FK → dim_role.role_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_role')
+                field: role_key
+      - name: country_key
+        description: FK → dim_country.country_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_country')
+                field: country_key

@@ -1,0 +1,15 @@
+# Local dev profile — uses your default AWS CLI credentials
+# Production: dbt_runner.py generates a profiles.yml at runtime using the Glue IAM role
+jobpulse:
+  target: dev
+  outputs:
+    dev:
+      type: athena
+      region_name: ap-south-1
+      s3_staging_dir: "s3://jobpulse-gold-dev/athena-results/"
+      schema: jobpulse_gold_dev
+      database: awsdatacatalog
+      work_group: jobpulse-dev
+      aws_profile_name: default
+      threads: 4
+      num_retries: 3

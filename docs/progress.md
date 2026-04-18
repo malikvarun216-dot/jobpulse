@@ -150,3 +150,52 @@ Partitioned by: snapshot_date / country / role_family
 ### Next
 Chat 7 — dbt gold layer: Athena adapter + star schema models + dbt tests
 
+## Chat 7 — dbt Gold Layer
+Date: 2026-04-19
+
+### Built
+- dbt_project/dbt_project.yml — project config, staging=view, gold=table
+- dbt_project/profiles.yml — Athena adapter, workgroup jobpulse-dev
+- dbt_project/packages.yml — no hub packages (dbt-athena is pip-only)
+- dbt_project/models/staging/stg_silver_jobs.sql — view over silver_jobs external table
+- dbt_project/models/staging/schema.yml — source definition for silver_jobs
+- dbt_project/models/gold/dim_company.sql — 16 distinct companies
+- dbt_project/models/gold/dim_role.sql — 7 role_family+category combos
+- dbt_project/models/gold/dim_country.sql — 5 distinct countries
+- dbt_project/models/gold/fact_job_posting.sql — 51 job rows with FK surrogate keys
+- dbt_project/models/gold/schema.yml — 20 dbt schema tests
+- terraform/envs/dev/athena.tf — workgroup (1 GB scan cap), Glue databases, silver_jobs external table
+- terraform/envs/dev/glue.tf — updated: Glue policy (Athena + Glue catalog + gold S3), dbt_runner Python Shell job
+- terraform/envs/dev/step_functions.tf — updated: RunDbtGold state added, SFN policy updated
+- terraform/envs/dev/outputs.tf — added athena_workgroup_name, gold_database_name, silver_database_name, dbt_glue_job_name
+- transform/dbt_runner/dbt_runner.py — Glue Python Shell script: downloads dbt project from S3, MSCK REPAIR TABLE, dbt run
+
+### AWS Resources Created (7 new, 4 updated)
+- Athena workgroup: jobpulse-dev (1 GB scan cap, output → s3://jobpulse-gold-dev/athena-results/)
+- Glue database: jobpulse_silver_dev (external tables over silver S3)
+- Glue database: jobpulse_gold_dev (dbt CTAS output)
+- Glue catalog table: silver_jobs (14 cols + 3 partition keys, Parquet/Snappy SerDe)
+- Glue Python Shell job: jobpulse-dbt-runner-dev (0.0625 DPU, dbt-core 1.11.8, dbt-athena 1.10.0)
+- S3 object: glue-scripts/dbt_runner.py uploaded to silver bucket
+- null_resource: zips dbt_project/ and uploads to s3://jobpulse-silver-dev/dbt-project/dbt_project.zip on file changes
+- IAM policy (glue_policy) updated: added ReadWriteGold + AthenaQuery + GlueCatalog statements
+- IAM policy (sfn_policy) updated: added dbt_runner Glue job ARN to StartGlueJobs
+- Step Functions state machine updated: RunGlueJob → RunDbtGold → PipelineComplete
+
+### Gold Schema
+- dim_company: company_key (md5 hex), company_name, created_at
+- dim_role: role_key (md5 hex on role_family+category), role_family, category, created_at
+- dim_country: country_key (md5 hex), country, created_at
+- fact_job_posting: job_id, company_key, role_key, country_key, snapshot_date, publication_date, title, apply_url, job_type, salary_raw, tags, match_score (NULL), source, ingested_at
+
+### Verified
+- terraform apply: 7 added, 4 changed, 0 destroyed ✓
+- dbt debug: All checks passed (Athena connection live) ✓
+- dbt run: PASS=5 WARN=0 ERROR=0 — 51 fact rows, 16 companies, 5 countries, 7 roles ✓
+- dbt test: PASS=20 WARN=0 ERROR=0 — all not_null, unique, accepted_values, relationships ✓
+- Gold Parquet written to s3://jobpulse-gold-dev via Athena CTAS ✓
+
+### Next
+Chat 8 — Streamlit dashboard: Athena queries → job market visualizations
+
+

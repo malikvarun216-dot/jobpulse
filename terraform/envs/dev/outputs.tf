@@ -29,3 +29,19 @@ output "sns_topic_arn" {
 output "glue_job_name" {
   value = aws_glue_job.bronze_to_silver.name
 }
+
+output "dbt_glue_job_name" {
+  value = aws_glue_job.dbt_runner.name
+}
+
+output "athena_workgroup_name" {
+  value = aws_athena_workgroup.main.name
+}
+
+output "silver_database_name" {
+  value = aws_glue_catalog_database.silver.name
+}
+
+output "gold_database_name" {
+  value = aws_glue_catalog_database.gold.name
+}

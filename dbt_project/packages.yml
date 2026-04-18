@@ -1,0 +1,3 @@
+# dbt-athena-community is an adapter installed via pip — not a dbt hub package.
+# Add macro packages here if needed in future (e.g., dbt-labs/dbt_utils).
+packages: []

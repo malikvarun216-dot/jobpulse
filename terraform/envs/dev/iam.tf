@@ -23,6 +23,7 @@ data "aws_iam_policy_document" "lambda_permissions" {
     actions = [
       "s3:PutObject",
       "s3:GetObject",
+      "s3:PutObjectTagging",
     ]
     resources = [
       "${aws_s3_bucket.layers["bronze"].arn}/*"

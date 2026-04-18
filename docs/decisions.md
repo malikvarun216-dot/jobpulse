@@ -49,3 +49,23 @@
 ## Lambda sizing: timeout=300/memory=256 (Himalayas), timeout=60/memory=128 (Remotive) (Chat 4)
 - Himalayas: 300s timeout for potential multi-page pagination; 256 MB for larger payloads
 - Remotive: single request, 23 jobs — 60s/128MB is sufficient, keeps cost minimal
+
+## Silver partition columns frozen at snapshot_date / country / role_family (Chat 6)
+- Adding partition columns later requires full historical rewrite — design right once
+- state (Karnataka, Maharashtra, etc.) is a regular column, not a partition key
+- Reason: too high cardinality (35 states × N countries × dates = thousands of tiny files)
+- Dashboard filter WHERE country='IN' AND state='Karnataka' works via Athena predicate pushdown on non-partition columns — slightly slower than partition pruning but acceptable at our scale
+- location_raw kept in silver raw for future city-level extraction in v2
+
+## Dynamic partition overwrite for Glue job (Chat 6)
+- spark.sql.sources.partitionOverwriteMode = dynamic on the SparkSession
+- Ensures reruns only replace the partitions being written, not the entire silver bucket
+- Without this, mode("overwrite") + partitionBy wipes ALL existing partitions on every run
+- Critical for idempotency: same snapshot_date re-run only touches that date's partitions
+
+## Step Functions .sync integration for Glue (Chat 6)
+- Used arn:aws:states:::glue:startJobRun.sync (optimized/synchronous integration)
+- SF starts the Glue job, then internally polls glue:GetJobRun every ~20s until SUCCEEDED/FAILED
+- No polling code written — AWS manages the wait natively
+- Alternative: .waitForTaskToken — requires writing your own callback, much more complex
+- Cost: a few extra state transitions per execution, well within 4K free tier/month

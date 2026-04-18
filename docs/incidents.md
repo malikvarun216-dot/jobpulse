@@ -33,6 +33,14 @@
 - Prevention: whenever using put_object with Tagging, add PutObjectTagging to IAM policy
 - Lesson: S3 IAM is granular — always check AWS docs for exact action names when using advanced put_object params
 
+## [2026-04-19] — pytest.importorskip at module level skips entire test file
+- What happened: ran pytest on test_bronze_to_silver_remotive.py, got "0 collected / 1 skipped" — no tests ran at all
+- What I thought: pyspark skip marker was working correctly, tests would be selectively skipped
+- Root cause: pytest.importorskip() called at module level raises a skip exception before any test is collected — skips the entire file, not just the pyspark-dependent tests
+- Fix: replaced with try/except ImportError to set _HAS_PYSPARK flag, then @pytest.mark.skipif(not _HAS_PYSPARK) decorator on each Spark test individually
+- Prevention: never use pytest.importorskip at module level when the file has mixed pure/Spark tests
+- Lesson: put optional-dependency guards at the test function level, not module level — pure functions should always be testable without heavy dependencies
+
 ## [2026-04-18] — s3.tf trailing space in filename
 - What happened: terraform plan showed "No changes" despite 14 resources to create
 - What I thought: credentials issue or provider misconfiguration

@@ -28,6 +28,24 @@
 - Himalayas Lambda kept deployed — re-enable if they open the API again
 - Pattern established: one Lambda file per source, reuse same IAM role
 
+## S3 backend + DynamoDB locking for Terraform state (Chat 5)
+- Migrated from local tfstate file → S3 bucket (jobpulse-tfstate-dev) with versioning + AES256
+- DynamoDB table (jobpulse-tfstate-lock) added for state locking — prevents concurrent apply corruption
+- Bootstrap bucket created via AWS CLI (not Terraform) — Terraform can't manage its own backend bucket
+- Trade-off: adds 2 resources outside Terraform management, but eliminates the worktree tfstate copy problem permanently
+- Any worktree, any machine: terraform init pulls real state from S3 automatically
+
+## Step Functions STANDARD over EXPRESS (Chat 5)
+- STANDARD: exactly-once execution, full audit trail per state, max 1 year duration, 4K free transitions/mo
+- EXPRESS: at-least-once, max 5 min, cheaper at high volume but less visibility
+- Choice: STANDARD — pipeline is low-frequency (1/day), audit trail matters for debugging failures
+
+## Direct Lambda ARN in Step Functions Task (Chat 5)
+- Used aws_lambda_function.remotive.arn directly as Resource in Task state
+- Response is the raw Lambda return dict (e.g. {"status": "OK", "record_count": 21})
+- Alternative: arn:aws:states:::lambda:invoke SDK integration — wraps response in {"Payload": ...}
+- Choice: direct ARN — simpler, fewer characters in state machine, $.remotive.status works cleanly
+
 ## Lambda sizing: timeout=300/memory=256 (Himalayas), timeout=60/memory=128 (Remotive) (Chat 4)
 - Himalayas: 300s timeout for potential multi-page pagination; 256 MB for larger payloads
 - Remotive: single request, 23 jobs — 60s/128MB is sufficient, keeps cost minimal

@@ -79,3 +79,40 @@ Date: 2026-04-18
 ### Next
 Chat 5 — EventBridge daily schedule + Step Functions orchestration
 
+## Chat 5 — EventBridge + Step Functions + S3 Backend
+Date: 2026-04-19
+
+### Built
+- terraform/envs/dev/step_functions.tf — state machine + IAM role/policy for SF
+- terraform/envs/dev/eventbridge.tf — daily cron rule + target + IAM role/policy
+- terraform/envs/dev/monitoring.tf — SNS topic, email subscription, CloudWatch alarm
+- terraform/envs/dev/terraform.tfvars — alert_email (gitignored)
+- terraform/envs/dev/variables.tf — added alert_email variable
+- terraform/envs/dev/outputs.tf — added state_machine_arn, eventbridge_rule_arn, sns_topic_arn
+- terraform/envs/dev/main.tf — migrated backend from local → S3
+
+### AWS Resources Created (14 new)
+- Step Functions state machine: jobpulse-ingest-pipeline-dev (STANDARD type)
+- IAM role + policy: jobpulse-sfn-exec-dev (lambda:InvokeFunction on Remotive only)
+- EventBridge rule: jobpulse-daily-ingest-dev (cron 8:30 PM UTC = 2AM IST, ENABLED)
+- EventBridge target: triggers state machine on schedule
+- IAM role + policy: jobpulse-eventbridge-exec-dev (states:StartExecution)
+- SNS topic: jobpulse-alerts-dev
+- SNS email subscription: jobpulse010@gmail.com (pending confirmation)
+- CloudWatch alarm: jobpulse-sfn-failures-dev (ExecutionsFailed ≥ 1 → SNS)
+- S3 bucket: jobpulse-tfstate-dev (versioning + AES256 + public access blocked)
+- DynamoDB table: jobpulse-tfstate-lock (PAY_PER_REQUEST, LockID partition key)
+
+### Verified
+- terraform apply: 12 added, 2 changed, 0 destroyed ✓
+- terraform init -migrate-state: local tfstate → S3 ✓
+- terraform plan post-migration: No changes ✓
+- Manual SF execution: SUCCEEDED, record_count=21, s3_uri confirmed ✓
+
+### Incidents
+- Worktree had no tfstate again (same as Chat 4) — fixed by copying from main dev dir + importing Lambda functions via terraform import
+- Root cause fixed permanently: S3 backend means tfstate now lives in AWS, not on disk — no more worktree copies needed
+
+### Next
+Chat 6 — Glue Spark job: S3 bronze → S3 silver (clean + partition Parquet)
+

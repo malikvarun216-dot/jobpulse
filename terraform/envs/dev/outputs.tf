@@ -13,3 +13,15 @@ output "himalayas_lambda_arn" {
 output "remotive_lambda_arn" {
   value = aws_lambda_function.remotive.arn
 }
+
+output "state_machine_arn" {
+  value = aws_sfn_state_machine.ingest_pipeline.arn
+}
+
+output "eventbridge_rule_arn" {
+  value = aws_cloudwatch_event_rule.daily_ingest.arn
+}
+
+output "sns_topic_arn" {
+  value = aws_sns_topic.alerts.arn
+}

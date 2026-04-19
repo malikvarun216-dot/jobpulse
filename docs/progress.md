@@ -222,3 +222,167 @@ Date: 2026-04-19
 ### Next
 Chat 9 — GenAI enrichment layer: Claude API for skill extraction + match scoring
 
+## Chat 9 — GenAI Enrichment Layer
+Date: 2026-04-19
+
+### Built
+- config/user_profile.yml — user skill profile + scoring weights (single source of truth)
+- genai/__init__.py — marks genai/ as a Python package
+- genai/guardrails.py — Pydantic schemas (ExtractionResult, EnrichmentRecord), SKILL_VOCAB whitelist (~120 terms), BudgetTracker
+- genai/skill_extractor.py — SkillExtractor sub-agent (rule-based + Claude Haiku LLM fallback)
+- genai/match_scorer.py — MatchScorer sub-agent (6-component weighted scorer)
+- genai/jd_enrichment_agent.py — JDEnrichmentAgent orchestrator (pre-hooks, per-job processing, post-hooks)
+- genai/enrichment_runner.py — Glue Python Shell entry point (argparse, Athena fetch, MSCK REPAIR)
+- tests/test_genai.py — 22 unit tests, all mock-based (no real AWS or API calls)
+- terraform/envs/dev/glue.tf — added Secrets Manager IAM perm, enrichment Glue job, genai package zip upload
+- terraform/envs/dev/step_functions.tf — added RunEnrichment state, enrichment job ARN to SF policy
+- terraform/envs/dev/outputs.tf — added enrichment_job_name output
+- dashboard/streamlit/app.py — added enrichment_scores JOIN, match_score column, title search, score slider
+
+### How the Scoring Works
+
+**User profile** (`config/user_profile.yml`) defines the benchmark:
+- Skills: python, sql, pyspark, aws, dbt, airflow, kafka, terraform, pandas, docker (10 skills)
+- Seniority: mid, YoE: 2 years
+- Preferred locations: remote, india
+- Preferred role families: DATA, SDE
+- Salary floor: $60,000 USD
+
+**Six scoring components** (weights sum to 100):
+
+| Component | Weight | Logic |
+|---|---|---|
+| skill_overlap | 40 | Jaccard similarity: |intersection| / |union| × 40. A job needing python+sql+aws where user knows all 3 scores 3/3=100% → 40 pts. A job needing java+kotlin+helm where user knows none scores 0/13 → 0 pts. |
+| seniority_fit | 20 | YoE-aware (see below) |
+| location_fit | 15 | "remote" anywhere in location/job_type/country → full 15 pts. Preferred country match → full 15 pts. Otherwise 0. |
+| role_family_fit | 15 | Role family in [DATA, SDE] → 15 pts. Otherwise 0. |
+| salary_fit | 5 | Parsed salary ≥ $60k → 5 pts. Below floor → 0. Unknown/unparseable → full 5 pts (benefit of the doubt). |
+| freshness | 5 | ≤7 days old → 5 pts. ≤14 days → 3 pts. Older → 0. |
+
+**YoE-aware seniority scoring** (the 20-pt component):
+
+The job description is parsed for patterns like "3+ years experience", "minimum 5 years", "1-3 years exp".
+The first number found becomes `yoe_required`. Gap = yoe_required − user.yoe (user has 2 years).
+
+| Gap (years short) | Score |
+|---|---|
+| ≤ 0 (user meets or exceeds) | 20 pts (100%) |
+| 1 year short | 15 pts (75%) |
+| 2 years short | 10 pts (50%) |
+| > 2 years short | 0 pts |
+
+If no YoE number is found, falls back to title-based seniority distance:
+- Same level (mid→mid) → 20 pts
+- One level away (mid→senior or mid→junior) → 10 pts
+- Further away → 0 pts
+
+**Why skill_overlap dominates (40%):** A job asking for your exact stack but labelled "senior" is a better opportunity than a junior job in a completely different tech stack. Skills are the real filter; seniority is a soft signal.
+
+**Extraction pipeline:**
+1. Rule-based regex scans description against SKILL_VOCAB whitelist + seniority keyword patterns + YoE regex
+2. If ≥5 skills found AND seniority identified → use rules (no API call)
+3. If either is missing → Claude Haiku (`claude-haiku-4-5-20251001`) with `cache_control: ephemeral` on system prompt
+4. LLM failure → fall back to rules result (never crash the batch)
+
+**S3 cache:** Each description is hashed (md5). Cache miss writes extraction to `s3://gold/enrichment-cache/{hash}.json`. Same JD on a different snapshot date reuses the cached extraction — no duplicate API charges.
+
+**Budget guard:** Daily $0.50 cap tracked in `s3://gold/enrichment-cache/budget-{date}.json`. `BudgetTracker.check_and_increment()` raises `BudgetExceededError` before any API call if cap would be exceeded. Fails open (zero spend assumed) if S3 unreachable.
+
+### AWS Resources Created (4 new, 7 changed)
+- Glue job: jobpulse-enrichment-dev (Python Shell, 0.0625 DPU, 20 min timeout)
+- S3 object: glue-scripts/enrichment_runner.py (entry point)
+- S3 object: glue-scripts/genai_package.zip (genai/ + config/user_profile.yml, re-uploaded on code change)
+- null_resource: genai_package_upload (triggers on genai/*.py + user_profile.yml hash change)
+- IAM policy (glue_policy) updated: SecretsManagerAnthropicKey perm added
+- IAM policy (sfn_policy) updated: enrichment job ARN added to StartGlueJobs
+- Step Functions state machine updated: RunDbtGold → RunEnrichment → PipelineComplete
+- Lambda function zip hashes refreshed (no logic change)
+- dbt_runner S3 object refreshed
+
+### One-Time Manual Steps Completed
+- Secrets Manager: `jobpulse/anthropic_key_dev` created with real Anthropic API key (ap-south-1)
+- Athena DDL: `enrichment_scores` external table created in `jobpulse_gold_dev` (Parquet/Snappy, partitioned by snapshot_date)
+
+### Pipeline Flow (complete)
+```
+EventBridge (2AM IST daily)
+  → Step Functions
+    → InvokeRemotive (Lambda) → CheckRemotive
+    → RunGlueJob (bronze → silver, PySpark)
+    → RunDbtGold (dbt star schema, Python Shell)
+    → RunEnrichment (skill extract + match score, Python Shell)  ← NEW
+    → PipelineComplete
+```
+
+### Dashboard Additions
+- Match % column in results table (sorted by score descending by default)
+- Title search box: free-text filter on job title (e.g. "Data Engineer")
+- Min Match Score slider: hides jobs below threshold (0–100, step 5)
+- enrichment_scores LEFT JOINed in FLAT_JOIN_SQL (COALESCE to -1 when no enrichment yet)
+
+### Verified
+- terraform apply: 4 added, 7 changed, 1 destroyed ✓
+- 22 unit tests pass (pytest tests/test_genai.py -v) ✓
+- Secrets Manager secret created ✓
+- Athena enrichment_scores DDL executed ✓
+- enrichment_job_name output: "jobpulse-enrichment-dev" ✓
+
+### Blockers (Chat 9 — not fully verified)
+
+1. **dbt-core pip conflict (Glue 5.1):** Glue Python Shell 5.1 pre-installs awscli 1.23.5 + aiobotocore 2.2.0 with locked botocore. Any dbt-core version (1.5–1.9) pulls newer botocore → conflict → dbt deps fails. Temporary fix: skipped RunDbtGold state in Step Functions (RunGlueJob → RunEnrichment directly).
+
+2. **anthropic/pydantic pip conflict (Glue 5.1):** Same boto3/botocore vendoring issue affects enrichment_runner pip installs. Tried anthropic==0.28.0, pydantic==2.5.0, pyarrow==14.0.1 — still failing. Root cause same as above.
+
+3. **genai_package.zip not found:** After pip issue, enrichment job failed with "Library file doesn't exist: /tmp/glue-python-libs-.../genai_package.zip". null_resource trigger for zip upload may not have fired. Need to verify S3 upload manually or fix trigger logic.
+
+### Next
+Chat 10 — Fix Glue 5.1 pip issues (try glue_version = "4.0" for Python Shell jobs), restore RunDbtGold, get RunEnrichment working, verify enrichment_scores in Athena, dashboard match_score live.
+
+## Chat 10 — Fix Glue Pip Conflicts, Full Pipeline End-to-End
+Date: 2026-04-19
+
+### Goal
+Fix three Chat 9 blockers and get the full pipeline running unattended: Lambda → Glue bronze→silver → dbt gold → enrichment → PipelineComplete.
+
+### Built / Fixed
+- **terraform/envs/dev/glue.tf** — added `glue_version = "4.0"` to `aws_glue_job.dbt_runner` and `aws_glue_job.enrichment_runner`; downgraded dbt to `dbt-core==1.9.10,dbt-athena-community==1.9.5` (last series supporting Python 3.9); pinned `pyarrow==14.0.2` (last version with Python 3.9 manylinux wheels)
+- **terraform/envs/dev/athena.tf** — added `aws_glue_catalog_table.enrichment_scores` (brought manual DDL into Terraform); imported existing table with `terraform import 240939827246:jobpulse_gold_dev:enrichment_scores`
+- **transform/dbt_runner/dbt_runner.py** — fixed zip extraction path: `dbt_project.zip` contains `dbt_project/dbt_project.yml` so `--project-dir` must point one level deeper (`/tmp/dbt_project/dbt_project` not `/tmp/dbt_project`)
+- **dbt_project/models/gold/schema.yml** — removed `arguments:` wrapper from `accepted_values` and `relationships` tests (removed in dbt 1.8+)
+- **genai/enrichment_runner.py** — full Glue-compatible bootstrap: detects Glue vs local dev environment; manually downloads + extracts genai_package.zip from S3 to add to sys.path (Glue 4.0 Python Shell does NOT auto-add --extra-py-files to sys.path); added NaN→None normalization after pd.read_csv() to handle Athena CSV nulls
+- **genai/jd_enrichment_agent.py** — cast job_id to str() in both EnrichmentRecord instantiation sites (Pydantic v2 rejects int for str fields)
+- **dashboard/streamlit/app.py** — fixed enrichment_scores JOIN: `CAST(f.snapshot_date AS VARCHAR) = e.snapshot_date` (Athena won't implicitly cast date→varchar in JOIN conditions)
+
+### Incidents Hit (Chat 10 — 7 new)
+1. Terraform import needs `catalog-id:database:table` format, not `database/table`
+2. dbt-core ≥1.10 requires Python ≥3.10; Glue 4.0 is Python 3.9 → must use dbt-core 1.9.x
+3. dbt zip structure: `dbt_project/` prefix in zip means project-dir must go one deeper
+4. dbt schema.yml `arguments:` wrapper removed in dbt 1.8+
+5. pyarrow ≥15 has no Python 3.9 manylinux wheels → must pin pyarrow==14.0.2
+6. Glue 4.0 Python Shell: --extra-py-files downloaded but NOT added to sys.path
+7. pandas NaN ≠ None: `(nan or "")` returns nan (truthy), breaking `.lower()` on null fields
+8. Pydantic v2 rejects int for str field (no auto-coerce); job_id came in as int64 from CSV
+9. Athena date vs varchar: no implicit cast in JOIN; must use `CAST(date AS VARCHAR)`
+
+### Pipeline Flow (complete, fully verified)
+```
+EventBridge (2AM IST daily)
+  → Step Functions (STANDARD)
+    → InvokeRemotive (Lambda)   → CheckRemotive
+    → RunGlueJob    (bronze→silver, PySpark, Glue 4.0 Spark)
+    → RunDbtGold    (dbt star schema, Python Shell, Glue 4.0)
+    → RunEnrichment (skill extract + match score, Python Shell, Glue 4.0)
+    → PipelineComplete
+```
+
+### Verified
+- terraform apply: 2 changed (glue jobs), 1 added (enrichment_scores table) ✓
+- null_resource.genai_package_upload forced re-upload → zip in S3 ✓
+- Step Functions execution: SUCCEEDED — all 4 states green ✓
+- Athena enrichment_scores: 21 records, avg=20.3, max=43.0, latest=2026-04-19 ✓
+- Dashboard flat JOIN with CAST: 21 rows, real match_scores (not -1) ✓
+- dbt: PASS=5 models, PASS=30 tests ✓
+
+### Next
+Chat 11 — Add second data source (Himalayas/Adzuna/RemoteOK), expand volume, or add deduplication logic.
+

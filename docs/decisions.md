@@ -102,6 +102,79 @@
 - "Refresh data" button calls load_jobs.clear() to force a fresh Athena query when needed
 - LIMIT 500 in the SQL as a cost guard; adjustable as data volume grows
 
+## Rule-based extraction before LLM (Chat 9)
+- SkillExtractor tries regex against SKILL_VOCAB + seniority patterns first
+- Only calls Claude Haiku if rules find <5 skills OR seniority is "unknown"
+- At ~50 Remotive jobs/day, fewer than 20% are expected to need an LLM call
+- Keeps daily API cost well under the $0.50 budget cap; rules are instant and free
+
+## Separate enrichment_scores table — dbt does not own it (Chat 9)
+- fact_job_posting is fully managed by dbt; every `dbt run` recreates it via CTAS
+- Writing match_score into fact_job_posting would be overwritten on the next dbt run
+- Solution: standalone `enrichment_scores` external table (Parquet, partitioned by snapshot_date)
+- Dashboard LEFT JOINs fact_job_posting ↔ enrichment_scores — each team owns its table
+
+## S3 cache keyed by md5(description) (Chat 9)
+- Same job description re-posted on a different snapshot_date should not incur a second API charge
+- md5 of raw description is the cache key; cache entry stores ExtractionResult JSON
+- Writes to s3://gold/enrichment-cache/{hash}.json after a successful LLM call
+- cache hit → source="cache"; extraction still runs MatchScorer for freshness/salary recalc
+
+## Claude Haiku with cache_control: ephemeral on system prompt (Chat 9)
+- System prompt (~200 tokens) is sent with `cache_control: {"type": "ephemeral"}`
+- After the first call in a Glue job run, subsequent calls pay 10× less for the system prompt (Anthropic prompt caching)
+- Model: claude-haiku-4-5-20251001 — cheapest Claude model, ~$0.0008 per 1K output tokens
+- max_tokens=300, description truncated to 4000 chars — prevents runaway costs on long JDs
+
+## YoE-aware seniority scoring (Chat 9)
+- Job descriptions commonly say "3+ years experience" rather than a seniority title
+- Regex extracts the first number from patterns like "3+ years", "minimum 5 years", "1-3 years exp"
+- Gap scoring: user has 2 years — gap=0 → 100%, gap=1 → 75%, gap=2 → 50%, gap>2 → 0%
+- Partial credit ensures "right skills, 1 year short" still scores well (skill_overlap=40% dominates)
+- Falls back to seniority-title distance if no YoE number is found in the description
+
+## Skill overlap weighted at 40% — highest single component (Chat 9)
+- A job requiring your exact tech stack is more actionable than one matching your title
+- Skills are objective (python in → python out); seniority titles vary by company
+- Jaccard similarity used (|intersection| / |union|) — penalises both gaps AND irrelevant extras
+- Location (15%) + role family (15%) together match seniority (20%) — location matters as much as level
+
+## score_detail stored as JSON string in Parquet (Chat 9)
+- Parquet schema stays flat (no nested structs), which Athena handles cleanly
+- score_detail value example: '{"skill_overlap": 32.0, "seniority_fit": 15.0, ...}'
+- Queryable in Athena via json_extract(score_detail, '$.skill_overlap')
+- Alternative (map<string,double>) would require Athena STRUCT casting — more complex DDL
+
+## Glue version 4.0 over 5.1 for Python Shell jobs (Chat 10)
+- Glue 5.1 Python Shell pre-installs awscli 1.23.5 + aiobotocore 2.2.0 which lock botocore to 1.25.x
+- Any modern package (dbt-core, anthropic, pydantic) pulls botocore 1.42.x → hard pip conflict at install time
+- Glue 4.0 Python Shell has a cleaner environment: no vendored awscli conflict, compatible with Python 3.9 + modern packages
+- Always set explicit `glue_version` on Python Shell jobs; never rely on Glue default (picks latest = most restrictive)
+
+## dbt 1.9.x as ceiling for Glue 4.0 Python Shell (Chat 10)
+- Glue 4.0 Python Shell runs Python 3.9
+- dbt-core 1.10+ raises `Requires-Python >= 3.10`
+- dbt-core 1.9.10 + dbt-athena-community 1.9.5 is the last series supporting Python 3.9
+- If Glue ever adds Python 3.10 support, can upgrade to dbt 1.10+
+
+## pyarrow==14.0.2 pin for Glue 4.0 Python Shell (Chat 10)
+- pyarrow dropped Python 3.9 manylinux wheels in version 15.0
+- Without a pre-built wheel, pip tries to compile from C++ source → fails in Glue (no dev headers)
+- 14.0.2 is the last version with confirmed `cp39-cp39-manylinux2014_x86_64` wheel on PyPI
+- Pin until Glue runtime upgrades to Python 3.10+
+
+## Manual sys.path bootstrap for Glue 4.0 Python Shell extra-py-files (Chat 10)
+- Glue 4.0 Python Shell downloads --extra-py-files to /tmp but does NOT add to sys.path
+- Cannot rely on --extra-py-files for imports; must write a bootstrap block
+- Pattern: detect environment (no local genai/ dir = Glue), download zip from S3, extract to /tmp, sys.path.insert(0, extract_dir)
+- Keeps enrichment_runner.py self-contained and runnable both locally and in Glue without code changes
+
+## enrichment_scores Terraform-managed as aws_glue_catalog_table (Chat 10)
+- Table was originally created via one-time Athena DDL in Chat 9 (outside Terraform)
+- Risk: `terraform destroy` would not drop the table, but a fresh `terraform apply` on a new account would miss it
+- Fix: added `aws_glue_catalog_table.enrichment_scores` to athena.tf; imported existing table with its catalog-id:database:table ID
+- Terraform now owns the full gold layer schema — reproducible from scratch
+
 ## Step Functions .sync integration for Glue (Chat 6)
 - Used arn:aws:states:::glue:startJobRun.sync (optimized/synchronous integration)
 - SF starts the Glue job, then internally polls glue:GetJobRun every ~20s until SUCCEEDED/FAILED

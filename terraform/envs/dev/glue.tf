@@ -86,6 +86,12 @@ resource "aws_iam_policy" "glue_policy" {
         Effect   = "Allow"
         Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
         Resource = "arn:aws:logs:*:*:*"
+      },
+      {
+        Sid      = "SecretsManagerAnthropicKey"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = "arn:aws:secretsmanager:${var.aws_region}:*:secret:jobpulse/anthropic_key_dev*"
       }
     ]
   })
@@ -215,9 +221,10 @@ resource "aws_glue_job" "dbt_runner" {
     "--silver_database"                  = aws_glue_catalog_database.silver.name
     "--silver_table"                     = aws_glue_catalog_table.silver_jobs.name
     "--enable-continuous-cloudwatch-log" = "true"
-    "--additional-python-modules"        = "dbt-core==1.11.8,dbt-athena-community==1.10.0,pyyaml"
+    "--additional-python-modules"        = "dbt-core==1.9.10,dbt-athena-community==1.9.5,pyyaml"
   }
 
+  glue_version = "4.0"
   max_capacity = 0.0625 # 1/16 DPU — cheapest Python Shell tier (~$0.004/run)
   timeout      = 30     # minutes
 
@@ -228,4 +235,78 @@ resource "aws_glue_job" "dbt_runner" {
   }
 
   depends_on = [aws_s3_object.dbt_runner_script, null_resource.dbt_project_upload]
+}
+
+# ---------------------------------------------------------------------------
+# Enrichment runner — Glue Python Shell job
+# ---------------------------------------------------------------------------
+
+locals {
+  genai_source_files = fileset("${path.module}/../../../genai", "*.py")
+}
+
+resource "null_resource" "genai_package_upload" {
+  triggers = {
+    genai_hash = sha256(join("", [
+      for f in local.genai_source_files
+      : filesha256("${path.module}/../../../genai/${f}")
+    ]))
+    profile_hash = filesha256("${path.module}/../../../config/user_profile.yml")
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      cd ${path.module}/../../../
+      zip -r /tmp/genai_package.zip genai/ config/user_profile.yml
+      aws s3 cp /tmp/genai_package.zip \
+        s3://${aws_s3_bucket.layers["silver"].bucket}/glue-scripts/genai_package.zip \
+        --region ${var.aws_region}
+    EOT
+  }
+
+  depends_on = [aws_s3_bucket.layers]
+}
+
+resource "aws_s3_object" "enrichment_runner_script" {
+  bucket = aws_s3_bucket.layers["silver"].id
+  key    = "glue-scripts/enrichment_runner.py"
+  source = "${path.module}/../../../genai/enrichment_runner.py"
+  etag   = filemd5("${path.module}/../../../genai/enrichment_runner.py")
+}
+
+resource "aws_glue_job" "enrichment_runner" {
+  name     = "${var.project}-enrichment-${var.env}"
+  role_arn = aws_iam_role.glue_exec.arn
+
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${aws_s3_bucket.layers["silver"].bucket}/glue-scripts/enrichment_runner.py"
+    python_version  = "3.9"
+  }
+
+  default_arguments = {
+    "--job-language"                     = "python"
+    "--gold_bucket"                      = aws_s3_bucket.layers["gold"].bucket
+    "--silver_bucket"                    = aws_s3_bucket.layers["silver"].bucket
+    "--region"                           = var.aws_region
+    "--workgroup"                        = aws_athena_workgroup.main.name
+    "--gold_database"                    = aws_glue_catalog_database.gold.name
+    "--silver_database"                  = aws_glue_catalog_database.silver.name
+    "--dry_run"                          = "false"
+    "--enable-continuous-cloudwatch-log" = "true"
+    "--additional-python-modules"        = "anthropic>=0.40.0,pydantic>=2.0.0,pyyaml,pyarrow==14.0.2"
+    "--extra-py-files"                   = "s3://${aws_s3_bucket.layers["silver"].bucket}/glue-scripts/genai_package.zip"
+  }
+
+  glue_version = "4.0"
+  max_capacity = 0.0625
+  timeout      = 20
+
+  tags = {
+    project = var.project
+    env     = var.env
+    layer   = "enrichment"
+  }
+
+  depends_on = [aws_s3_object.enrichment_runner_script, null_resource.genai_package_upload]
 }

@@ -45,3 +45,7 @@ output "silver_database_name" {
 output "gold_database_name" {
   value = aws_glue_catalog_database.gold.name
 }
+
+output "enrichment_job_name" {
+  value = aws_glue_job.enrichment_runner.name
+}

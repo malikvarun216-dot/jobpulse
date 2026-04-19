@@ -27,8 +27,7 @@ models:
         tests:
           - not_null
           - accepted_values:
-              arguments:
-                values: [SDE, DATA, DevOps, PM, Design, Marketing, Other]
+              values: [SDE, DATA, DevOps, PM, Design, Marketing, Other]
 
   - name: dim_country
     description: Dimension table — unique countries
@@ -63,14 +62,12 @@ models:
         tests:
           - not_null
           - relationships:
-              arguments:
-                to: ref('dim_role')
-                field: role_key
+              to: ref('dim_role')
+              field: role_key
       - name: country_key
         description: FK → dim_country.country_key
         tests:
           - not_null
           - relationships:
-              arguments:
-                to: ref('dim_country')
-                field: country_key
+              to: ref('dim_country')
+              field: country_key

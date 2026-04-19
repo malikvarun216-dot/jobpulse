@@ -34,8 +34,8 @@ LEFT JOIN jobpulse_gold_dev.dim_company  c  ON f.company_key  = c.company_key
 LEFT JOIN jobpulse_gold_dev.dim_role     r  ON f.role_key     = r.role_key
 LEFT JOIN jobpulse_gold_dev.dim_country  co ON f.country_key  = co.country_key
 LEFT JOIN jobpulse_gold_dev.enrichment_scores e
-    ON f.job_id        = e.job_id
-    AND f.snapshot_date = e.snapshot_date
+    ON f.job_id                              = e.job_id
+    AND CAST(f.snapshot_date AS VARCHAR) = e.snapshot_date
 ORDER BY match_score DESC, f.publication_date DESC
 LIMIT 500
 """

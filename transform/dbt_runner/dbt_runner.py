@@ -34,8 +34,9 @@ SILVER_TABLE  = args.silver_table
 SILVER_BUCKET = args.silver_bucket
 GOLD_BUCKET   = args.gold_bucket
 
-DBT_ZIP_KEY   = "dbt-project/dbt_project.zip"
-DBT_LOCAL_DIR = "/tmp/dbt_project"
+DBT_ZIP_KEY    = "dbt-project/dbt_project.zip"
+DBT_LOCAL_DIR  = "/tmp/dbt_project"
+DBT_PROJECT_DIR = os.path.join(DBT_LOCAL_DIR, "dbt_project")
 PROFILES_DIR  = "/tmp/dbt_profiles"
 S3_STAGING    = f"s3://{GOLD_BUCKET}/athena-results/"
 
@@ -114,7 +115,7 @@ def run_dbt():
     runner = dbtRunner()
 
     base_args = [
-        "--project-dir", DBT_LOCAL_DIR,
+        "--project-dir", DBT_PROJECT_DIR,
         "--profiles-dir", PROFILES_DIR,
     ]
 

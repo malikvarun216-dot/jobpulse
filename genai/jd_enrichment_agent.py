@@ -107,7 +107,7 @@ class JDEnrichmentAgent:
         if cached:
             score, detail = self._scorer.score(cached, job)
             return EnrichmentRecord(
-                job_id=job["job_id"],
+                job_id=str(job["job_id"]),
                 snapshot_date=str(job["snapshot_date"])[:10],
                 skills=cached.skills,
                 seniority=cached.seniority,
@@ -128,7 +128,7 @@ class JDEnrichmentAgent:
         score, detail = self._scorer.score(extraction, job)
         self._write_cache(description, extraction)
         return EnrichmentRecord(
-            job_id=job["job_id"],
+            job_id=str(job["job_id"]),
             snapshot_date=str(job["snapshot_date"])[:10],
             skills=extraction.skills,
             seniority=extraction.seniority,

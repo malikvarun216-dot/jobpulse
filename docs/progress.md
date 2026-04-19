@@ -338,3 +338,51 @@ EventBridge (2AM IST daily)
 ### Next
 Chat 10 — Fix Glue 5.1 pip issues (try glue_version = "4.0" for Python Shell jobs), restore RunDbtGold, get RunEnrichment working, verify enrichment_scores in Athena, dashboard match_score live.
 
+## Chat 10 — Fix Glue Pip Conflicts, Full Pipeline End-to-End
+Date: 2026-04-19
+
+### Goal
+Fix three Chat 9 blockers and get the full pipeline running unattended: Lambda → Glue bronze→silver → dbt gold → enrichment → PipelineComplete.
+
+### Built / Fixed
+- **terraform/envs/dev/glue.tf** — added `glue_version = "4.0"` to `aws_glue_job.dbt_runner` and `aws_glue_job.enrichment_runner`; downgraded dbt to `dbt-core==1.9.10,dbt-athena-community==1.9.5` (last series supporting Python 3.9); pinned `pyarrow==14.0.2` (last version with Python 3.9 manylinux wheels)
+- **terraform/envs/dev/athena.tf** — added `aws_glue_catalog_table.enrichment_scores` (brought manual DDL into Terraform); imported existing table with `terraform import 240939827246:jobpulse_gold_dev:enrichment_scores`
+- **transform/dbt_runner/dbt_runner.py** — fixed zip extraction path: `dbt_project.zip` contains `dbt_project/dbt_project.yml` so `--project-dir` must point one level deeper (`/tmp/dbt_project/dbt_project` not `/tmp/dbt_project`)
+- **dbt_project/models/gold/schema.yml** — removed `arguments:` wrapper from `accepted_values` and `relationships` tests (removed in dbt 1.8+)
+- **genai/enrichment_runner.py** — full Glue-compatible bootstrap: detects Glue vs local dev environment; manually downloads + extracts genai_package.zip from S3 to add to sys.path (Glue 4.0 Python Shell does NOT auto-add --extra-py-files to sys.path); added NaN→None normalization after pd.read_csv() to handle Athena CSV nulls
+- **genai/jd_enrichment_agent.py** — cast job_id to str() in both EnrichmentRecord instantiation sites (Pydantic v2 rejects int for str fields)
+- **dashboard/streamlit/app.py** — fixed enrichment_scores JOIN: `CAST(f.snapshot_date AS VARCHAR) = e.snapshot_date` (Athena won't implicitly cast date→varchar in JOIN conditions)
+
+### Incidents Hit (Chat 10 — 7 new)
+1. Terraform import needs `catalog-id:database:table` format, not `database/table`
+2. dbt-core ≥1.10 requires Python ≥3.10; Glue 4.0 is Python 3.9 → must use dbt-core 1.9.x
+3. dbt zip structure: `dbt_project/` prefix in zip means project-dir must go one deeper
+4. dbt schema.yml `arguments:` wrapper removed in dbt 1.8+
+5. pyarrow ≥15 has no Python 3.9 manylinux wheels → must pin pyarrow==14.0.2
+6. Glue 4.0 Python Shell: --extra-py-files downloaded but NOT added to sys.path
+7. pandas NaN ≠ None: `(nan or "")` returns nan (truthy), breaking `.lower()` on null fields
+8. Pydantic v2 rejects int for str field (no auto-coerce); job_id came in as int64 from CSV
+9. Athena date vs varchar: no implicit cast in JOIN; must use `CAST(date AS VARCHAR)`
+
+### Pipeline Flow (complete, fully verified)
+```
+EventBridge (2AM IST daily)
+  → Step Functions (STANDARD)
+    → InvokeRemotive (Lambda)   → CheckRemotive
+    → RunGlueJob    (bronze→silver, PySpark, Glue 4.0 Spark)
+    → RunDbtGold    (dbt star schema, Python Shell, Glue 4.0)
+    → RunEnrichment (skill extract + match score, Python Shell, Glue 4.0)
+    → PipelineComplete
+```
+
+### Verified
+- terraform apply: 2 changed (glue jobs), 1 added (enrichment_scores table) ✓
+- null_resource.genai_package_upload forced re-upload → zip in S3 ✓
+- Step Functions execution: SUCCEEDED — all 4 states green ✓
+- Athena enrichment_scores: 21 records, avg=20.3, max=43.0, latest=2026-04-19 ✓
+- Dashboard flat JOIN with CAST: 21 rows, real match_scores (not -1) ✓
+- dbt: PASS=5 models, PASS=30 tests ✓
+
+### Next
+Chat 11 — Add second data source (Himalayas/Adzuna/RemoteOK), expand volume, or add deduplication logic.
+

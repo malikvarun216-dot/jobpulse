@@ -221,9 +221,10 @@ resource "aws_glue_job" "dbt_runner" {
     "--silver_database"                  = aws_glue_catalog_database.silver.name
     "--silver_table"                     = aws_glue_catalog_table.silver_jobs.name
     "--enable-continuous-cloudwatch-log" = "true"
-    "--additional-python-modules"        = "dbt-core==1.11.8,dbt-athena-community==1.10.0,pyyaml"
+    "--additional-python-modules"        = "dbt-core==1.9.10,dbt-athena-community==1.9.5,pyyaml"
   }
 
+  glue_version = "4.0"
   max_capacity = 0.0625 # 1/16 DPU — cheapest Python Shell tier (~$0.004/run)
   timeout      = 30     # minutes
 
@@ -293,10 +294,11 @@ resource "aws_glue_job" "enrichment_runner" {
     "--silver_database"                  = aws_glue_catalog_database.silver.name
     "--dry_run"                          = "false"
     "--enable-continuous-cloudwatch-log" = "true"
-    "--additional-python-modules"        = "anthropic>=0.40.0,pydantic>=2.0.0,pyyaml,pyarrow>=15.0.0"
+    "--additional-python-modules"        = "anthropic>=0.40.0,pydantic>=2.0.0,pyyaml,pyarrow==14.0.2"
     "--extra-py-files"                   = "s3://${aws_s3_bucket.layers["silver"].bucket}/glue-scripts/genai_package.zip"
   }
 
+  glue_version = "4.0"
   max_capacity = 0.0625
   timeout      = 20
 

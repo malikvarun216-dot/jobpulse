@@ -19,11 +19,36 @@ import json
 import os
 import sys
 import time
+import zipfile
 
 import boto3
 import pandas as pd
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# ---------------------------------------------------------------------------
+# Bootstrap: make genai package importable in both local dev and Glue 4.0.
+# Glue Python Shell 4.0 downloads --extra-py-files but does NOT add them to
+# sys.path automatically.  We detect the environment and load accordingly.
+# ---------------------------------------------------------------------------
+
+_repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_GENAI_EXTRACT_DIR = "/tmp/genai_pkg"
+
+if os.path.isdir(os.path.join(_repo_root, "genai")):
+    # Local dev: script lives at genai/enrichment_runner.py; repo root has genai/
+    sys.path.insert(0, _repo_root)
+    _DEFAULT_PROFILE_PATH = os.path.join(_repo_root, "config", "user_profile.yml")
+else:
+    # Glue Python Shell: parse --silver_bucket early, download and extract zip
+    import argparse as _ap
+    _pre = _ap.ArgumentParser(add_help=False)
+    _pre.add_argument("--silver_bucket", default="jobpulse-silver-dev")
+    _silver = _pre.parse_known_args()[0].silver_bucket
+    _zip_local = "/tmp/genai_package.zip"
+    boto3.client("s3").download_file(_silver, "glue-scripts/genai_package.zip", _zip_local)
+    with zipfile.ZipFile(_zip_local) as _z:
+        _z.extractall(_GENAI_EXTRACT_DIR)
+    sys.path.insert(0, _GENAI_EXTRACT_DIR)
+    _DEFAULT_PROFILE_PATH = os.path.join(_GENAI_EXTRACT_DIR, "config", "user_profile.yml")
 
 from genai.jd_enrichment_agent import JDEnrichmentAgent
 
@@ -40,7 +65,7 @@ parser.add_argument("--gold_database",   default="jobpulse_gold_dev")
 parser.add_argument("--silver_database", default="jobpulse_silver_dev")
 parser.add_argument("--snapshot_date",   default="")
 parser.add_argument("--dry_run",         default="false")
-parser.add_argument("--profile_path",    default="config/user_profile.yml")
+parser.add_argument("--profile_path",    default=_DEFAULT_PROFILE_PATH)
 args, _ = parser.parse_known_args()
 
 GOLD_BUCKET   = args.gold_bucket
@@ -87,6 +112,7 @@ def _run_athena_query(sql: str, database: str) -> list[dict]:
     bucket, key = path.split("/", 1)
     obj    = s3.get_object(Bucket=bucket, Key=key)
     df     = pd.read_csv(io.BytesIO(obj["Body"].read()))
+    df     = df.where(pd.notnull(df), None)   # NaN → None for clean downstream handling
     return df.to_dict(orient="records")
 
 

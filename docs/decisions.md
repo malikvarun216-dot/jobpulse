@@ -145,6 +145,36 @@
 - Queryable in Athena via json_extract(score_detail, '$.skill_overlap')
 - Alternative (map<string,double>) would require Athena STRUCT casting — more complex DDL
 
+## Glue version 4.0 over 5.1 for Python Shell jobs (Chat 10)
+- Glue 5.1 Python Shell pre-installs awscli 1.23.5 + aiobotocore 2.2.0 which lock botocore to 1.25.x
+- Any modern package (dbt-core, anthropic, pydantic) pulls botocore 1.42.x → hard pip conflict at install time
+- Glue 4.0 Python Shell has a cleaner environment: no vendored awscli conflict, compatible with Python 3.9 + modern packages
+- Always set explicit `glue_version` on Python Shell jobs; never rely on Glue default (picks latest = most restrictive)
+
+## dbt 1.9.x as ceiling for Glue 4.0 Python Shell (Chat 10)
+- Glue 4.0 Python Shell runs Python 3.9
+- dbt-core 1.10+ raises `Requires-Python >= 3.10`
+- dbt-core 1.9.10 + dbt-athena-community 1.9.5 is the last series supporting Python 3.9
+- If Glue ever adds Python 3.10 support, can upgrade to dbt 1.10+
+
+## pyarrow==14.0.2 pin for Glue 4.0 Python Shell (Chat 10)
+- pyarrow dropped Python 3.9 manylinux wheels in version 15.0
+- Without a pre-built wheel, pip tries to compile from C++ source → fails in Glue (no dev headers)
+- 14.0.2 is the last version with confirmed `cp39-cp39-manylinux2014_x86_64` wheel on PyPI
+- Pin until Glue runtime upgrades to Python 3.10+
+
+## Manual sys.path bootstrap for Glue 4.0 Python Shell extra-py-files (Chat 10)
+- Glue 4.0 Python Shell downloads --extra-py-files to /tmp but does NOT add to sys.path
+- Cannot rely on --extra-py-files for imports; must write a bootstrap block
+- Pattern: detect environment (no local genai/ dir = Glue), download zip from S3, extract to /tmp, sys.path.insert(0, extract_dir)
+- Keeps enrichment_runner.py self-contained and runnable both locally and in Glue without code changes
+
+## enrichment_scores Terraform-managed as aws_glue_catalog_table (Chat 10)
+- Table was originally created via one-time Athena DDL in Chat 9 (outside Terraform)
+- Risk: `terraform destroy` would not drop the table, but a fresh `terraform apply` on a new account would miss it
+- Fix: added `aws_glue_catalog_table.enrichment_scores` to athena.tf; imported existing table with its catalog-id:database:table ID
+- Terraform now owns the full gold layer schema — reproducible from scratch
+
 ## Step Functions .sync integration for Glue (Chat 6)
 - Used arn:aws:states:::glue:startJobRun.sync (optimized/synchronous integration)
 - SF starts the Glue job, then internally polls glue:GetJobRun every ~20s until SUCCEEDED/FAILED

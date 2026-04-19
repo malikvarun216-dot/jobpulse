@@ -123,3 +123,68 @@ resource "aws_glue_catalog_table" "silver_jobs" {
     "EXTERNAL"            = "TRUE"
   }
 }
+
+# External table over enrichment Parquet — written by JDEnrichmentAgent
+resource "aws_glue_catalog_table" "enrichment_scores" {
+  database_name = aws_glue_catalog_database.gold.name
+  name          = "enrichment_scores"
+
+  table_type = "EXTERNAL_TABLE"
+
+  storage_descriptor {
+    location      = "s3://${aws_s3_bucket.layers["gold"].bucket}/enrichment-scores/"
+    input_format  = "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat"
+    output_format = "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat"
+
+    ser_de_info {
+      serialization_library = "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
+      parameters = {
+        "serialization.format" = "1"
+      }
+    }
+
+    columns {
+      name = "job_id"
+      type = "string"
+    }
+    columns {
+      name = "skills"
+      type = "array<string>"
+    }
+    columns {
+      name = "seniority"
+      type = "string"
+    }
+    columns {
+      name = "yoe_required"
+      type = "int"
+    }
+    columns {
+      name = "match_score"
+      type = "double"
+    }
+    columns {
+      name = "score_detail"
+      type = "string"
+    }
+    columns {
+      name = "extraction_source"
+      type = "string"
+    }
+    columns {
+      name = "enriched_at"
+      type = "string"
+    }
+  }
+
+  partition_keys {
+    name = "snapshot_date"
+    type = "string"
+  }
+
+  parameters = {
+    "classification"      = "parquet"
+    "parquet.compression" = "SNAPPY"
+    "EXTERNAL"            = "TRUE"
+  }
+}

@@ -29,7 +29,8 @@ resource "aws_iam_policy" "sfn_policy" {
         Action = ["glue:StartJobRun", "glue:GetJobRun", "glue:BatchStopJobRun"]
         Resource = [
           aws_glue_job.bronze_to_silver.arn,
-          aws_glue_job.dbt_runner.arn
+          aws_glue_job.dbt_runner.arn,
+          aws_glue_job.enrichment_runner.arn
         ]
       }
     ]
@@ -89,6 +90,23 @@ resource "aws_sfn_state_machine" "ingest_pipeline" {
           JobName = aws_glue_job.dbt_runner.name
         }
         ResultPath = "$.dbt"
+        Next       = "RunEnrichment"
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "PipelineFailure"
+          ResultPath  = "$.error"
+        }]
+      }
+      RunEnrichment = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::glue:startJobRun.sync"
+        Parameters = {
+          JobName = aws_glue_job.enrichment_runner.name
+          Arguments = {
+            "--snapshot_date.$" = "$.remotive.snapshot_date"
+          }
+        }
+        ResultPath = "$.enrichment"
         Next       = "PipelineComplete"
         Catch = [{
           ErrorEquals = ["States.ALL"]

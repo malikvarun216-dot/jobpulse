@@ -102,6 +102,49 @@
 - "Refresh data" button calls load_jobs.clear() to force a fresh Athena query when needed
 - LIMIT 500 in the SQL as a cost guard; adjustable as data volume grows
 
+## Rule-based extraction before LLM (Chat 9)
+- SkillExtractor tries regex against SKILL_VOCAB + seniority patterns first
+- Only calls Claude Haiku if rules find <5 skills OR seniority is "unknown"
+- At ~50 Remotive jobs/day, fewer than 20% are expected to need an LLM call
+- Keeps daily API cost well under the $0.50 budget cap; rules are instant and free
+
+## Separate enrichment_scores table — dbt does not own it (Chat 9)
+- fact_job_posting is fully managed by dbt; every `dbt run` recreates it via CTAS
+- Writing match_score into fact_job_posting would be overwritten on the next dbt run
+- Solution: standalone `enrichment_scores` external table (Parquet, partitioned by snapshot_date)
+- Dashboard LEFT JOINs fact_job_posting ↔ enrichment_scores — each team owns its table
+
+## S3 cache keyed by md5(description) (Chat 9)
+- Same job description re-posted on a different snapshot_date should not incur a second API charge
+- md5 of raw description is the cache key; cache entry stores ExtractionResult JSON
+- Writes to s3://gold/enrichment-cache/{hash}.json after a successful LLM call
+- cache hit → source="cache"; extraction still runs MatchScorer for freshness/salary recalc
+
+## Claude Haiku with cache_control: ephemeral on system prompt (Chat 9)
+- System prompt (~200 tokens) is sent with `cache_control: {"type": "ephemeral"}`
+- After the first call in a Glue job run, subsequent calls pay 10× less for the system prompt (Anthropic prompt caching)
+- Model: claude-haiku-4-5-20251001 — cheapest Claude model, ~$0.0008 per 1K output tokens
+- max_tokens=300, description truncated to 4000 chars — prevents runaway costs on long JDs
+
+## YoE-aware seniority scoring (Chat 9)
+- Job descriptions commonly say "3+ years experience" rather than a seniority title
+- Regex extracts the first number from patterns like "3+ years", "minimum 5 years", "1-3 years exp"
+- Gap scoring: user has 2 years — gap=0 → 100%, gap=1 → 75%, gap=2 → 50%, gap>2 → 0%
+- Partial credit ensures "right skills, 1 year short" still scores well (skill_overlap=40% dominates)
+- Falls back to seniority-title distance if no YoE number is found in the description
+
+## Skill overlap weighted at 40% — highest single component (Chat 9)
+- A job requiring your exact tech stack is more actionable than one matching your title
+- Skills are objective (python in → python out); seniority titles vary by company
+- Jaccard similarity used (|intersection| / |union|) — penalises both gaps AND irrelevant extras
+- Location (15%) + role family (15%) together match seniority (20%) — location matters as much as level
+
+## score_detail stored as JSON string in Parquet (Chat 9)
+- Parquet schema stays flat (no nested structs), which Athena handles cleanly
+- score_detail value example: '{"skill_overlap": 32.0, "seniority_fit": 15.0, ...}'
+- Queryable in Athena via json_extract(score_detail, '$.skill_overlap')
+- Alternative (map<string,double>) would require Athena STRUCT casting — more complex DDL
+
 ## Step Functions .sync integration for Glue (Chat 6)
 - Used arn:aws:states:::glue:startJobRun.sync (optimized/synchronous integration)
 - SF starts the Glue job, then internally polls glue:GetJobRun every ~20s until SUCCEEDED/FAILED

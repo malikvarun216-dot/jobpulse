@@ -1,0 +1,16 @@
+profile:
+  skills: [python, sql, pyspark, aws, dbt, airflow, kafka, terraform, pandas, docker]
+  seniority: mid
+  yoe: 2
+  preferred_locations: [remote, india]
+  preferred_role_families: [DATA, SDE]
+  salary_min_usd: 60000
+
+# Weights must sum to 100
+weights:
+  skill_overlap:   40
+  seniority_fit:   20
+  location_fit:    15
+  role_family_fit: 15
+  salary_fit:       5
+  freshness:        5

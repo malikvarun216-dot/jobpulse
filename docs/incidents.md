@@ -65,6 +65,38 @@
 - Prevention: always define surrogate key on the same columns as the SELECT DISTINCT — key grain = row grain
 - Lesson: if your dim SELECT DISTINCT has N columns, your surrogate key must cover all N columns that define uniqueness
 
+## [2026-04-19] — test boundary: assertLess failed on exact equality (zero skill overlap)
+- What happened: `test_zero_skill_overlap_reduces_score` failed with `60.0 is not less than 60.0`
+- What I thought: zero skill overlap would produce a clearly low score, safely below 60
+- Root cause: with zero skill overlap (0/40 pts) but a perfect profile match on everything else — mid seniority, remote location, DATA role, salary unknown (full pts), fresh job — the remaining components sum to exactly 60: seniority(20) + location(15) + role(15) + salary(5) + freshness(5) = 60. The assertion used `assertLess` (strict), not `assertLessEqual`
+- Fix: changed `assertLess(score, 60.0)` to `assertLessEqual(score, 60.0)` — the boundary case is valid and expected
+- Prevention: when testing score ceilings, think through what the other components contribute; use `assertLessEqual` unless you have a strict reason to exclude the boundary
+- Lesson: scoring tests need to account for every weight component, not just the one being isolated
+
+## [2026-04-19] — bash heredoc broke on Python single-quoted dict keys
+- What happened: `Bash` tool with heredoc payload containing `job["job_id"]` caused the shell to mis-parse the heredoc boundary, writing a truncated or malformed file
+- What I thought: double-quoted heredoc delimiter (`<<"EOF"`) would suppress all expansion
+- Root cause: the Python source code contained single-quoted string keys (e.g. `job['job_id']`, `{'status': 'OK'}`). When pasted inside a bash heredoc the shell interprets single quotes contextually depending on the surrounding quoting mode, causing the content boundary to be misread in some terminal environments
+- Fix: switched to the `Write` tool for all multi-line Python files with dict literals — bypasses the shell entirely
+- Prevention: always use the `Write` tool (not bash heredoc) for Python files containing `{}` dict literals, f-strings, or nested quotes
+- Lesson: heredocs are fine for simple config; for code files with mixed quoting, Write tool is safer and avoids shell interpretation entirely
+
+## [2026-04-19] — `python3` not found on Windows; pydantic/anthropic not installed
+- What happened: `python3 -m pytest tests/test_genai.py` returned `command not found`. Then running tests with the correct Python path failed with `ModuleNotFoundError: No module named 'pydantic'`
+- What I thought: Python was available as `python3` (Unix convention), and the project virtualenv had all dependencies
+- Root cause: On Windows, Python is registered as `python` or by full path, not `python3`. The project has no virtualenv — dependencies (pydantic, anthropic, boto3, pyyaml) were not installed in the system Python
+- Fix: used full path `/c/Program\ Files/Python311/python.exe` and ran `pip install pydantic anthropic boto3 pyyaml` first
+- Prevention: on Windows always use `python` or the full path; keep a `requirements-dev.txt` (or pyproject.toml) so anyone can `pip install -r requirements-dev.txt` before running tests
+- Lesson: cross-platform dev needs explicit Python invocation conventions; don't assume `python3` exists on Windows
+
+## [2026-04-19] — terraform not in PATH on second machine
+- What happened: user ran `terraform plan` in CMD on a different laptop — `terraform` command not found
+- What I thought: terraform was already installed from earlier chats
+- Root cause: earlier chats ran on a different machine. This laptop had no terraform installed
+- Fix: `winget install HashiCorp.Terraform` installed v1.14.8; used full winget path for the CLI session since PATH hadn't refreshed
+- Prevention: document terraform version in README or `terraform/.terraform-version`; use tfenv or asdf for consistent versions across machines
+- Lesson: treat CLI tools as project dependencies — pin the version, document the install method
+
 ## [2026-04-18] — s3.tf trailing space in filename
 - What happened: terraform plan showed "No changes" despite 14 resources to create
 - What I thought: credentials issue or provider misconfiguration

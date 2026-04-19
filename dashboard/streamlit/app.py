@@ -24,13 +24,19 @@ SELECT
     f.ingested_at,
     c.company_name,
     r.role_family,
-    r.category       AS role_category,
-    co.country
+    r.category                          AS role_category,
+    co.country,
+    COALESCE(e.match_score, -1)         AS match_score,
+    COALESCE(e.seniority, 'unknown')    AS seniority,
+    COALESCE(e.yoe_required, -1)        AS yoe_required
 FROM jobpulse_gold_dev.fact_job_posting f
 LEFT JOIN jobpulse_gold_dev.dim_company  c  ON f.company_key  = c.company_key
 LEFT JOIN jobpulse_gold_dev.dim_role     r  ON f.role_key     = r.role_key
 LEFT JOIN jobpulse_gold_dev.dim_country  co ON f.country_key  = co.country_key
-ORDER BY f.publication_date DESC
+LEFT JOIN jobpulse_gold_dev.enrichment_scores e
+    ON f.job_id        = e.job_id
+    AND f.snapshot_date = e.snapshot_date
+ORDER BY match_score DESC, f.publication_date DESC
 LIMIT 500
 """
 
@@ -56,6 +62,7 @@ def load_jobs() -> pd.DataFrame:
     df["company_name"] = df["company_name"].fillna("unknown")
     df["role_family"] = df["role_family"].fillna("other")
     df["tags_parsed"] = df["tags"].apply(parse_tags)
+    df["match_score"] = pd.to_numeric(df["match_score"], errors="coerce").fillna(-1)
     return df
 
 
@@ -70,6 +77,7 @@ if st.sidebar.button("Refresh data"):
 
 df_all = load_jobs()
 
+title_search = st.sidebar.text_input("Search title", placeholder="e.g. Data Engineer")
 roles = st.sidebar.multiselect(
     "Role Family", sorted(df_all["role_family"].dropna().unique())
 )
@@ -79,14 +87,19 @@ countries = st.sidebar.multiselect(
 job_types = st.sidebar.multiselect(
     "Job Type", sorted(df_all["job_type"].dropna().unique())
 )
+min_score = st.sidebar.slider("Min Match Score", min_value=0, max_value=100, value=0, step=5)
 
 mask = pd.Series(True, index=df_all.index)
+if title_search:
+    mask &= df_all["title"].str.contains(title_search, case=False, na=False)
 if roles:
     mask &= df_all["role_family"].isin(roles)
 if countries:
     mask &= df_all["country"].isin(countries)
 if job_types:
     mask &= df_all["job_type"].isin(job_types)
+if min_score > 0:
+    mask &= df_all["match_score"] >= min_score
 
 df = df_all[mask].copy()
 
@@ -107,13 +120,14 @@ st.divider()
 
 st.subheader("Job Listings")
 
-display_cols = ["title", "company_name", "role_family", "country", "job_type",
-                "publication_date", "salary_raw", "apply_url"]
-display_df = df[display_cols].sort_values("publication_date", ascending=False)
+display_cols = ["match_score", "title", "company_name", "role_family", "country",
+                "job_type", "publication_date", "salary_raw", "apply_url"]
+display_df = df[display_cols].copy()
 
 st.dataframe(
     display_df,
     column_config={
+        "match_score": st.column_config.NumberColumn("Match %", format="%.1f"),
         "title": st.column_config.TextColumn("Title"),
         "company_name": st.column_config.TextColumn("Company"),
         "role_family": st.column_config.TextColumn("Role"),

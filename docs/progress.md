@@ -222,3 +222,111 @@ Date: 2026-04-19
 ### Next
 Chat 9 — GenAI enrichment layer: Claude API for skill extraction + match scoring
 
+## Chat 9 — GenAI Enrichment Layer
+Date: 2026-04-19
+
+### Built
+- config/user_profile.yml — user skill profile + scoring weights (single source of truth)
+- genai/__init__.py — marks genai/ as a Python package
+- genai/guardrails.py — Pydantic schemas (ExtractionResult, EnrichmentRecord), SKILL_VOCAB whitelist (~120 terms), BudgetTracker
+- genai/skill_extractor.py — SkillExtractor sub-agent (rule-based + Claude Haiku LLM fallback)
+- genai/match_scorer.py — MatchScorer sub-agent (6-component weighted scorer)
+- genai/jd_enrichment_agent.py — JDEnrichmentAgent orchestrator (pre-hooks, per-job processing, post-hooks)
+- genai/enrichment_runner.py — Glue Python Shell entry point (argparse, Athena fetch, MSCK REPAIR)
+- tests/test_genai.py — 22 unit tests, all mock-based (no real AWS or API calls)
+- terraform/envs/dev/glue.tf — added Secrets Manager IAM perm, enrichment Glue job, genai package zip upload
+- terraform/envs/dev/step_functions.tf — added RunEnrichment state, enrichment job ARN to SF policy
+- terraform/envs/dev/outputs.tf — added enrichment_job_name output
+- dashboard/streamlit/app.py — added enrichment_scores JOIN, match_score column, title search, score slider
+
+### How the Scoring Works
+
+**User profile** (`config/user_profile.yml`) defines the benchmark:
+- Skills: python, sql, pyspark, aws, dbt, airflow, kafka, terraform, pandas, docker (10 skills)
+- Seniority: mid, YoE: 2 years
+- Preferred locations: remote, india
+- Preferred role families: DATA, SDE
+- Salary floor: $60,000 USD
+
+**Six scoring components** (weights sum to 100):
+
+| Component | Weight | Logic |
+|---|---|---|
+| skill_overlap | 40 | Jaccard similarity: |intersection| / |union| × 40. A job needing python+sql+aws where user knows all 3 scores 3/3=100% → 40 pts. A job needing java+kotlin+helm where user knows none scores 0/13 → 0 pts. |
+| seniority_fit | 20 | YoE-aware (see below) |
+| location_fit | 15 | "remote" anywhere in location/job_type/country → full 15 pts. Preferred country match → full 15 pts. Otherwise 0. |
+| role_family_fit | 15 | Role family in [DATA, SDE] → 15 pts. Otherwise 0. |
+| salary_fit | 5 | Parsed salary ≥ $60k → 5 pts. Below floor → 0. Unknown/unparseable → full 5 pts (benefit of the doubt). |
+| freshness | 5 | ≤7 days old → 5 pts. ≤14 days → 3 pts. Older → 0. |
+
+**YoE-aware seniority scoring** (the 20-pt component):
+
+The job description is parsed for patterns like "3+ years experience", "minimum 5 years", "1-3 years exp".
+The first number found becomes `yoe_required`. Gap = yoe_required − user.yoe (user has 2 years).
+
+| Gap (years short) | Score |
+|---|---|
+| ≤ 0 (user meets or exceeds) | 20 pts (100%) |
+| 1 year short | 15 pts (75%) |
+| 2 years short | 10 pts (50%) |
+| > 2 years short | 0 pts |
+
+If no YoE number is found, falls back to title-based seniority distance:
+- Same level (mid→mid) → 20 pts
+- One level away (mid→senior or mid→junior) → 10 pts
+- Further away → 0 pts
+
+**Why skill_overlap dominates (40%):** A job asking for your exact stack but labelled "senior" is a better opportunity than a junior job in a completely different tech stack. Skills are the real filter; seniority is a soft signal.
+
+**Extraction pipeline:**
+1. Rule-based regex scans description against SKILL_VOCAB whitelist + seniority keyword patterns + YoE regex
+2. If ≥5 skills found AND seniority identified → use rules (no API call)
+3. If either is missing → Claude Haiku (`claude-haiku-4-5-20251001`) with `cache_control: ephemeral` on system prompt
+4. LLM failure → fall back to rules result (never crash the batch)
+
+**S3 cache:** Each description is hashed (md5). Cache miss writes extraction to `s3://gold/enrichment-cache/{hash}.json`. Same JD on a different snapshot date reuses the cached extraction — no duplicate API charges.
+
+**Budget guard:** Daily $0.50 cap tracked in `s3://gold/enrichment-cache/budget-{date}.json`. `BudgetTracker.check_and_increment()` raises `BudgetExceededError` before any API call if cap would be exceeded. Fails open (zero spend assumed) if S3 unreachable.
+
+### AWS Resources Created (4 new, 7 changed)
+- Glue job: jobpulse-enrichment-dev (Python Shell, 0.0625 DPU, 20 min timeout)
+- S3 object: glue-scripts/enrichment_runner.py (entry point)
+- S3 object: glue-scripts/genai_package.zip (genai/ + config/user_profile.yml, re-uploaded on code change)
+- null_resource: genai_package_upload (triggers on genai/*.py + user_profile.yml hash change)
+- IAM policy (glue_policy) updated: SecretsManagerAnthropicKey perm added
+- IAM policy (sfn_policy) updated: enrichment job ARN added to StartGlueJobs
+- Step Functions state machine updated: RunDbtGold → RunEnrichment → PipelineComplete
+- Lambda function zip hashes refreshed (no logic change)
+- dbt_runner S3 object refreshed
+
+### One-Time Manual Steps Completed
+- Secrets Manager: `jobpulse/anthropic_key_dev` created with real Anthropic API key (ap-south-1)
+- Athena DDL: `enrichment_scores` external table created in `jobpulse_gold_dev` (Parquet/Snappy, partitioned by snapshot_date)
+
+### Pipeline Flow (complete)
+```
+EventBridge (2AM IST daily)
+  → Step Functions
+    → InvokeRemotive (Lambda) → CheckRemotive
+    → RunGlueJob (bronze → silver, PySpark)
+    → RunDbtGold (dbt star schema, Python Shell)
+    → RunEnrichment (skill extract + match score, Python Shell)  ← NEW
+    → PipelineComplete
+```
+
+### Dashboard Additions
+- Match % column in results table (sorted by score descending by default)
+- Title search box: free-text filter on job title (e.g. "Data Engineer")
+- Min Match Score slider: hides jobs below threshold (0–100, step 5)
+- enrichment_scores LEFT JOINed in FLAT_JOIN_SQL (COALESCE to -1 when no enrichment yet)
+
+### Verified
+- terraform apply: 4 added, 7 changed, 1 destroyed ✓
+- 22 unit tests pass (pytest tests/test_genai.py -v) ✓
+- Secrets Manager secret created ✓
+- Athena enrichment_scores DDL executed ✓
+- enrichment_job_name output: "jobpulse-enrichment-dev" ✓
+
+### Next
+Chat 10 — End-to-end Step Functions run verifying RunEnrichment, Athena query on enrichment_scores, dashboard match_score column live
+

@@ -94,6 +94,14 @@
 - localtimestamp returns plain timestamp(3) — Parquet-compatible
 - This is an Athena-specific gotcha, not a general SQL rule
 
+## Single cached Athena query — all charts derived in-memory (Chat 8)
+- Dashboard runs one flat 4-table JOIN on load, cached via @st.cache_data(ttl=3600)
+- All charts (country, company leaderboard, role pie, tags frequency) computed from the cached DataFrame using pandas — no separate Athena queries
+- Reason: Athena has per-query latency (~2-5s) and a scan cost; re-querying on every sidebar interaction would be slow and wasteful
+- Sidebar filters apply a pandas boolean mask — rerenders are <100ms after initial load
+- "Refresh data" button calls load_jobs.clear() to force a fresh Athena query when needed
+- LIMIT 500 in the SQL as a cost guard; adjustable as data volume grows
+
 ## Step Functions .sync integration for Glue (Chat 6)
 - Used arn:aws:states:::glue:startJobRun.sync (optimized/synchronous integration)
 - SF starts the Glue job, then internally polls glue:GetJobRun every ~20s until SUCCEEDED/FAILED

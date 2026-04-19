@@ -198,4 +198,27 @@ Date: 2026-04-19
 ### Next
 Chat 8 — Streamlit dashboard: Athena queries → job market visualizations
 
+## Chat 8 — Streamlit Dashboard
+Date: 2026-04-19
+
+### Built
+- dashboard/streamlit/requirements.txt — streamlit, boto3, pandas, plotly, pyarrow
+- dashboard/streamlit/athena_client.py — boto3 Athena query runner: submit → poll → read S3 CSV
+- dashboard/streamlit/app.py — single-page Streamlit dashboard with sidebar filters + 4 sections
+
+### Dashboard Sections
+- KPI row: total jobs, companies, countries
+- Results table: st.dataframe with LinkColumn for clickable apply_url
+- Charts row (3 cols): country breakdown (bar), company leaderboard top 10 (horizontal bar), role distribution (pie)
+- Tags/skills frequency: top 20 tags across filtered jobs (bar chart)
+- Sidebar filters: role_family, country, job_type (multiselect, empty = show all)
+- Refresh button: clears st.cache_data to force Athena re-query
+
+### Verified
+- athena_client smoke test: COUNT(*) on fact_job_posting → 21 rows confirmed live ✓
+- Flat 4-table JOIN query executed, shape (5, 6), titles + tags correct ✓
+- parse_tags("[AI/ML, editing, startup]") → ['AI/ML', 'editing', 'startup'] ✓
+
+### Next
+Chat 9 — GenAI enrichment layer: Claude API for skill extraction + match scoring
 

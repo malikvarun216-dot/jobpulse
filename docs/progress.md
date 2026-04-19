@@ -327,6 +327,14 @@ EventBridge (2AM IST daily)
 - Athena enrichment_scores DDL executed ✓
 - enrichment_job_name output: "jobpulse-enrichment-dev" ✓
 
+### Blockers (Chat 9 — not fully verified)
+
+1. **dbt-core pip conflict (Glue 5.1):** Glue Python Shell 5.1 pre-installs awscli 1.23.5 + aiobotocore 2.2.0 with locked botocore. Any dbt-core version (1.5–1.9) pulls newer botocore → conflict → dbt deps fails. Temporary fix: skipped RunDbtGold state in Step Functions (RunGlueJob → RunEnrichment directly).
+
+2. **anthropic/pydantic pip conflict (Glue 5.1):** Same boto3/botocore vendoring issue affects enrichment_runner pip installs. Tried anthropic==0.28.0, pydantic==2.5.0, pyarrow==14.0.1 — still failing. Root cause same as above.
+
+3. **genai_package.zip not found:** After pip issue, enrichment job failed with "Library file doesn't exist: /tmp/glue-python-libs-.../genai_package.zip". null_resource trigger for zip upload may not have fired. Need to verify S3 upload manually or fix trigger logic.
+
 ### Next
-Chat 10 — End-to-end Step Functions run verifying RunEnrichment, Athena query on enrichment_scores, dashboard match_score column live
+Chat 10 — Fix Glue 5.1 pip issues (try glue_version = "4.0" for Python Shell jobs), restore RunDbtGold, get RunEnrichment working, verify enrichment_scores in Athena, dashboard match_score live.
 

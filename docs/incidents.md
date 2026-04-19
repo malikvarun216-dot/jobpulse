@@ -1,5 +1,13 @@
 # Incidents
 
+## [2026-04-19] — Glue 5.1 Python Shell boto3 vendoring breaks all pip installs
+- What happened: Both dbt_runner and enrichment_runner Glue jobs failed with pip dependency conflicts on every run
+- What I thought: pinning specific package versions (anthropic==0.28.0, dbt-core==1.7.14 etc.) would fix it
+- Root cause: Glue 5.1 Python Shell pre-installs awscli 1.23.5 + aiobotocore 2.2.0 which require botocore==1.25.5. Any modern package (dbt-core, anthropic, pydantic) pulls botocore 1.42.x → hard conflict. Version pinning cannot fix this — the conflict is in Glue's vendored environment, not the packages themselves.
+- Fix (planned Chat 10): add `glue_version = "4.0"` to both Python Shell jobs in glue.tf — Glue 4.0 uses a cleaner environment compatible with modern packages
+- Prevention: always set explicit glue_version on Python Shell jobs; never rely on Glue default (which picks latest = 5.1)
+- Lesson: Glue version controls the entire execution environment, not just the runtime. Default version = latest = most restrictive vendoring.
+
 ## [2026-04-18] — Himalayas API blocked by Cloudflare
 - What happened: Lambda invoked, got HTTP 403 Forbidden from Himalayas API
 - What I thought: Lambda IP block or User-Agent issue

@@ -218,6 +218,24 @@
 - source_apis array is kept in silver only, queryable via Athena SELECT on the silver external table
 - If array is needed in gold later, it can be stored as a JSON string via array_join() and parsed at query time
 
+## Cloudflare-first rule: test API from Lambda before writing ingestor (established Chat 11, confirmed Chat 12 research)
+- Himalayas (Chat 4) and RemoteOK (Chat 11) both wasted effort — code written before discovering Cloudflare block
+- Rule: curl-test from Lambda (or simulate datacenter IP) before writing any ingestor code
+- Confirmed blocked from Lambda IPs: Himalayas, RemoteOK, Jooble, Japan Dev/TokyoDev, DoraHacks
+- Confirmed working: Remotive, Arbeitnow, Greenhouse, Lever, HN Algolia, Devpost, Adzuna, USAJobs
+
+## Batch Lambda per ATS, not per company (established Chat 12 research)
+- Greenhouse/Lever/Ashby have thousands of company boards — one Lambda per company = 200+ Lambdas
+- Pattern: one Lambda per ATS that reads a slug list from S3 or DynamoDB config, iterates companies, paginates each board
+- Slug list stored as a JSON config file in S3, updatable without code deploy
+- Step Functions Parallel state gets one branch per ATS (not per company)
+
+## Cross-day dedup is a future chat (noted Chat 12)
+- Chat 12 dedup handles within-snapshot (same job from two sources on same day)
+- Cross-day: same job posting appears in silver on Day 1 and Day 7 = two rows (different snapshot_date)
+- Current grain: one row per posting per snapshot_date — intentional for now
+- Future: add a `canonical_job_id` that persists across snapshot_dates to track job posting lifetime
+
 ## Step Functions .sync integration for Glue (Chat 6)
 - Used arn:aws:states:::glue:startJobRun.sync (optimized/synchronous integration)
 - SF starts the Glue job, then internally polls glue:GetJobRun every ~20s until SUCCEEDED/FAILED

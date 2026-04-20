@@ -481,5 +481,5 @@ Added: `dedup_key STRING`, `source_apis ARRAY<STRING>`, `source_count INT`
 4. `dbt run --select fact_job_posting && dbt test --select fact_job_posting`
 
 ### Next
-Chat 13 — Great Expectations data quality layer on silver, OR add third data source (The Muse).
+Chat 13 — Add Adzuna as third data source (salary_min/salary_max fields, 12 countries, no Cloudflare). Fixes salary_fit scoring gap. Jumps volume to ~3,500 jobs/run.
 

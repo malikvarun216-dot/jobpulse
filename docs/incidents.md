@@ -177,6 +177,30 @@
 - Prevention: when joining across tables with different snapshot_date types (dbt CTAS produces date; external Parquet tables have string partition keys), always cast explicitly
 - Lesson: Athena JOIN conditions are type-strict. Mixed-type joins silently produce 0 matches rather than an error — always verify row counts when enrichment scores look wrong.
 
+## [2026-04-20] — RemoteOK blocked by Cloudflare from Lambda (same as Himalayas)
+- What happened: RemoteOK Lambda test returned 403 with `server: cloudflare` in response headers
+- What I thought: RemoteOK had a free public JSON endpoint with no bot protection (documented as such)
+- Root cause: RemoteOK uses Cloudflare bot protection that blocks AWS datacenter IPs. Lambda runs in AWS datacenters — IPs are well-known and fingerprinted by Cloudflare's bot detection. Same root cause as Himalayas (Chat 4).
+- Fix: pivoted to Arbeitnow (tested from Lambda first, confirmed 200 OK with real data)
+- Prevention: before writing a full ingestor, make a single test HTTP call from Lambda to confirm the API responds. Never trust "no key needed" docs without live verification from a Lambda IP.
+- Lesson: "no API key needed" ≠ "accessible from Lambda". Cloudflare blocks datacenter IPs regardless of API key requirements. Test from the actual execution environment first.
+
+## [2026-04-20] — EmptyDataError: Athena empty result is a 0-byte file, not a 0-row CSV
+- What happened: `enrichment_runner.py` crashed with `EmptyDataError: No columns to parse from file` when the enrichment query for `snapshot_date=2026-04-19` returned 0 rows
+- What I thought: an empty Athena query result would produce a CSV with just a header row
+- Root cause: Athena writes a completely empty file (0 bytes) when a query returns no rows — not even a header. `pd.read_csv()` raises `EmptyDataError` on a 0-byte file. The `if not jobs:` guard was never reached because the crash happened inside `_run_athena_query()`.
+- Fix: read raw bytes first: `content = obj["Body"].read()`. Check `if not content.strip(): return []` before calling `pd.read_csv()`.
+- Prevention: any code calling `pd.read_csv()` on Athena output must guard for 0-byte case. Athena "no results" ≠ empty result set — it's an empty file.
+- Lesson: Athena empty result = empty file, not empty table. Always check `content.strip()` before parsing Athena CSV output.
+
+## [2026-04-20] — Step Functions Redrive ran old Glue script (race with S3 upload)
+- What happened: uploaded fix to S3, then attempted Redrive of failed 2AM execution — still failed with same EmptyDataError
+- What I thought: Glue would fetch the updated script from S3 on the next run
+- Root cause: Redrive ran nearly simultaneously with the S3 upload. Glue fetched the script before the upload completed. The 2AM execution also had `snapshot_date=2026-04-19` — gold tables were since rebuilt for Apr 20, so any retry would return EMPTY anyway.
+- Fix: the Apr 20 8:50 AM manual run used the fixed script and succeeded (121 jobs enriched). Redrive for Apr 19 is now moot.
+- Prevention: after uploading a script fix to S3, confirm the object's LastModified timestamp before triggering a Redrive. For stale snapshot_dates, don't Redrive — just run the pipeline fresh for today's date.
+- Lesson: Glue fetches script from S3 at job start — race condition possible if upload and Redrive happen within seconds. Confirm S3 object is updated before retrying.
+
 ## [2026-04-18] — s3.tf trailing space in filename
 - What happened: terraform plan showed "No changes" despite 14 resources to create
 - What I thought: credentials issue or provider misconfiguration

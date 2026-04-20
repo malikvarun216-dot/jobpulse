@@ -110,9 +110,12 @@ def _run_athena_query(sql: str, database: str) -> list[dict]:
 
     path   = output_loc.replace("s3://", "")
     bucket, key = path.split("/", 1)
-    obj    = s3.get_object(Bucket=bucket, Key=key)
-    df     = pd.read_csv(io.BytesIO(obj["Body"].read()))
-    df     = df.where(pd.notnull(df), None)   # NaN → None for clean downstream handling
+    obj     = s3.get_object(Bucket=bucket, Key=key)
+    content = obj["Body"].read()
+    if not content.strip():          # Athena writes empty file when query returns 0 rows
+        return []
+    df  = pd.read_csv(io.BytesIO(content))
+    df  = df.where(pd.notnull(df), None)   # NaN → None for clean downstream handling
     return df.to_dict(orient="records")
 
 

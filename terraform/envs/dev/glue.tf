@@ -111,9 +111,9 @@ resource "aws_iam_role_policy_attachment" "glue_service" {
 # Upload PySpark script to silver bucket under glue-scripts/ prefix
 resource "aws_s3_object" "glue_script" {
   bucket = aws_s3_bucket.layers["silver"].id
-  key    = "glue-scripts/bronze_to_silver_remotive.py"
-  source = "${path.module}/../../../spark/jobs/bronze_to_silver_remotive.py"
-  etag   = filemd5("${path.module}/../../../spark/jobs/bronze_to_silver_remotive.py")
+  key    = "glue-scripts/bronze_to_silver.py"
+  source = "${path.module}/../../../spark/jobs/bronze_to_silver.py"
+  etag   = filemd5("${path.module}/../../../spark/jobs/bronze_to_silver.py")
 }
 
 resource "aws_glue_job" "bronze_to_silver" {
@@ -122,7 +122,7 @@ resource "aws_glue_job" "bronze_to_silver" {
 
   command {
     name            = "glueetl"
-    script_location = "s3://${aws_s3_bucket.layers["silver"].bucket}/glue-scripts/bronze_to_silver_remotive.py"
+    script_location = "s3://${aws_s3_bucket.layers["silver"].bucket}/glue-scripts/bronze_to_silver.py"
     python_version  = "3"
   }
 

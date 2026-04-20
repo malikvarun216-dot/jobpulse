@@ -18,10 +18,13 @@ resource "aws_iam_policy" "sfn_policy" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid      = "InvokeLambda"
-        Effect   = "Allow"
-        Action   = "lambda:InvokeFunction"
-        Resource = aws_lambda_function.remotive.arn
+        Sid    = "InvokeLambda"
+        Effect = "Allow"
+        Action = "lambda:InvokeFunction"
+        Resource = [
+          aws_lambda_function.remotive.arn,
+          aws_lambda_function.arbeitnow.arn,
+        ]
       },
       {
         Sid    = "StartGlueJobs"
@@ -49,30 +52,87 @@ resource "aws_sfn_state_machine" "ingest_pipeline" {
 
   definition = jsonencode({
     Comment = "JobPulse daily ingestion pipeline"
-    StartAt = "InvokeRemotive"
+    StartAt = "ParallelIngest"
     States = {
-      InvokeRemotive = {
-        Type       = "Task"
-        Resource   = aws_lambda_function.remotive.arn
-        ResultPath = "$.remotive"
-        Next       = "CheckRemotive"
-      }
-      CheckRemotive = {
-        Type = "Choice"
-        Choices = [{
-          Variable     = "$.remotive.status"
-          StringEquals = "OK"
-          Next         = "RunGlueJob"
+
+      # Both ingestors run concurrently. ResultPath=$.parallel preserves the
+      # original execution input so snapshot_date (if provided) stays at $.
+      # After the Parallel state, $.parallel[0] = remotive result, [1] = remoteok.
+      ParallelIngest = {
+        Type       = "Parallel"
+        ResultPath = "$.parallel"
+        Branches = [
+          {
+            StartAt = "InvokeRemotive"
+            States = {
+              InvokeRemotive = {
+                Type       = "Task"
+                Resource   = aws_lambda_function.remotive.arn
+                ResultPath = "$"
+                Next       = "CheckRemotive"
+              }
+              CheckRemotive = {
+                Type = "Choice"
+                Choices = [{
+                  Variable     = "$.status"
+                  StringEquals = "OK"
+                  Next         = "RemotiveDone"
+                }]
+                Default = "RemotiveFailure"
+              }
+              RemotiveDone = {
+                Type = "Succeed"
+              }
+              RemotiveFailure = {
+                Type  = "Fail"
+                Cause = "Remotive ingestor returned non-OK status"
+              }
+            }
+          },
+          {
+            StartAt = "InvokeArbeitnow"
+            States = {
+              InvokeArbeitnow = {
+                Type       = "Task"
+                Resource   = aws_lambda_function.arbeitnow.arn
+                ResultPath = "$"
+                Next       = "CheckArbeitnow"
+              }
+              CheckArbeitnow = {
+                Type = "Choice"
+                Choices = [{
+                  Variable     = "$.status"
+                  StringEquals = "OK"
+                  Next         = "ArbeitnowDone"
+                }]
+                Default = "ArbeitnowFailure"
+              }
+              ArbeitnowDone = {
+                Type = "Succeed"
+              }
+              ArbeitnowFailure = {
+                Type  = "Fail"
+                Cause = "Arbeitnow ingestor returned non-OK status"
+              }
+            }
+          }
+        ]
+        Next = "RunGlueJob"
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "PipelineFailure"
+          ResultPath  = "$.error"
         }]
-        Default = "PipelineFailure"
       }
+
       RunGlueJob = {
         Type     = "Task"
         Resource = "arn:aws:states:::glue:startJobRun.sync"
         Parameters = {
           JobName = aws_glue_job.bronze_to_silver.name
           Arguments = {
-            "--snapshot_date.$" = "$.remotive.snapshot_date"
+            # $.parallel[0] = remotive branch output (has snapshot_date field)
+            "--snapshot_date.$" = "$.parallel[0].snapshot_date"
           }
         }
         ResultPath = "$.glue"
@@ -83,6 +143,7 @@ resource "aws_sfn_state_machine" "ingest_pipeline" {
           ResultPath  = "$.error"
         }]
       }
+
       RunDbtGold = {
         Type     = "Task"
         Resource = "arn:aws:states:::glue:startJobRun.sync"
@@ -97,13 +158,14 @@ resource "aws_sfn_state_machine" "ingest_pipeline" {
           ResultPath  = "$.error"
         }]
       }
+
       RunEnrichment = {
         Type     = "Task"
         Resource = "arn:aws:states:::glue:startJobRun.sync"
         Parameters = {
           JobName = aws_glue_job.enrichment_runner.name
           Arguments = {
-            "--snapshot_date.$" = "$.remotive.snapshot_date"
+            "--snapshot_date.$" = "$.parallel[0].snapshot_date"
           }
         }
         ResultPath = "$.enrichment"
@@ -114,9 +176,11 @@ resource "aws_sfn_state_machine" "ingest_pipeline" {
           ResultPath  = "$.error"
         }]
       }
+
       PipelineComplete = {
         Type = "Succeed"
       }
+
       PipelineFailure = {
         Type  = "Fail"
         Cause = "Pipeline stage failed"

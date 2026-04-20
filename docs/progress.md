@@ -386,3 +386,61 @@ EventBridge (2AM IST daily)
 ### Next
 Chat 11 — Add second data source (Himalayas/Adzuna/RemoteOK), expand volume, or add deduplication logic.
 
+## Chat 11 — Add Arbeitnow as Second Data Source, Parallel Ingestion
+Date: 2026-04-20
+
+### Goal
+Add a second working data source to prove multi-source pipeline. Increase job volume. Wire Step Functions Parallel state so both ingestors run concurrently.
+
+### Built / Fixed
+
+**New ingestors:**
+- **ingestion/sources/arbeitnow/ingest_arbeitnow.py** — Lambda ingestor for Arbeitnow public API (no key). Paginates up to 10 pages (~1000 jobs). Maps: slug→job_id, url→apply_url, job_types[0]→job_type, created_at (unix ts)→publication_date, remote=True→"Remote" location. Same write_to_s3 / lambda_handler pattern as Remotive.
+- **ingestion/sources/remoteok/ingest_remoteok.py** — created but NON-FUNCTIONAL from Lambda: RemoteOK is behind Cloudflare bot protection (confirmed: `server: cloudflare` header, 403 from Lambda IPs). Kept for reference. Tested RemoteOK before writing full code — same Cloudflare issue as Himalayas.
+
+**Multi-source Spark job:**
+- **spark/jobs/bronze_to_silver.py** — replaces `bronze_to_silver_remotive.py`. Reads `source=*/` (all sources). COALESCE for cross-source field resolution: `location_raw` / `candidate_required_location`, `apply_url` / `url`, `job_id` / `id`. New `extract_role_family_from_tags()` for tag-based role inference (Arbeitnow has no category field). Extended COUNTRY_MAP with: remote, london→UK, istanbul→TR, san francisco→US, bangkok→TH.
+
+**Terraform:**
+- **terraform/envs/dev/lambda.tf** — added `aws_lambda_function.arbeitnow` (timeout=120, memory=256). Comment notes RemoteOK blocked by Cloudflare.
+- **terraform/envs/dev/step_functions.tf** — replaced sequential `InvokeRemotive` with `ParallelIngest` Parallel state: Branch 1 = Remotive, Branch 2 = Arbeitnow. Both run concurrently; pipeline waits for ALL branches. IAM policy updated: `lambda:InvokeFunction` now covers both ARNs. `RunGlueJob` and `RunEnrichment` read `$.parallel[0].snapshot_date` (Remotive branch output).
+- **terraform/envs/dev/glue.tf** — script_location updated from `bronze_to_silver_remotive.py` → `bronze_to_silver.py`.
+
+**Bug fix:**
+- **genai/enrichment_runner.py** — fixed `EmptyDataError: No columns to parse from file`: Athena writes an empty CSV file (not 0 rows) when query returns no results. `pd.read_csv()` crashes on it. Fix: read raw bytes, check `content.strip()`, return `[]` before calling read_csv. Uploaded directly to S3 mid-session.
+
+**Tests:**
+- **tests/test_ingest_arbeitnow.py** — pagination (2 pages), empty response, field mapping, remote location, unix timestamp, missing fields, dry_run, empty lambda handler.
+- **tests/test_ingest_remoteok.py** — legal notice skip, salary string construction (min+max / min-only / max-only / none), field mapping.
+- **spark/tests/test_bronze_to_silver.py** — updated: `TestExtractRoleFamilyFromTags`, `TestResolveRoleFamily`, multi-source PySpark test verifying both `remotive` and `remoteok` sources in output.
+
+### Incidents Hit (Chat 11)
+1. RemoteOK blocked by Cloudflare from Lambda (same as Himalayas) — discovered by testing API before writing code
+2. EmptyDataError in enrichment_runner: Athena empty result = empty CSV file, not 0-row CSV — pd.read_csv() crashes
+3. Redrive of failed 2AM run failed: ran before fix was uploaded to S3; old script used by Glue
+
+### Pipeline Flow (updated)
+```
+EventBridge (2AM IST daily)
+  → Step Functions (STANDARD)
+    → ParallelIngest (Parallel)
+        Branch 1: InvokeRemotive → CheckRemotive
+        Branch 2: InvokeArbeitnow → CheckArbeitnow
+    → RunGlueJob    (bronze→silver, reads source=*/, PySpark, Glue 4.0 Spark)
+    → RunDbtGold    (dbt star schema, Python Shell, Glue 4.0)
+    → RunEnrichment (skill extract + match score, Python Shell, Glue 4.0)
+    → PipelineComplete
+```
+
+### Verified
+- Arbeitnow Lambda invoked manually: status=OK, record_count=100 ✓
+- terraform apply: 1 added (arbeitnow Lambda), 3 changed (step_functions, glue, lambda policy) ✓
+- Step Functions execution: SUCCEEDED — Parallel state both branches green ✓
+- Bronze S3: source=remotive/ (21 jobs) + source=arbeitnow/ (100 jobs) ✓
+- Silver Athena: 121 rows, source column has both 'remotive' and 'arbeitnow' ✓
+- dbt gold: fact_job_posting 179 rows PASS ✓
+- Enrichment: 121 jobs scored, s3://jobpulse-gold-dev/enrichment-scores/snapshot_date=2026-04-20/ ✓
+
+### Next
+Chat 12 — Deduplication (same job across sources), add third data source, or Great Expectations data quality layer.
+

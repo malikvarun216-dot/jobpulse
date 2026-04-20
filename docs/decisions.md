@@ -175,6 +175,26 @@
 - Fix: added `aws_glue_catalog_table.enrichment_scores` to athena.tf; imported existing table with its catalog-id:database:table ID
 - Terraform now owns the full gold layer schema — reproducible from scratch
 
+## Arbeitnow over RemoteOK as second data source (Chat 11)
+- RemoteOK was first choice: free JSON endpoint, no key, strong remote-job coverage
+- Tested RemoteOK from Lambda before writing full code — received 403 with `server: cloudflare` header
+- Lambda runs on AWS datacenter IPs which Cloudflare's bot protection blocks (same root cause as Himalayas in Chat 4)
+- Arbeitnow: free public API, no Cloudflare, paginated, 100+ jobs/run — tested live first, confirmed working
+- Rule: always curl-test a new API source from Lambda (or simulate datacenter IP) before writing ingestor code
+
+## Step Functions Parallel state for concurrent ingestion (Chat 11)
+- Sequential `InvokeRemotive → InvokeArbeitnow` would add ~60s to pipeline wall time per new source
+- Parallel state runs all ingestor branches concurrently; total wait = slowest branch (not sum)
+- Output is an array: `$.parallel[0]` = Remotive result, `$.parallel[1]` = Arbeitnow result — downstream states reference `$.parallel[0].snapshot_date`
+- Parallel state fails entire execution if ANY branch fails (not partial success) — acceptable because both sources are required for a meaningful daily snapshot
+- Adding a third source = one new branch in the Parallel state, no structural change
+
+## COALESCE field resolution for multi-source Spark job (Chat 11)
+- Each source has different field names for the same concept (job_id: `slug` in Arbeitnow, `id` in RemoteOK; apply_url: `url` in some sources)
+- Normalization happens in the Lambda ingestor (each source maps to canonical schema before writing to bronze)
+- For fields that slip through (legacy sources or schema drift), Spark job uses COALESCE at read time
+- This keeps the Spark job source-agnostic: adding a new source only requires updating the Lambda ingestor, not the Spark job
+
 ## Step Functions .sync integration for Glue (Chat 6)
 - Used arn:aws:states:::glue:startJobRun.sync (optimized/synchronous integration)
 - SF starts the Glue job, then internally polls glue:GetJobRun every ~20s until SUCCEEDED/FAILED

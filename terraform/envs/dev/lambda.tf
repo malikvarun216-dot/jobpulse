@@ -46,3 +46,28 @@ resource "aws_lambda_function" "remotive" {
     }
   }
 }
+
+# Arbeitnow — free public API, no key, EU/remote focused, works from Lambda
+# NOTE: RemoteOK tested but blocked by Cloudflare bot protection from Lambda IPs (same as Himalayas)
+data "archive_file" "arbeitnow_zip" {
+  type        = "zip"
+  source_file = "${path.module}/../../../ingestion/sources/arbeitnow/ingest_arbeitnow.py"
+  output_path = "${path.module}/builds/ingest_arbeitnow.zip"
+}
+
+resource "aws_lambda_function" "arbeitnow" {
+  function_name    = "${var.project}-ingest-arbeitnow-${var.env}"
+  filename         = data.archive_file.arbeitnow_zip.output_path
+  source_code_hash = data.archive_file.arbeitnow_zip.output_base64sha256
+  handler          = "ingest_arbeitnow.lambda_handler"
+  runtime          = "python3.12"
+  role             = aws_iam_role.lambda_exec.arn
+  timeout          = 120
+  memory_size      = 256
+
+  environment {
+    variables = {
+      BRONZE_BUCKET = aws_s3_bucket.layers["bronze"].bucket
+    }
+  }
+}

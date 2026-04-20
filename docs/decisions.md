@@ -195,6 +195,29 @@
 - For fields that slip through (legacy sources or schema drift), Spark job uses COALESCE at read time
 - This keeps the Spark job source-agnostic: adding a new source only requires updating the Lambda ingestor, not the Spark job
 
+## Dedup key uses country (normalized) not location_raw (Chat 12)
+- location_raw is the raw string from the source ("Worldwide", "Remote", "anywhere" — all mean the same job)
+- country is the UDF-normalized output: all three map to "remote"
+- Using location_raw would give different hashes for the same logical job across sources
+- Using country ensures "Remotive says Worldwide" and "Arbeitnow says Remote" collapse to the same dedup group
+
+## row_number() over rank() for dedup canonical selection (Chat 12)
+- rank() can produce ties when both publication_date and ingested_at are identical — two rows get rank=1, dedup fails to reduce to one
+- row_number() always assigns exactly one rank=1 per partition, making canonical row selection deterministic
+- In the tie case the chosen row is arbitrary but consistent within a single Glue run
+
+## groupBy aggregate + join, not window collect_set, for source_apis (Chat 12)
+- Window-based collect_set replicates the full set into every row before the rank filter — O(n × group_size) memory
+- Doing groupBy on the original df (before rank filtering) then joining canonical rows to the aggregate is cheaper
+- groupBy runs once; the join is narrow (two string key columns: dedup_key + snapshot_date)
+- Parquet + Athena natively support ARRAY<STRING> columns (same SerDe as the existing tags column)
+
+## source_count in gold, not source_apis array (Chat 12)
+- Athena CTAS does not support ARRAY<STRING> as an output column type — the query fails at write time
+- source_count (integer) passes through CTAS cleanly; it is sufficient to know "2 sources confirmed this job"
+- source_apis array is kept in silver only, queryable via Athena SELECT on the silver external table
+- If array is needed in gold later, it can be stored as a JSON string via array_join() and parsed at query time
+
 ## Step Functions .sync integration for Glue (Chat 6)
 - Used arn:aws:states:::glue:startJobRun.sync (optimized/synchronous integration)
 - SF starts the Glue job, then internally polls glue:GetJobRun every ~20s until SUCCEEDED/FAILED

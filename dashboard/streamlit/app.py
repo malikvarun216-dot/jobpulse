@@ -21,6 +21,7 @@ SELECT
     f.publication_date,
     f.snapshot_date,
     f.source,
+    f.source_count,
     f.ingested_at,
     c.company_name,
     r.role_family,
@@ -63,6 +64,7 @@ def load_jobs() -> pd.DataFrame:
     df["role_family"] = df["role_family"].fillna("other")
     df["tags_parsed"] = df["tags"].apply(parse_tags)
     df["match_score"] = pd.to_numeric(df["match_score"], errors="coerce").fillna(-1)
+    df["source_count"] = pd.to_numeric(df["source_count"], errors="coerce").fillna(1).astype(int)
     return df
 
 
@@ -88,6 +90,7 @@ job_types = st.sidebar.multiselect(
     "Job Type", sorted(df_all["job_type"].dropna().unique())
 )
 min_score = st.sidebar.slider("Min Match Score", min_value=0, max_value=100, value=0, step=5)
+multi_source_only = st.sidebar.checkbox("2+ sources (higher confidence)", value=False)
 
 mask = pd.Series(True, index=df_all.index)
 if title_search:
@@ -100,6 +103,8 @@ if job_types:
     mask &= df_all["job_type"].isin(job_types)
 if min_score > 0:
     mask &= df_all["match_score"] >= min_score
+if multi_source_only:
+    mask &= df_all["source_count"] >= 2
 
 df = df_all[mask].copy()
 
@@ -121,7 +126,7 @@ st.divider()
 st.subheader("Job Listings")
 
 display_cols = ["match_score", "title", "company_name", "role_family", "country",
-                "job_type", "publication_date", "salary_raw", "apply_url"]
+                "job_type", "publication_date", "source_count", "salary_raw", "apply_url"]
 display_df = df[display_cols].copy()
 
 st.dataframe(
@@ -134,6 +139,7 @@ st.dataframe(
         "country": st.column_config.TextColumn("Country"),
         "job_type": st.column_config.TextColumn("Type"),
         "publication_date": st.column_config.DateColumn("Posted"),
+        "source_count": st.column_config.NumberColumn("Sources", format="%d"),
         "salary_raw": st.column_config.TextColumn("Salary"),
         "apply_url": st.column_config.LinkColumn("Apply", display_text="Apply →"),
     },

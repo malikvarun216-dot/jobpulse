@@ -19,6 +19,7 @@ from bronze_to_silver import (
     resolve_role_family,
     extract_state,
     build_silver_df,
+    deduplicate_silver_df,
 )
 
 # ---------------------------------------------------------------------------
@@ -381,3 +382,85 @@ def test_no_logo_columns(spark):
     silver = build_silver_df(raw_df)
     assert "company_logo" not in silver.columns
     assert "company_logo_url" not in silver.columns
+
+
+# ---------------------------------------------------------------------------
+# Deduplication tests — require PySpark
+# ---------------------------------------------------------------------------
+
+def _make_dedup_df(spark, rows):
+    """Create a minimal silver-shaped DataFrame for dedup testing."""
+    from datetime import date, datetime
+    from pyspark.sql.types import (
+        DateType, StringType, StructField, StructType, TimestampType,
+    )
+
+    schema = StructType([
+        StructField("job_id",           StringType(),  True),
+        StructField("source",           StringType(),  False),
+        StructField("snapshot_date",    DateType(),    False),
+        StructField("company_name",     StringType(),  True),
+        StructField("title",            StringType(),  True),
+        StructField("country",          StringType(),  False),
+        StructField("publication_date", DateType(),    True),
+        StructField("ingested_at",      TimestampType(), False),
+    ])
+    return spark.createDataFrame(rows, schema)
+
+
+@pytestmark_pyspark
+def test_cross_source_dedup(spark):
+    """Same job from two sources → deduplicated to 1 row; source_apis contains both."""
+    from datetime import date, datetime
+
+    rows = [
+        ("r1", "remotive",  date(2026, 4, 18), "Acme", "Data Engineer", "remote",
+         date(2026, 4, 17), datetime(2026, 4, 18, 10, 0, 0)),
+        ("a1", "arbeitnow", date(2026, 4, 18), "Acme", "Data Engineer", "remote",
+         date(2026, 4, 17), datetime(2026, 4, 18, 11, 0, 0)),
+    ]
+    df = _make_dedup_df(spark, rows)
+    result = deduplicate_silver_df(df)
+
+    assert result.count() == 1
+    row = result.collect()[0]
+    assert set(row["source_apis"]) == {"remotive", "arbeitnow"}
+    assert row["source_count"] == 2
+    # canonical row should be remotive (earlier ingested_at, same pub date)
+    assert row["source"] == "remotive"
+
+
+@pytestmark_pyspark
+def test_different_country_not_deduped(spark):
+    """Same company+title but different countries → two distinct rows, no dedup."""
+    from datetime import date, datetime
+
+    rows = [
+        ("r1", "remotive",  date(2026, 4, 18), "Acme", "Data Engineer", "US",
+         date(2026, 4, 17), datetime(2026, 4, 18, 10, 0, 0)),
+        ("a1", "arbeitnow", date(2026, 4, 18), "Acme", "Data Engineer", "UK",
+         date(2026, 4, 17), datetime(2026, 4, 18, 11, 0, 0)),
+    ]
+    df = _make_dedup_df(spark, rows)
+    result = deduplicate_silver_df(df)
+
+    assert result.count() == 2
+    assert result.filter(result.source_count == 1).count() == 2
+
+
+@pytestmark_pyspark
+def test_null_company_name_handled(spark):
+    """Null company_name is coalesced to '' in the hash — does not crash, key is non-null."""
+    from datetime import date, datetime
+
+    rows = [
+        ("r1", "remotive", date(2026, 4, 18), None, "Data Engineer", "remote",
+         date(2026, 4, 17), datetime(2026, 4, 18, 10, 0, 0)),
+    ]
+    df = _make_dedup_df(spark, rows)
+    result = deduplicate_silver_df(df)
+
+    assert result.count() == 1
+    row = result.collect()[0]
+    assert row["dedup_key"] is not None
+    assert row["source_count"] == 1

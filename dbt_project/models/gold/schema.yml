@@ -71,3 +71,7 @@ models:
           - relationships:
               to: ref('dim_country')
               field: country_key
+      - name: source_count
+        description: Number of distinct sources that listed this job on this snapshot_date. 1=single-source, 2+=cross-source confirmed.
+        tests:
+          - not_null

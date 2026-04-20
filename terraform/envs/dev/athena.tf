@@ -101,6 +101,18 @@ resource "aws_glue_catalog_table" "silver_jobs" {
       name = "ingested_at"
       type = "timestamp"
     }
+    columns {
+      name = "dedup_key"
+      type = "string"
+    }
+    columns {
+      name = "source_apis"
+      type = "array<string>"
+    }
+    columns {
+      name = "source_count"
+      type = "int"
+    }
   }
 
   # Hive partition keys — match the Spark job's partitionBy order

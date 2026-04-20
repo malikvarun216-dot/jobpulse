@@ -17,8 +17,8 @@ Idempotent:   dynamic partition overwrite — reruns only replace affected parti
 import sys
 
 try:
-    from pyspark.sql import functions as F
-    from pyspark.sql.types import ArrayType, StringType
+    from pyspark.sql import functions as F, Window
+    from pyspark.sql.types import ArrayType, IntegerType, StringType
 except ImportError:
     pass  # not needed for pure-function unit tests
 
@@ -207,6 +207,51 @@ def build_silver_df(raw_df):
 
 
 # ---------------------------------------------------------------------------
+# Deduplication
+# ---------------------------------------------------------------------------
+
+
+def deduplicate_silver_df(df):
+    """Exact dedup on (company_name, title, country) within each snapshot_date.
+
+    Keeps earliest publication_date row as canonical. Collects source_apis array
+    and source_count for all sources that listed this job on the same snapshot_date.
+    """
+    # Phase 1: dedup key — use normalized country (not location_raw) so
+    # "Worldwide" (Remotive) and "Remote" (Arbeitnow) both hash to "remote"
+    df = df.withColumn(
+        "dedup_key",
+        F.md5(F.concat_ws(
+            "|",
+            F.lower(F.trim(F.coalesce(F.col("company_name"), F.lit("")))),
+            F.lower(F.trim(F.coalesce(F.col("title"),        F.lit("")))),
+            F.lower(F.trim(F.coalesce(F.col("country"),      F.lit("")))),
+        ))
+    )
+
+    # Phase 2: rank within (dedup_key, snapshot_date); keep earliest pub date.
+    # row_number() guarantees exactly one rank-1 row even on ties.
+    window = Window.partitionBy("dedup_key", "snapshot_date").orderBy(
+        F.col("publication_date").asc_nulls_last(),
+        F.col("ingested_at").asc(),
+    )
+    canonical_df = (
+        df.withColumn("_rank", F.row_number().over(window))
+          .filter(F.col("_rank") == 1)
+          .drop("_rank")
+    )
+
+    # Phase 3: aggregate source_apis + source_count across ALL rows in the group
+    # (groupBy on original df, not canonical_df, to capture every source)
+    agg_df = df.groupBy("dedup_key", "snapshot_date").agg(
+        F.collect_set("source").alias("source_apis"),
+        F.count("*").cast(IntegerType()).alias("source_count"),
+    )
+
+    return canonical_df.join(agg_df, on=["dedup_key", "snapshot_date"], how="inner")
+
+
+# ---------------------------------------------------------------------------
 # Glue entry point
 # ---------------------------------------------------------------------------
 
@@ -245,6 +290,7 @@ def main():
     raw_df = spark.read.option("multiline", "true").json(input_path)
 
     silver_df = build_silver_df(raw_df)
+    silver_df = deduplicate_silver_df(silver_df)
 
     silver_df.write \
         .mode("overwrite") \

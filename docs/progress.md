@@ -444,3 +444,42 @@ EventBridge (2AM IST daily)
 ### Next
 Chat 12 — Deduplication (same job across sources), add third data source, or Great Expectations data quality layer.
 
+## Chat 12 — Silver Layer Deduplication
+Date: 2026-04-21
+
+### Goal
+Implement exact-match deduplication in the silver Spark layer so the same logical job appearing from multiple sources on the same snapshot_date collapses to one row, with cross-source metadata preserved.
+
+### Built
+
+**Deduplication:**
+- **spark/jobs/bronze_to_silver.py** — new `deduplicate_silver_df(df)` function. Three-phase: (1) compute `dedup_key = md5(lower(trim(company_name)) | lower(trim(title)) | lower(trim(country)))`, (2) `ROW_NUMBER() OVER (PARTITION BY dedup_key, snapshot_date ORDER BY publication_date ASC, ingested_at ASC)` to select canonical row, (3) `groupBy(dedup_key, snapshot_date).agg(collect_set(source), count(*))` to produce `source_apis[]` and `source_count`, joined back to canonical rows. Wired into `main()` between `build_silver_df` and the write.
+
+**Terraform:**
+- **terraform/envs/dev/athena.tf** — added `dedup_key STRING`, `source_apis ARRAY<STRING>`, `source_count INT` to `aws_glue_catalog_table.silver_jobs`. ParquetHiveSerDe already handles array<string> natively (same as existing `tags` column).
+
+**dbt gold layer:**
+- **dbt_project/models/gold/fact_job_posting.sql** — added `j.source_count`
+- **dbt_project/models/gold/schema.yml** — added `source_count` column with `not_null` test
+
+**Dashboard:**
+- **dashboard/streamlit/app.py** — `f.source_count` in FLAT_JOIN_SQL; `source_count` column in results table ("Sources"); "2+ sources (higher confidence)" sidebar checkbox filters to jobs confirmed by multiple sources
+
+**Tests:**
+- **spark/tests/test_bronze_to_silver.py** — 3 new PySpark tests: `test_cross_source_dedup` (same job from 2 sources → 1 row, source_apis={remotive,arbeitnow}, source_count=2), `test_different_country_not_deduped` (same company+title, US vs UK → 2 rows), `test_null_company_name_handled` (null company_name → no crash, dedup_key non-null)
+
+### Silver Schema (now 20 columns)
+Added: `dedup_key STRING`, `source_apis ARRAY<STRING>`, `source_count INT`
+
+### Verified
+- 60 unit tests pass, 9 PySpark tests skipped (PySpark not installed locally — expected) ✓
+
+### AWS Steps (post-copy)
+1. `terraform apply` — updates silver_jobs Glue catalog table (1 resource changed)
+2. Re-run `jobpulse-bronze-to-silver-dev` Glue job
+3. Athena check: `SELECT COUNT(*), SUM(source_count) FROM jobpulse_silver_dev.silver_jobs WHERE snapshot_date = DATE '2026-04-21'` — SUM > COUNT means dedup fired
+4. `dbt run --select fact_job_posting && dbt test --select fact_job_posting`
+
+### Next
+Chat 13 — Great Expectations data quality layer on silver, OR add third data source (The Muse).
+

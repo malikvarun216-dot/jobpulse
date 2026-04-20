@@ -35,6 +35,7 @@ select
     j.tags,
     cast(null as double) as match_score,
     j.source,
+    j.source_count,
     j.ingested_at
 from jobs j
 left join companies c

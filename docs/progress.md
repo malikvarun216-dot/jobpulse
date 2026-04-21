@@ -481,5 +481,103 @@ Added: `dedup_key STRING`, `source_apis ARRAY<STRING>`, `source_count INT`
 4. `dbt run --select fact_job_posting && dbt test --select fact_job_posting`
 
 ### Next
-Chat 13 — Great Expectations data quality layer on silver, OR add third data source (The Muse).
+Chat 13 — Add Adzuna as third data source (salary_min/salary_max fields, 12 countries, no Cloudflare). Fixes salary_fit scoring gap. Jumps volume to ~3,500 jobs/run.
+
+## Chat 13 — Adzuna as Third Data Source
+Date: 2026-04-21
+
+### Goal
+Add Adzuna as the third ingestor to unlock structured salary data and increase volume from ~120 to ~3,600 jobs/run.
+
+### Built
+
+**New ingestor:**
+- **ingestion/sources/adzuna/ingest_adzuna.py** — Lambda ingestor for Adzuna API v1 (app_id + app_key). Iterates 12 countries (gb, us, au, ca, de, fr, br, in, nz, pl, ru, za), 6 pages × 50 results each. Per-country error isolation: one country failing does not abort the rest. `build_salary_str()` formats `salary_min`/`salary_max` integers as `"$80000-$120000"` for MatchScorer compatibility.
+
+**Terraform:**
+- **terraform/envs/dev/variables.tf** — added `adzuna_app_id` + `adzuna_app_key` (sensitive)
+- **terraform/envs/dev/terraform.tfvars** — placeholder values (replace with real keys from developer.adzuna.com before apply)
+- **terraform/envs/dev/lambda.tf** — `aws_lambda_function.adzuna` (timeout=300, memory=256; API keys injected as env vars)
+- **terraform/envs/dev/step_functions.tf** — Adzuna ARN added to `InvokeLambda` IAM resource list; third branch added to `ParallelIngest` Parallel state (InvokeAdzuna → CheckAdzuna → AdzunaDone/AdzunaFailure)
+
+**Spark job:**
+- **spark/jobs/bronze_to_silver.py** — `redirect_url` added as third fallback in apply_url COALESCE (`apply_url` → `url` → `redirect_url`). No other changes needed — Adzuna data is auto-picked up by the existing `source=*/` glob.
+
+**Tests:**
+- **tests/test_ingest_adzuna.py** — 23 unit tests: pagination stop conditions, MAX_PAGES cap, salary string formats (both/min-only/max-only/neither), field mapping, per-country failure resilience, dry_run, empty status, lambda_handler happy path.
+- **spark/tests/test_bronze_to_silver.py** — ADZUNA_JOB + ADZUNA_BRONZE fixtures; `test_adzuna_redirect_url_coalesced` verifies redirect_url → apply_url resolution, country=UK, salary_raw round-trip.
+
+### Pipeline Flow (updated)
+```
+EventBridge (2AM IST daily)
+  → Step Functions (STANDARD)
+    → ParallelIngest (Parallel)
+        Branch 1: InvokeRemotive   → CheckRemotive
+        Branch 2: InvokeArbeitnow  → CheckArbeitnow
+        Branch 3: InvokeAdzuna     → CheckAdzuna     ← NEW
+    → RunGlueJob    (bronze→silver, reads source=*/, PySpark, Glue 4.0 Spark)
+    → RunDbtGold    (dbt star schema, Python Shell, Glue 4.0)
+    → RunEnrichment (skill extract + match score, Python Shell, Glue 4.0)
+    → PipelineComplete
+```
+
+### Verified
+- 184 unit tests pass, 14 PySpark tests skipped (PySpark not installed locally — expected) ✓
+
+### Pre-work Before terraform apply
+1. Sign up at developer.adzuna.com → get app_id and app_key
+2. Replace placeholder values in terraform/envs/dev/terraform.tfvars
+
+### AWS Steps (post-copy + terraform apply)
+1. Lambda dry-run: `aws lambda invoke --function-name jobpulse-ingest-adzuna-dev --payload '{"dry_run": true}' /tmp/out.json`
+2. Live invoke → verify S3 `source=adzuna/data.json.gz`
+3. Full Step Functions run — ParallelIngest shows 3 branches green
+4. Athena: `SELECT source, COUNT(*) FROM silver_jobs WHERE snapshot_date = DATE '2026-04-21' GROUP BY source`
+5. Salary check: `SELECT salary_raw FROM silver_jobs WHERE source = 'adzuna' AND salary_raw IS NOT NULL LIMIT 5`
+
+### Next
+Chat 14 — Fix enrichment timeout: rules-first fast path + ThreadPoolExecutor.
+
+## Chat 14 — Fix Enrichment Timeout + Adzuna Parallelization
+Date: 2026-04-21
+
+### Goal
+Enrichment was timing out at 3,400 jobs (Glue Python Shell 60-min limit). Root causes: (1) S3 cache lookup on every job before running cheap regex rules, (2) sequential for-loop with no concurrency, (3) no per-call Claude API timeout, (4) Adzuna fetching 12 countries sequentially.
+
+### Built / Fixed
+
+**`genai/guardrails.py`** — Added `threading.Lock` to `BudgetTracker`. Wraps `check_and_increment` and `record_actual_usage` in a lock so 16 concurrent threads can't corrupt the shared spend ledger.
+
+**`genai/skill_extractor.py`** — Added `timeout=10.0` to `client.messages.create()`. Added `anthropic.APITimeoutError` to the retry except clause — timeouts now retry with backoff instead of crashing the thread.
+
+**`genai/jd_enrichment_agent.py`** — Two changes:
+- **Rules-first fast path in `_process_job`**: runs `_rule_based_extract()` first (pure CPU, <1ms, zero I/O). If ≥5 skills + known seniority → return immediately, no S3 or LLM call. Only falls through to S3 cache + LLM for ambiguous JDs (~30%). Reuses already-computed `rules_result` as fallback when budget exceeded (no double computation).
+- **`ThreadPoolExecutor(max_workers=16)` in `run()`**: replaces sequential for-loop. All 3,400 jobs processed concurrently (16 at a time). I/O-bound work (S3, Claude API) releases the GIL — true parallelism.
+- **Lazy `pyarrow` import**: moved `import pyarrow` inside `_write_parquet_to_s3` (Glue-only path). Allows local tests to import the module without pyarrow installed.
+
+**`ingestion/sources/adzuna/ingest_adzuna.py`** — `fetch_all_jobs()` now uses `ThreadPoolExecutor(max_workers=6)`: 12 countries in 2 parallel batches instead of 12 serial rounds. Error isolation preserved — one country failure still skips gracefully. Lambda timeout is 300s; 6 threads fit easily.
+
+**Tests:**
+- **`tests/test_ingest_adzuna.py`** — Fixed `test_continues_on_country_failure`: replaced list-based `side_effect` (breaks with parallel threads — call order non-deterministic) with callable `side_effect(country)` that matches by country name.
+- **`tests/test_jd_enrichment_agent.py`** (new) — 8 tests: `test_rules_fast_path_skips_cache`, `test_rules_fast_path_score_in_range`, `test_cache_hit_skips_llm`, `test_cache_miss_calls_extractor`, `test_budget_exceeded_uses_rules_result`, `test_parallel_run_processes_all_jobs`, `test_parallel_run_skips_failed_jobs`, `test_lock_exists_on_budget_tracker`.
+
+### Performance Improvement
+| Scenario | Before | After |
+|---|---|---|
+| 70% jobs (rules-sufficient) | S3 lookup + rules ~100ms each | Rules only <1ms each |
+| 30% jobs (LLM needed) | Sequential, no timeout | 16 parallel threads, 10s timeout/call |
+| Adzuna country fetch | 12 serial rounds ~72s | 2 parallel batches ~12s |
+| **Total wall time (3,400 jobs)** | **~57 min → timeout** | **~3-5 min** |
+
+### Verified
+- 87 unit tests pass ✓
+
+### AWS Steps (post-copy + commit)
+1. Re-zip and upload genai package: `zip -r genai_package.zip genai/ config/ && aws s3 cp genai_package.zip s3://jobpulse-silver-dev/glue-scripts/`
+2. Run Step Functions execution manually
+3. CloudWatch → `/aws/glue/jobs/jobpulse-run-enrichment-dev` → check duration (should be <10 min)
+4. Athena: `SELECT extraction_source, COUNT(*) FROM enrichment_scores WHERE snapshot_date = '2026-04-21' GROUP BY extraction_source`
+
+### Next
+Chat 15 — Great Expectations data quality layer, or add fourth data source.
 

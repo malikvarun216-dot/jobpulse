@@ -464,3 +464,43 @@ def test_null_company_name_handled(spark):
     row = result.collect()[0]
     assert row["dedup_key"] is not None
     assert row["source_count"] == 1
+
+
+# --- Adzuna fixture ---
+
+ADZUNA_JOB = {
+    "id": "adzuna-gb-99001",
+    "title": "Data Engineer",
+    "company_name": "Gamma Ltd",
+    "redirect_url": "https://www.adzuna.co.uk/land/vacancy/99001",
+    "description": "<p>Adzuna job description...</p>",
+    "tags": [],
+    "location_raw": "London, UK",
+    "salary": "$70000-$90000",
+    "job_type": "full-time",
+    "category": "IT Jobs",
+    "publication_date": "2026-04-20",
+}
+
+ADZUNA_BRONZE = {
+    "snapshot_date": "2026-04-20",
+    "source": "adzuna",
+    "record_count": 1,
+    "ingested_at": "2026-04-20T10:30:00+00:00",
+    "jobs": [ADZUNA_JOB],
+}
+
+
+@pytestmark_pyspark
+def test_adzuna_redirect_url_coalesced(spark):
+    """Adzuna jobs use redirect_url; COALESCE must resolve it to apply_url in silver."""
+    raw_df = spark.read.option("multiline", "true").json(
+        spark.sparkContext.parallelize([json.dumps(ADZUNA_BRONZE)])
+    )
+    silver = build_silver_df(raw_df)
+    row = silver.collect()[0]
+
+    assert row["apply_url"] == "https://www.adzuna.co.uk/land/vacancy/99001"
+    assert row["source"] == "adzuna"
+    assert row["country"] == "UK"
+    assert row["salary_raw"] == "$70000-$90000"

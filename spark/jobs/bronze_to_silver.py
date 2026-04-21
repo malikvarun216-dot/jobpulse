@@ -147,11 +147,11 @@ def resolve_role_family(category: str, tags: list) -> str:
 def build_silver_df(raw_df):
     """Transform multi-source bronze DataFrame (one row per file) to silver (one row per job).
 
-    Field resolution (COALESCE handles both Remotive native schema and RemoteOK canonical schema):
-      job_id      : job.job_id (remoteok canonical) ?? job.id (remotive native)
-      apply_url   : job.apply_url (remoteok) ?? job.url (remotive)
-      location_raw: job.location_raw (remoteok) ?? job.candidate_required_location (remotive)
-      category    : job.category (remotive) ?? null (remoteok has no category → role_family from tags)
+    Field resolution (COALESCE handles Remotive, RemoteOK canonical, and Adzuna schemas):
+      job_id      : job.job_id (remoteok canonical) ?? job.id (remotive/adzuna native)
+      apply_url   : job.apply_url (canonical) ?? job.url (remotive) ?? job.redirect_url (adzuna)
+      location_raw: job.location_raw (canonical) ?? job.candidate_required_location (remotive)
+      category    : job.category (remotive/adzuna) ?? null (remoteok → role_family from tags)
     """
     country_udf = F.udf(extract_country, StringType())
     state_udf = F.udf(extract_state, StringType())
@@ -170,7 +170,7 @@ def build_silver_df(raw_df):
         F.col("job.candidate_required_location"),
     )
 
-    # Resolve apply_url: remoteok writes apply_url; remotive writes url
+    # Resolve apply_url: arbeitnow/adzuna normalize to apply_url; remotive writes url
     apply_url_col = F.coalesce(
         F.col("job.apply_url"),
         F.col("job.url"),

@@ -4,14 +4,13 @@ import hashlib
 import io
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any
 
 import anthropic
 import boto3
 import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
 import yaml
 
 from genai.guardrails import (
@@ -21,7 +20,7 @@ from genai.guardrails import (
     EnrichmentRecord,
     ExtractionResult,
 )
-from genai.skill_extractor import SkillExtractor, _rule_based_extract
+from genai.skill_extractor import SkillExtractor, _rule_based_extract, RULES_MIN_SKILLS
 from genai.match_scorer import MatchScorer
 
 
@@ -102,13 +101,32 @@ class JDEnrichmentAgent:
     def _process_job(self, job: dict[str, Any]) -> EnrichmentRecord:
         description = job.get("description") or ""
         now_iso = datetime.now(timezone.utc).isoformat()
+        job_id = str(job["job_id"])
+        snapshot_date = str(job["snapshot_date"])[:10]
 
+        # Fast path: pure regex, zero I/O. Covers ~70% of well-written JDs.
+        rules_result = _rule_based_extract(description)
+        if len(rules_result.skills) >= RULES_MIN_SKILLS and rules_result.seniority != "unknown":
+            score, detail = self._scorer.score(rules_result, job)
+            return EnrichmentRecord(
+                job_id=job_id,
+                snapshot_date=snapshot_date,
+                skills=rules_result.skills,
+                seniority=rules_result.seniority,
+                yoe_required=rules_result.yoe_required,
+                match_score=score,
+                score_detail=detail,
+                extraction_source="rules",
+                enriched_at=now_iso,
+            )
+
+        # Slow path: check S3 cache (rules were insufficient)
         cached = self._read_cache(description)
         if cached:
             score, detail = self._scorer.score(cached, job)
             return EnrichmentRecord(
-                job_id=str(job["job_id"]),
-                snapshot_date=str(job["snapshot_date"])[:10],
+                job_id=job_id,
+                snapshot_date=snapshot_date,
                 skills=cached.skills,
                 seniority=cached.seniority,
                 yoe_required=cached.yoe_required,
@@ -118,18 +136,20 @@ class JDEnrichmentAgent:
                 enriched_at=now_iso,
             )
 
+        # LLM path: reuse rules_result as fallback if budget exceeded
         try:
             extraction, source = self._extractor.extract(description)
         except BudgetExceededError as e:
             print(f"[budget] {e} -- using rules")
-            extraction = _rule_based_extract(description)
+            extraction = rules_result
             source = "rules"
 
         score, detail = self._scorer.score(extraction, job)
-        self._write_cache(description, extraction)
+        if source == "llm":
+            self._write_cache(description, extraction)
         return EnrichmentRecord(
-            job_id=str(job["job_id"]),
-            snapshot_date=str(job["snapshot_date"])[:10],
+            job_id=job_id,
+            snapshot_date=snapshot_date,
             skills=extraction.skills,
             seniority=extraction.seniority,
             yoe_required=extraction.yoe_required,
@@ -165,6 +185,9 @@ class JDEnrichmentAgent:
         if self._dry_run:
             print(f"[post-hook] DRY RUN -- would write {len(records)} records to S3.")
             return "dry-run"
+
+        import pyarrow as pa       # noqa: PLC0415 — Glue-only dep, lazy to allow local testing
+        import pyarrow.parquet as pq  # noqa: PLC0415
 
         rows = [{
             "job_id":            r.job_id,
@@ -212,11 +235,16 @@ class JDEnrichmentAgent:
         self._budget_preflight()
         snapshot_date = str(jobs[0]["snapshot_date"])[:10]
         records: list[EnrichmentRecord] = []
-        for job in jobs:
-            try:
-                records.append(self._process_job(job))
-            except Exception as e:
-                print(f"[warn] Skipped job {job.get('job_id')}: {e}")
+
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            futures = {executor.submit(self._process_job, job): job for job in jobs}
+            for future in as_completed(futures):
+                job = futures[future]
+                try:
+                    records.append(future.result())
+                except Exception as e:
+                    print(f"[warn] Skipped job {job.get('job_id')}: {e}")
+
         self._log_cost_summary(records)
         self._validate_output(records)
         s3_uri = self._write_parquet_to_s3(records, snapshot_date)

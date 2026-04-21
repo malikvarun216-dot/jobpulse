@@ -24,6 +24,7 @@ resource "aws_iam_policy" "sfn_policy" {
         Resource = [
           aws_lambda_function.remotive.arn,
           aws_lambda_function.arbeitnow.arn,
+          aws_lambda_function.adzuna.arn,
         ]
       },
       {
@@ -113,6 +114,33 @@ resource "aws_sfn_state_machine" "ingest_pipeline" {
               ArbeitnowFailure = {
                 Type  = "Fail"
                 Cause = "Arbeitnow ingestor returned non-OK status"
+              }
+            }
+          },
+          {
+            StartAt = "InvokeAdzuna"
+            States = {
+              InvokeAdzuna = {
+                Type       = "Task"
+                Resource   = aws_lambda_function.adzuna.arn
+                ResultPath = "$"
+                Next       = "CheckAdzuna"
+              }
+              CheckAdzuna = {
+                Type = "Choice"
+                Choices = [{
+                  Variable     = "$.status"
+                  StringEquals = "OK"
+                  Next         = "AdzunaDone"
+                }]
+                Default = "AdzunaFailure"
+              }
+              AdzunaDone = {
+                Type = "Succeed"
+              }
+              AdzunaFailure = {
+                Type  = "Fail"
+                Cause = "Adzuna ingestor returned non-OK status"
               }
             }
           }

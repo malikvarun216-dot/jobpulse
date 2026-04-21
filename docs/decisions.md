@@ -215,8 +215,56 @@
 ## source_count in gold, not source_apis array (Chat 12)
 - Athena CTAS does not support ARRAY<STRING> as an output column type — the query fails at write time
 - source_count (integer) passes through CTAS cleanly; it is sufficient to know "2 sources confirmed this job"
+
+## Adzuna as third data source (Chat 13)
+- Adzuna was chosen over other candidates because it returns `salary_min` and `salary_max` as integers — the only structured salary data among all tested sources
+- Remotive has salary as an unstructured text field ("$120k-$150k"), Arbeitnow has no salary at all
+- Structured salary makes the salary_fit scoring component meaningful for ~12 countries of data
+- API requires a free-tier key (developer.adzuna.com) stored as Lambda env vars via Terraform variables
+
+## Per-country error isolation in Adzuna ingestor (Chat 13)
+- Adzuna covers 12 countries in one Lambda invocation — a single country's API failure should not abort the whole run
+- `fetch_all_jobs()` wraps each country's `fetch_country_jobs()` call in try/except, logs the error, and continues
+- Partial data (e.g. 11/12 countries) is still useful; a full abort produces nothing
+- Trade-off: a silently failed country is hard to detect without monitoring — CloudWatch logs show "Skipping country=X" for investigation
+
+## salary field name in bronze: "salary" not "salary_raw" (Chat 13)
+- All ingestors write the key `salary` in their canonical bronze JSON (Remotive, Arbeitnow, Adzuna all use `salary`)
+- The Spark job reads `job.salary` and aliases it to `salary_raw` in the silver schema
+- Adzuna formats it as `"$80000-$120000"` — same parseable pattern as Remotive's text salary
+- The MatchScorer's existing `_parse_salary` regex extracts the numbers correctly without any changes
+
+## redirect_url resolved via COALESCE for Adzuna apply links (Chat 13)
+- Adzuna's API uses `redirect_url` for the job application link (not `apply_url` or `url`)
+- Added `F.col("job.redirect_url")` as the third fallback in the apply_url COALESCE in `build_silver_df()`
+- Order: `job.apply_url` (canonical) → `job.url` (remotive/arbeitnow) → `job.redirect_url` (adzuna)
+- No other sources use `redirect_url`, so the COALESCE is a no-op for existing sources
+
+## Lambda credentials via env vars, not Secrets Manager (Chat 13)
+- Adzuna app_id + app_key passed as Lambda env vars (ADZUNA_APP_ID, ADZUNA_APP_KEY) set in Terraform
+- Secrets Manager is used for the Anthropic key (in Glue) because Glue has no native env var injection
+- Lambda supports env vars natively; KMS encrypts them at rest automatically (no extra config)
+- Trade-off: env vars are readable via `lambda:GetFunctionConfiguration` — acceptable for a free-tier API key, not for payment credentials or DB passwords
 - source_apis array is kept in silver only, queryable via Athena SELECT on the silver external table
 - If array is needed in gold later, it can be stored as a JSON string via array_join() and parsed at query time
+
+## Cloudflare-first rule: test API from Lambda before writing ingestor (established Chat 11, confirmed Chat 12 research)
+- Himalayas (Chat 4) and RemoteOK (Chat 11) both wasted effort — code written before discovering Cloudflare block
+- Rule: curl-test from Lambda (or simulate datacenter IP) before writing any ingestor code
+- Confirmed blocked from Lambda IPs: Himalayas, RemoteOK, Jooble, Japan Dev/TokyoDev, DoraHacks
+- Confirmed working: Remotive, Arbeitnow, Greenhouse, Lever, HN Algolia, Devpost, Adzuna, USAJobs
+
+## Batch Lambda per ATS, not per company (established Chat 12 research)
+- Greenhouse/Lever/Ashby have thousands of company boards — one Lambda per company = 200+ Lambdas
+- Pattern: one Lambda per ATS that reads a slug list from S3 or DynamoDB config, iterates companies, paginates each board
+- Slug list stored as a JSON config file in S3, updatable without code deploy
+- Step Functions Parallel state gets one branch per ATS (not per company)
+
+## Cross-day dedup is a future chat (noted Chat 12)
+- Chat 12 dedup handles within-snapshot (same job from two sources on same day)
+- Cross-day: same job posting appears in silver on Day 1 and Day 7 = two rows (different snapshot_date)
+- Current grain: one row per posting per snapshot_date — intentional for now
+- Future: add a `canonical_job_id` that persists across snapshot_dates to track job posting lifetime
 
 ## Step Functions .sync integration for Glue (Chat 6)
 - Used arn:aws:states:::glue:startJobRun.sync (optimized/synchronous integration)

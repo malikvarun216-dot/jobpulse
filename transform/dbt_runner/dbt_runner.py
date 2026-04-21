@@ -110,26 +110,33 @@ def repair_silver_partitions():
 
 
 def run_dbt():
-    from dbt.cli.main import dbtRunner, dbtRunnerResult
-
-    runner = dbtRunner()
+    import subprocess
 
     base_args = [
         "--project-dir", DBT_PROJECT_DIR,
         "--profiles-dir", PROFILES_DIR,
     ]
 
-    print("Running: dbt deps")
-    res: dbtRunnerResult = runner.invoke(["deps"] + base_args)
-    if not res.success:
-        raise RuntimeError("dbt deps failed")
+    print(f"dbt project dir: {DBT_PROJECT_DIR} (exists: {os.path.exists(DBT_PROJECT_DIR)})")
+    print(f"profiles dir: {PROFILES_DIR} (exists: {os.path.exists(PROFILES_DIR)})")
 
-    print("Running: dbt run")
-    res = runner.invoke(["run"] + base_args)
-    if not res.success:
-        raise RuntimeError("dbt run failed")
+    # Check dbt installation
+    result = subprocess.run(["which", "dbt"], capture_output=True, text=True)
+    print(f"dbt location: {result.stdout.strip()}")
+    result = subprocess.run(["dbt", "--version"], capture_output=True, text=True)
+    print(f"dbt version: {result.stdout}")
 
-    print("dbt run complete.")
+    print("\n=== Running: dbt deps ===")
+    result = subprocess.run(["dbt", "deps"] + base_args, env=os.environ.copy())
+    if result.returncode != 0:
+        raise RuntimeError(f"dbt deps failed with code {result.returncode}")
+
+    print("\n=== Running: dbt run ===")
+    result = subprocess.run(["dbt", "run"] + base_args, env=os.environ.copy())
+    if result.returncode != 0:
+        raise RuntimeError(f"dbt run failed with code {result.returncode}")
+
+    print("\n=== dbt run complete ===")
 
 
 # ---------------------------------------------------------------------------

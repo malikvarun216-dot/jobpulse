@@ -20,7 +20,9 @@ cleaned as (
         tags,
         publication_date,
         description,
-        ingested_at
+        ingested_at,
+        source_apis,
+        source_count
     from source
     where job_id is not null
       and trim(job_id) != ''

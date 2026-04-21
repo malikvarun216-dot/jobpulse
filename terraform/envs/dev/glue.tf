@@ -300,7 +300,7 @@ resource "aws_glue_job" "enrichment_runner" {
 
   glue_version = "4.0"
   max_capacity = 0.0625
-  timeout      = 20
+  timeout      = 60
 
   tags = {
     project = var.project

@@ -47,6 +47,33 @@ resource "aws_lambda_function" "remotive" {
   }
 }
 
+# Adzuna — paid free-tier API (app_id + app_key from developer.adzuna.com)
+# Covers 12 countries; salary_min/salary_max fields improve match scoring. No Cloudflare on api.adzuna.com.
+data "archive_file" "adzuna_zip" {
+  type        = "zip"
+  source_file = "${path.module}/../../../ingestion/sources/adzuna/ingest_adzuna.py"
+  output_path = "${path.module}/builds/ingest_adzuna.zip"
+}
+
+resource "aws_lambda_function" "adzuna" {
+  function_name    = "${var.project}-ingest-adzuna-${var.env}"
+  filename         = data.archive_file.adzuna_zip.output_path
+  source_code_hash = data.archive_file.adzuna_zip.output_base64sha256
+  handler          = "ingest_adzuna.lambda_handler"
+  runtime          = "python3.12"
+  role             = aws_iam_role.lambda_exec.arn
+  timeout          = 300  # 12 countries × 6 pages × ~0.5s/req ≈ 36s; 300s is safe headroom
+  memory_size      = 256
+
+  environment {
+    variables = {
+      BRONZE_BUCKET  = aws_s3_bucket.layers["bronze"].bucket
+      ADZUNA_APP_ID  = var.adzuna_app_id
+      ADZUNA_APP_KEY = var.adzuna_app_key
+    }
+  }
+}
+
 # Arbeitnow — free public API, no key, EU/remote focused, works from Lambda
 # NOTE: RemoteOK tested but blocked by Cloudflare bot protection from Lambda IPs (same as Himalayas)
 data "archive_file" "arbeitnow_zip" {

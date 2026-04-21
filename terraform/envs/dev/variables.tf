@@ -19,3 +19,14 @@ variable "alert_email" {
   type        = string
 }
 
+variable "adzuna_app_id" {
+  description = "Adzuna API application ID (from developer.adzuna.com)"
+  type        = string
+}
+
+variable "adzuna_app_key" {
+  description = "Adzuna API application key (from developer.adzuna.com)"
+  type        = string
+  sensitive   = true
+}
+

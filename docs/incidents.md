@@ -1,5 +1,29 @@
 # Incidents
 
+## [2026-04-21] — Enrichment silently hangs at scale (3,400 jobs → 60-min TIMEOUT)
+- What happened: enrichment Glue job ran 60 min with zero log output after "Starting script execution", then hit TIMEOUT. Had worked fine at 121 jobs (Remotive + Arbeitnow only).
+- What I thought: Claude API weekly budget exhausted or API key missing from Glue env
+- Root cause: pure scale — sequential Claude API batches for 3,421 jobs (3,300 Adzuna added) exceed 60-min limit. No per-call timeout means one slow API response hangs the entire job indefinitely.
+- Fix (partial): bumped Glue timeout 20→60 min. Real fix pending: per-call timeout + parallel batch processing.
+- Prevention: set `timeout=30` on every Claude API call; wrap each batch in try/except so one failure skips the batch, not kills the job.
+- Lesson: always test at production volume before calling a job "working". 121 jobs ≠ 3,400 jobs.
+
+## [2026-04-21] — dbt COLUMN_NOT_FOUND: source_count missing from stg_silver_jobs
+- What happened: dbt run failed with `COLUMN_NOT_FOUND: Column 'j.source_count' cannot be resolved` on `fact_job_posting` model. dim_* models all passed (PASS=4), only fact failed.
+- What I thought: external table schema was missing source_count — checked athena.tf which correctly defined it
+- Root cause: `stg_silver_jobs.sql` had an explicit column list that excluded `source_count` and `source_apis` (columns added by `deduplicate_silver_df()` in the Glue job). `fact_job_posting` referenced `j.source_count` via the staging view — column was filtered out before it got there.
+- Fix: added `source_count` and `source_apis` to the explicit select in `stg_silver_jobs.sql`.
+- Prevention: when adding new columns to the Spark output, always check downstream dbt staging models for explicit column lists — `select *` passes everything through, explicit lists silently drop new columns.
+- Lesson: explicit column lists in staging models are a silent filter. Either use `select *` or maintain the list whenever the upstream schema changes.
+
+## [2026-04-21] — dbt_runner.py swallowed all error output
+- What happened: dbt Glue job showed generic "RuntimeError: dbt run failed" with no detail. Could not diagnose the actual dbt error from Glue API or CloudWatch.
+- What I thought: log group didn't exist; tried `/aws-glue/python-jobs` which wasn't accessible
+- Root cause: `dbtRunner().invoke()` captures all dbt output internally — nothing streams to stdout/CloudWatch. Also uploaded dbt_project.zip to bronze bucket but dbt_runner downloads from silver bucket (`s3://{silver_bucket}/dbt-project/dbt_project.zip`).
+- Fix: switched to `subprocess.run(["dbt", "run"])` without `capture_output=True` — stdout/stderr stream directly to CloudWatch. Fixed zip upload to silver bucket.
+- Prevention: never use `dbtRunner().invoke()` in Glue — it swallows logs. Always use subprocess so output appears in CloudWatch. Verify S3 path matches what the script actually reads.
+- Lesson: Glue Python Shell log group is `/aws-glue/python-jobs/output`, stream name = job run ID.
+
 ## [2026-04-19] — Glue 5.1 Python Shell boto3 vendoring breaks all pip installs
 - What happened: Both dbt_runner and enrichment_runner Glue jobs failed with pip dependency conflicts on every run
 - What I thought: pinning specific package versions (anthropic==0.28.0, dbt-core==1.7.14 etc.) would fix it
@@ -200,6 +224,14 @@
 - Fix: the Apr 20 8:50 AM manual run used the fixed script and succeeded (121 jobs enriched). Redrive for Apr 19 is now moot.
 - Prevention: after uploading a script fix to S3, confirm the object's LastModified timestamp before triggering a Redrive. For stale snapshot_dates, don't Redrive — just run the pipeline fresh for today's date.
 - Lesson: Glue fetches script from S3 at job start — race condition possible if upload and Redrive happen within seconds. Confirm S3 object is updated before retrying.
+
+## [2026-04-21] — COALESCE references field that normalize_jobs already mapped away
+- What happened: Glue bronze-to-silver job failed with `AnalysisException: No such struct field redirect_url in apply_url, candidate_required_location, ..., url`
+- What I thought: Adzuna's `redirect_url` field would appear in the bronze JSON, requiring a COALESCE fallback in the Spark job
+- Root cause: `normalize_jobs()` in `ingest_adzuna.py` already maps `redirect_url → apply_url` before writing to bronze. So `redirect_url` never exists in the schema. The COALESCE `F.col("job.redirect_url")` referenced a field that no source ever wrote — Spark's schema analysis caught it as a hard error.
+- Fix: removed `F.col("job.redirect_url")` from the apply_url COALESCE in `build_silver_df()`. The two-way COALESCE (`apply_url` → `url`) is sufficient: Adzuna writes `apply_url`, Remotive writes `url`.
+- Prevention: when adding a new COALESCE column, check what keys actually land in the bronze JSON, not what the raw API returns. The ingestor's `normalize_jobs()` is the authoritative schema — COALESCE covers field names that differ between ingestors, not pre-normalization raw API fields.
+- Lesson: COALESCE in Spark is for different ingestors writing different field names. If normalize_jobs standardises the name, no COALESCE needed on the Spark side.
 
 ## [2026-04-18] — s3.tf trailing space in filename
 - What happened: terraform plan showed "No changes" despite 14 resources to create

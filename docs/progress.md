@@ -483,3 +483,58 @@ Added: `dedup_key STRING`, `source_apis ARRAY<STRING>`, `source_count INT`
 ### Next
 Chat 13 — Add Adzuna as third data source (salary_min/salary_max fields, 12 countries, no Cloudflare). Fixes salary_fit scoring gap. Jumps volume to ~3,500 jobs/run.
 
+## Chat 13 — Adzuna as Third Data Source
+Date: 2026-04-21
+
+### Goal
+Add Adzuna as the third ingestor to unlock structured salary data and increase volume from ~120 to ~3,600 jobs/run.
+
+### Built
+
+**New ingestor:**
+- **ingestion/sources/adzuna/ingest_adzuna.py** — Lambda ingestor for Adzuna API v1 (app_id + app_key). Iterates 12 countries (gb, us, au, ca, de, fr, br, in, nz, pl, ru, za), 6 pages × 50 results each. Per-country error isolation: one country failing does not abort the rest. `build_salary_str()` formats `salary_min`/`salary_max` integers as `"$80000-$120000"` for MatchScorer compatibility.
+
+**Terraform:**
+- **terraform/envs/dev/variables.tf** — added `adzuna_app_id` + `adzuna_app_key` (sensitive)
+- **terraform/envs/dev/terraform.tfvars** — placeholder values (replace with real keys from developer.adzuna.com before apply)
+- **terraform/envs/dev/lambda.tf** — `aws_lambda_function.adzuna` (timeout=300, memory=256; API keys injected as env vars)
+- **terraform/envs/dev/step_functions.tf** — Adzuna ARN added to `InvokeLambda` IAM resource list; third branch added to `ParallelIngest` Parallel state (InvokeAdzuna → CheckAdzuna → AdzunaDone/AdzunaFailure)
+
+**Spark job:**
+- **spark/jobs/bronze_to_silver.py** — `redirect_url` added as third fallback in apply_url COALESCE (`apply_url` → `url` → `redirect_url`). No other changes needed — Adzuna data is auto-picked up by the existing `source=*/` glob.
+
+**Tests:**
+- **tests/test_ingest_adzuna.py** — 23 unit tests: pagination stop conditions, MAX_PAGES cap, salary string formats (both/min-only/max-only/neither), field mapping, per-country failure resilience, dry_run, empty status, lambda_handler happy path.
+- **spark/tests/test_bronze_to_silver.py** — ADZUNA_JOB + ADZUNA_BRONZE fixtures; `test_adzuna_redirect_url_coalesced` verifies redirect_url → apply_url resolution, country=UK, salary_raw round-trip.
+
+### Pipeline Flow (updated)
+```
+EventBridge (2AM IST daily)
+  → Step Functions (STANDARD)
+    → ParallelIngest (Parallel)
+        Branch 1: InvokeRemotive   → CheckRemotive
+        Branch 2: InvokeArbeitnow  → CheckArbeitnow
+        Branch 3: InvokeAdzuna     → CheckAdzuna     ← NEW
+    → RunGlueJob    (bronze→silver, reads source=*/, PySpark, Glue 4.0 Spark)
+    → RunDbtGold    (dbt star schema, Python Shell, Glue 4.0)
+    → RunEnrichment (skill extract + match score, Python Shell, Glue 4.0)
+    → PipelineComplete
+```
+
+### Verified
+- 184 unit tests pass, 14 PySpark tests skipped (PySpark not installed locally — expected) ✓
+
+### Pre-work Before terraform apply
+1. Sign up at developer.adzuna.com → get app_id and app_key
+2. Replace placeholder values in terraform/envs/dev/terraform.tfvars
+
+### AWS Steps (post-copy + terraform apply)
+1. Lambda dry-run: `aws lambda invoke --function-name jobpulse-ingest-adzuna-dev --payload '{"dry_run": true}' /tmp/out.json`
+2. Live invoke → verify S3 `source=adzuna/data.json.gz`
+3. Full Step Functions run — ParallelIngest shows 3 branches green
+4. Athena: `SELECT source, COUNT(*) FROM silver_jobs WHERE snapshot_date = DATE '2026-04-21' GROUP BY source`
+5. Salary check: `SELECT salary_raw FROM silver_jobs WHERE source = 'adzuna' AND salary_raw IS NOT NULL LIMIT 5`
+
+### Next
+Chat 14 — Great Expectations data quality layer, or add fourth data source (Adzuna live volume confirmed), or dbt source freshness tests.
+

@@ -123,11 +123,18 @@ class TestFetchAllJobs(unittest.TestCase):
 
     @patch("ingest_adzuna.fetch_country_jobs")
     def test_continues_on_country_failure(self, mock_fetch):
-        # First country raises, rest succeed
-        mock_fetch.side_effect = [Exception("API down")] + [[make_raw_job(1)] for _ in sut.COUNTRIES[1:]]
+        # Use callable side_effect (not list) so parallel threads match by country name, not call order
+        failed_country = sut.COUNTRIES[0]
+
+        def side_effect(country):
+            if country == failed_country:
+                raise Exception("API down")
+            return [make_raw_job(1)]
+
+        mock_fetch.side_effect = side_effect
 
         jobs = sut.fetch_all_jobs()
-        # Should have jobs from all countries except the first
+        # Should have jobs from all countries except the failed one
         self.assertEqual(len(jobs), len(sut.COUNTRIES) - 1)
 
 

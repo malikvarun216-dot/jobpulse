@@ -19,6 +19,7 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 logger = logging.getLogger()
@@ -109,19 +110,26 @@ def fetch_country_jobs(country: str) -> list[dict]:
 
 
 def fetch_all_jobs() -> list[dict]:
-    """Fetch jobs from all 12 Adzuna countries and tag each with its country code."""
+    """Fetch jobs from all 12 Adzuna countries in parallel (6 threads) and tag each with its country code."""
     all_jobs = []
-    for country in COUNTRIES:
-        try:
-            country_jobs = fetch_country_jobs(country)
-            for job in country_jobs:
-                job["_country"] = country  # tag for normalize step
-            all_jobs.extend(country_jobs)
-            logger.info("country=%s done: %d jobs", country, len(country_jobs))
-        except Exception:
-            logger.error("Skipping country=%s due to error", country)
-            # Continue with remaining countries — partial data beats total failure
-            continue
+
+    def _fetch_one(country: str) -> tuple[str, list[dict]]:
+        jobs = fetch_country_jobs(country)
+        for job in jobs:
+            job["_country"] = country
+        return country, jobs
+
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        futures = {executor.submit(_fetch_one, c): c for c in COUNTRIES}
+        for future in as_completed(futures):
+            country = futures[future]
+            try:
+                _, jobs = future.result()
+                all_jobs.extend(jobs)
+                logger.info("country=%s done: %d jobs", country, len(jobs))
+            except Exception:
+                logger.error("Skipping country=%s due to error", country)
+
     return all_jobs
 
 

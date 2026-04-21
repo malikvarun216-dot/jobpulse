@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import date
 from typing import Literal, Optional
 
@@ -105,6 +106,7 @@ class BudgetTracker:
         self._s3 = boto3.client("s3", region_name=region)
         self._today = date.today().isoformat()
         self._key = f"enrichment-cache/budget-{self._today}.json"
+        self._lock = threading.Lock()
         self._ledger = self._load()
 
     def _load(self) -> dict:
@@ -130,12 +132,13 @@ class BudgetTracker:
             estimated_input_tokens  * HAIKU_INPUT_COST_PER_TOKEN +
             estimated_output_tokens * HAIKU_OUTPUT_COST_PER_TOKEN
         )
-        if self._ledger["total_usd"] + estimated_cost > DAILY_CAP_USD:
-            raise BudgetExceededError(
-                f"Daily cap ${DAILY_CAP_USD:.2f} would be exceeded. "
-                f"Current: ${self._ledger['total_usd']:.4f}, "
-                f"estimated: ${estimated_cost:.4f}."
-            )
+        with self._lock:
+            if self._ledger["total_usd"] + estimated_cost > DAILY_CAP_USD:
+                raise BudgetExceededError(
+                    f"Daily cap ${DAILY_CAP_USD:.2f} would be exceeded. "
+                    f"Current: ${self._ledger['total_usd']:.4f}, "
+                    f"estimated: ${estimated_cost:.4f}."
+                )
 
     def record_actual_usage(
         self,
@@ -148,7 +151,8 @@ class BudgetTracker:
             output_tokens     * HAIKU_OUTPUT_COST_PER_TOKEN +
             cache_read_tokens * HAIKU_CACHE_READ_PER_TOKEN
         )
-        self._ledger["total_usd"] += cost
-        self._ledger["calls"] += 1
-        self._save()
+        with self._lock:
+            self._ledger["total_usd"] += cost
+            self._ledger["calls"] += 1
+            self._save()
         return cost

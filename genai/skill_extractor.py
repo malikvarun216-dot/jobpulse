@@ -73,6 +73,7 @@ def _llm_extract(
                 max_tokens=300,
                 system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": description[:4000]}],
+                timeout=10.0,
             )
             usage = response.usage
             budget.record_actual_usage(
@@ -83,7 +84,7 @@ def _llm_extract(
             raw = response.content[0].text.strip()
             data = json.loads(raw)
             return ExtractionResult(**data)
-        except (anthropic.APIError, anthropic.APIConnectionError) as e:
+        except (anthropic.APIError, anthropic.APIConnectionError, anthropic.APITimeoutError) as e:
             last_error = e
             time.sleep(2 ** attempt)
         except (json.JSONDecodeError, ValueError):

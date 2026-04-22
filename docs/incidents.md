@@ -1,5 +1,13 @@
 # Incidents
 
+## [2026-04-23] — Lambda snapshot_date computed in UTC, wrote Apr 22 data on Apr 23 pipeline run
+- What happened: Apr 23 2 AM IST pipeline run (EventBridge cron at 2 AM IST = 8:30 PM UTC Apr 22) computed `snapshot_date=2026-04-22` and wrote data to wrong S3 partition. Glue job ran on Apr 23 but ingested Apr 22 data. Dashboard showed stale data.
+- What I thought: Glue job timing issue or pipeline orchestration problem
+- Root cause: Lambda used `datetime.now(timezone.utc)` to compute snapshot_date. At 8:30 PM UTC (= 2 AM IST), UTC date is still Apr 22 (not Apr 23 IST). All 3 ingestors (Remotive, Arbeitnow, Adzuna) had this bug.
+- Fix: Changed all 3 Lambda handlers to compute `datetime.now(timezone(timedelta(hours=5, minutes=30)))` — explicit IST (UTC+5:30). Remotive manual test verified: invoked at 2026-04-22T21:17Z (= 02:47 IST Apr 23) → returned `snapshot_date=2026-04-23` ✓. All 3 Lambdas redeployed.
+- Prevention: When EventBridge fires at a specific local time (2 AM India time), compute dates in that timezone, not UTC. Document this explicitly — EventBridge schedules are always in UTC, so the offset between scheduled time and local business time must be computed inside the handler.
+- Lesson: Timezone bugs are silent — data flows to the wrong partition, but downstream jobs run successfully. Only caught when dashboard shows stale data and S3 listing shows unexpected partition structure.
+
 ## [2026-04-21] — Enrichment silently hangs at scale (3,400 jobs → 60-min TIMEOUT)
 - What happened: enrichment Glue job ran 60 min with zero log output after "Starting script execution", then hit TIMEOUT. Had worked fine at 121 jobs (Remotive + Arbeitnow only).
 - What I thought: Claude API weekly budget exhausted or API key missing from Glue env

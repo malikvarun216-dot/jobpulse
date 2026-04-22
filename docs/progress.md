@@ -578,6 +578,75 @@ Enrichment was timing out at 3,400 jobs (Glue Python Shell 60-min limit). Root c
 3. CloudWatch → `/aws/glue/jobs/jobpulse-run-enrichment-dev` → check duration (should be <10 min)
 4. Athena: `SELECT extraction_source, COUNT(*) FROM enrichment_scores WHERE snapshot_date = '2026-04-21' GROUP BY extraction_source`
 
+## Chat 14 Checkpoint — Dashboard Testing + Data Verification
+Date: 2026-04-22 (2 AM — verified full pipeline)
+
+### Findings
+
+**Full pipeline working end-to-end:**
+- Athena shows 6,428 jobs across 5 snapshots (Apr 18–22)
+  - 2026-04-22: 1,734 jobs
+  - 2026-04-21: 1,950 jobs
+  - 2026-04-20: 2,682 jobs
+  - 2026-04-19: 31 jobs
+  - 2026-04-18: 31 jobs
+- dbt ran successfully; gold tables created and partitions registered in Glue catalog
+- All data queryable — no sync issues
+
+**Dashboard limitation identified:**
+- `dashboard/streamlit/app.py` line 41 had `LIMIT 500` in Athena query
+- Caused dashboard to show only first 500 jobs even though 6,428 exist
+- No data loss; purely a query limit
+
+### Fixed
+- Changed `LIMIT 500` → `LIMIT 20000` in dashboard
+- Dashboard now shows all 6,428 jobs (full 5-day dataset)
+
+### Decisions
+- **Dashboard LIMIT:** 20,000 rows is reasonable middle ground: shows all current jobs (6.4K) + scales to future 50K/day without overwhelming browser. Better approach (Chat 16): replace hard LIMIT with dynamic filters (last 7 days, role='Data Engineer', is_remote=true).
+
+### Test Status
+- ✅ Full pipeline runs unattended (SF succeeds 2 AM daily)
+- ✅ Bronze data: raw JSON from 3 sources (Remotive, Arbeitnow, Adzuna)
+- ✅ Silver data: cleaned, deduplicated Parquet (partitioned by date/country/role)
+- ✅ Gold data: dbt star schema, all tables populated
+- ✅ Dashboard: functional, queryable, showing 6,428 jobs
+- ✅ No errors or missing steps detected
+
+### Post-Chat-14 Fix — IST Timezone for All Lambda Ingestors
+Date: 2026-04-23
+
+### Problem
+Lambda ingestors were using `datetime.now(timezone.utc)` to compute `snapshot_date`. At 2 AM IST (8:30 PM UTC previous day), Lambda computed yesterday's date.
+- Apr 23 2:00 AM IST pipeline wrote data to `snapshot_date=2026-04-22` (UTC date)
+- Glue job picked up Apr 22 data even though it ran on Apr 23
+- Dashboard showed stale data; no Apr 23 partition in S3 bronze
+
+### Fixed
+**All 3 Lambda ingestors updated:**
+- `ingestion/sources/remotive/ingest_remotive.py` — lines 18, 88–90
+- `ingestion/sources/arbeitnow/ingest_arbeitnow.py` — lines 18, 145–147
+- `ingestion/sources/adzuna/ingest_adzuna.py` — lines 23, 203–205
+
+**Pattern applied to all:**
+```python
+from datetime import datetime, timezone, timedelta
+...
+ist = timezone(timedelta(hours=5, minutes=30))
+snapshot_date = event.get("snapshot_date") or datetime.now(ist).strftime("%Y-%m-%d")
+```
+
+### Verified
+- Remotive Lambda manual invoke at 2026-04-22T21:17:05Z (= 2026-04-23 02:47 IST) → returned `snapshot_date=2026-04-23` ✓
+- S3 bronze check: new data written to `snapshot_date=2026-04-23/source=remotive/` ✓
+- Arbeitnow + Adzuna updated with same pattern ✓
+
+### Implications
+- Apr 24+ pipelines will write correct IST dates
+- Apr 22 data remains in S3 (partition was overwritten with IST-correct fix)
+- Dashboard will show fresh data on next refresh after Apr 24 2 AM execution
+- Idempotent: re-running Apr 23 with IST fix overwrites Apr 22 data → no duplicates
+
 ### Next
-Chat 15 — Great Expectations data quality layer, or add fourth data source.
+Chat 15 — RAG semantic search layer + JD embeddings.
 

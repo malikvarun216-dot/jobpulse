@@ -272,3 +272,12 @@
 - No polling code written — AWS manages the wait natively
 - Alternative: .waitForTaskToken — requires writing your own callback, much more complex
 - Cost: a few extra state transitions per execution, well within 4K free tier/month
+
+## Lambda snapshot_date: IST (UTC+5:30) instead of UTC (Post-Chat-14 fix)
+- All ingestors compute `snapshot_date = datetime.now(ist).strftime("%Y-%m-%d")`
+- Reason: EventBridge cron fires at 2 AM IST = 8:30 PM UTC (previous day) → UTC computes wrong date
+- Issue caught: Apr 23 2 AM IST pipeline computed Apr 22 (UTC) snapshot_date, wrote to wrong S3 partition
+- Alternative: compute UTC, then offset by +5:30 hours → fragile, harder to explain
+- Choice: use IST directly in Lambda — explicit, clear, matches business time zone
+- Trade-off: Lambda is now IST-aware (not timezone-agnostic) — acceptable at project scale for single timezone
+- Impact: snapshot_date now matches the day the pipeline ran (in India time); Apr 24+ pipelines produce correct dates

@@ -38,7 +38,7 @@ LEFT JOIN jobpulse_gold_dev.enrichment_scores e
     ON f.job_id                              = e.job_id
     AND CAST(f.snapshot_date AS VARCHAR) = e.snapshot_date
 ORDER BY match_score DESC, f.publication_date DESC
-LIMIT 500
+LIMIT 20000
 """
 
 

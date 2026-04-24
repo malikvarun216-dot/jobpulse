@@ -211,3 +211,4 @@ terraform/envs/dev/terraform.tfstate.backup
 terraform/envs/dev/builds/*.zip
 CLAUDE.md
 .claude/
+docs/learning.md

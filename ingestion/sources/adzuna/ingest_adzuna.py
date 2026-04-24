@@ -151,7 +151,7 @@ def normalize_jobs(jobs: list[dict]) -> list[dict]:
         normalized.append({
             "job_id": str(job.get("id", "")),
             "title": job.get("title", ""),
-            "company_name": (job.get("company") or {}).get("display_name", "Unknown"),
+            "company_name": (job.get("company") or {}).get("display_name"),
             "apply_url": job.get("redirect_url", ""),
             "description": job.get("description", ""),
             "tags": [],  # Adzuna has no tags array; role_family inferred from category in Spark

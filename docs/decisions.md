@@ -273,6 +273,65 @@
 - Alternative: .waitForTaskToken — requires writing your own callback, much more complex
 - Cost: a few extra state transitions per execution, well within 4K free tier/month
 
+## SKILL_VOCAB as a whitelist, not a passthrough (Chat 18)
+- LLM extraction output is filtered through SKILL_VOCAB before being stored. If a skill isn't in the vocab, it's dropped silently — both from the cache and from scoring.
+- This was understating matches: JDs mentioning Kinesis, Delta Lake, Iceberg, Langchain scored 0 on those skills even when the user had them.
+- Vocab expansion is a scoring fix, not just a coverage fix. Every new term added directly improves match accuracy for JDs that use that term.
+- Trade-off: too broad a vocab = noise (unrelated terms match). Keep vocab to tools/technologies only, no soft skills.
+
+## Seniority weight cut from 20 → 10 with gap softening (Chat 18)
+- User has 2 YoE targeting senior roles (typically 4–6 YoE). Gap of 3 = 0 pts under the old hard cutoff — wipes out 20% of total score on every senior JD.
+- Fix 1: gap == 3 → 25% partial credit. Senior roles still deprioritised but surface as stretch roles.
+- Fix 2: cut seniority weight from 20 → 10. Even with partial credit, seniority shouldn't dominate when skills are the real filter.
+- Combined effect: a senior DE role matching your Kafka+Spark+Python core now scores ~75 instead of ~55.
+
+## skill_overlap weight raised from 40 → 50 (Chat 18)
+- DE hiring is skills-first. "We need someone who knows Spark + Kafka + Airflow" is more specific than "we want a senior engineer."
+- Extra 10 pts came from seniority_fit (cut to 10). Location and role family unchanged.
+- With 30 skills in profile vs original 10, skill_overlap is also more meaningful — larger intersection is possible on real JDs.
+
+## Voyage AI over AWS Bedrock for embeddings (Chat 15)
+- Bedrock embedding models (Titan v2) are available but add IAM complexity and cost on top of the Glue job
+- Voyage AI: `voyage-4-lite` = 200M tokens/month free after adding a payment method; rate limits unlocked
+- Direct Python SDK (`voyageai.Client`) is simpler than a boto3 Bedrock call; no additional IAM policy needed
+- Trade-off: external dependency (one more API vendor). Acceptable — embeddings are idempotent, failure just means stale embeddings, not broken pipeline
+
+## In-memory cosine similarity over a managed vector DB (Chat 15)
+- At 3,500–20,000 jobs, loading the full embedding matrix into a NumPy array and computing cosine similarity in-process takes <1s
+- DynamoDB or OpenSearch (managed vector DB) adds per-read cost, latency, and infra complexity
+- Embeddings are loaded once per Streamlit query, not on every page load (Streamlit session state caches results)
+- Trade-off: scales to ~500K jobs before response time degrades. At that scale, switch to a FAISS index in S3 or a managed ANN service. Current scale is nowhere near that.
+
+## Pure pyarrow over pandas for all Parquet I/O in Glue Python Shell (Chat 15/16)
+- `pd.read_parquet()` and `pd.to_parquet()` require pandas to discover an engine (pyarrow or fastparquet) at runtime
+- Glue 4.0 Python Shell's environment causes engine discovery to fail even when pyarrow is installed via `--additional-python-modules`
+- Direct pyarrow API (`pq.read_table`, `pq.write_table`, `pa.table`) bypasses engine discovery entirely
+- Applied to both embedding_agent.py and semantic_search.py. enrichment_runner uses pandas for CSV reads only (not Parquet), so unaffected.
+
+## dedup_key = md5(source|job_id), cross_source_key separate (Chat 16)
+- Original dedup_key = md5(company_name|title|country) caused 2,525→24 row collapse when Adzuna defaulted company_name to "Unknown" — identical hash for hundreds of unrelated jobs
+- New design: dedup_key is per-source-unique (`md5(source|job_id)`) so no hash collision across jobs
+- cross_source_key = md5(company|title|country) is used only for aggregation (source_apis, source_count) — it drives groupBy, not row selection
+- source_count > 1 still identifies multi-confirmed jobs; dedup just no longer clobbers distinct jobs
+
+## S3-stored user_profile.yml, separate from genai_package.zip (Chat 17)
+- Previous design: profile was baked into `genai_package.zip` → updating skills required a new zip upload (`terraform apply` or manual `aws s3 cp`)
+- New design: profile uploaded as `aws_s3_object.user_profile` to `s3://silver/config/user_profile.yml`; enrichment_runner downloads it fresh on every Glue run
+- Fallback: if S3 download fails, use the bundled copy inside the zip — no single point of failure
+- Impact: updating your profile is now a one-command operation, no Terraform cycle needed
+
+## Tiered skill weights over flat Jaccard (Chat 17)
+- Flat Jaccard (|intersection| / |union|) treats python and docker as equal signals — a job matching only docker (learning tier) would score the same as one matching python (core)
+- New: core skills (python, sql, pyspark, aws, dbt) = 3x weight; secondary = 1.5x; learning = 1x
+- Normalized against total user skill weight (not union) so score stays in [0, 1] regardless of how many skills a job lists
+- Impact: jobs matching the core stack will consistently rank above jobs that only incidentally match a peripheral skill
+
+## --force_rescore skips LLM entirely (Chat 17)
+- When profile changes, old enrichment_scores are stale. Option 1: re-run LLM on all jobs (expensive). Option 2: re-score using existing cached extractions only.
+- force_rescore=True uses rules fast path + S3 extraction cache; if neither hits, uses rules fallback — zero API calls
+- This is safe because the cache stores the extraction (skills, seniority), not the score. Score is always recomputed from the current profile.
+- Practical cost: rescoring 3,500 jobs with force_rescore takes ~3 min and $0.00
+
 ## Lambda snapshot_date: IST (UTC+5:30) instead of UTC (Post-Chat-14 fix)
 - All ingestors compute `snapshot_date = datetime.now(ist).strftime("%Y-%m-%d")`
 - Reason: EventBridge cron fires at 2 AM IST = 8:30 PM UTC (previous day) → UTC computes wrong date

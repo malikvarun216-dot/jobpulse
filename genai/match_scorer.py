@@ -47,14 +47,27 @@ class MatchScorer:
         self._salary_min     = profile.get("salary_min_usd", 0)
         self._weights        = profile["weights"]
 
+        # Build tiered weight map: core=3x, secondary=1.5x, learning=1x
+        tiers = profile.get("skill_tiers", {})
+        self._skill_weights: dict[str, float] = {s: 1.0 for s in self._user_skills}
+        for s in tiers.get("core", []):
+            self._skill_weights[s.lower()] = 3.0
+        for s in tiers.get("secondary", []):
+            self._skill_weights[s.lower()] = 1.5
+        for s in tiers.get("learning", []):
+            self._skill_weights[s.lower()] = 1.0
+        self._max_skill_weight = sum(self._skill_weights.values()) or 1.0
+
     def score(self, extraction: ExtractionResult, job_row: dict[str, Any]) -> tuple[float, dict]:
         detail: dict[str, float] = {}
 
-        # 1. Skill overlap — Jaccard
-        job_skills = set(extraction.skills)
-        union = job_skills | self._user_skills
-        jaccard = len(job_skills & self._user_skills) / len(union) if union else 0.0
-        detail["skill_overlap"] = round(jaccard * self._weights["skill_overlap"], 2)
+        # 1. Skill overlap — weighted by tier (core=3x, secondary=1.5x, learning=1x)
+        job_skills = {s.lower() for s in extraction.skills}
+        matched = job_skills & self._user_skills
+        weighted_match = sum(self._skill_weights.get(s, 1.0) for s in matched)
+        # Normalize against total user skill weight so score is always [0, 1]
+        skill_score = min(weighted_match / self._max_skill_weight, 1.0)
+        detail["skill_overlap"] = round(skill_score * self._weights["skill_overlap"], 2)
 
         # 2. Seniority fit — YoE-aware when available, title-based fallback
         w_sen = self._weights["seniority_fit"]
@@ -66,6 +79,8 @@ class MatchScorer:
                 seniority_pts = w_sen * 0.75
             elif gap == 2:
                 seniority_pts = w_sen * 0.50
+            elif gap == 3:
+                seniority_pts = w_sen * 0.25  # stretch role — still surfaces it
             else:
                 seniority_pts = 0.0
         else:

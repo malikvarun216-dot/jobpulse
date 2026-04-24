@@ -48,31 +48,37 @@ class EnrichmentRecord(BaseModel):
 SKILL_VOCAB: set[str] = {
     # Languages
     "python", "sql", "java", "scala", "r", "go", "typescript", "javascript",
-    "bash", "rust", "c++", "c#",
-    # Data / ML
-    "spark", "pyspark", "hadoop", "hive", "kafka", "flink", "airflow",
-    "dbt", "pandas", "numpy", "scikit-learn", "tensorflow", "pytorch",
-    "mlflow", "xgboost", "lightgbm",
+    "bash", "rust", "c++", "c#", "linux", "shell scripting",
+    # Streaming & Messaging
+    "kafka", "flink", "kinesis", "spark streaming", "pubsub", "rabbitmq",
+    # Distributed Compute
+    "spark", "pyspark", "hadoop", "hdfs", "yarn", "mapreduce",
+    # Orchestration
+    "airflow", "databricks workflows", "prefect", "dagster", "luigi", "nifi",
+    "step functions", "composer",
     # Cloud
-    "aws", "gcp", "azure", "s3", "ec2", "lambda", "glue", "emr",
-    "bigquery", "snowflake", "redshift", "databricks", "synapse",
-    # Infra / DevOps
-    "docker", "kubernetes", "terraform", "ansible", "helm", "ci/cd",
-    "github actions", "jenkins", "datadog",
-    # Databases / Storage
+    "aws", "gcp", "azure", "s3", "ec2", "lambda", "glue", "emr", "athena",
+    "bigquery", "dataproc", "redshift", "snowflake", "databricks", "synapse",
+    # Storage / Table Formats
+    "delta lake", "iceberg", "hudi", "hive", "hbase",
+    "data lake", "lakehouse", "data warehousing",
+    # Databases
     "postgres", "mysql", "mongodb", "redis", "elasticsearch", "cassandra",
-    "dynamodb", "hbase",
-    # Orchestration / Pipelines
-    "step functions", "prefect", "dagster", "luigi", "nifi",
+    "dynamodb",
+    # ML / AI
+    "dbt", "pandas", "numpy", "scikit-learn", "tensorflow", "pytorch",
+    "mlflow", "xgboost", "lightgbm", "llm", "rag", "langchain",
+    "vector database", "prompt engineering", "ml ops", "analytics engineering",
+    # DevOps / Infra
+    "docker", "kubernetes", "terraform", "ansible", "helm", "ci/cd",
+    "github actions", "jenkins", "datadog", "git",
+    # Serialization
+    "avro", "parquet", "json", "protobuf",
     # BI / Viz
     "tableau", "power bi", "looker", "streamlit", "superset",
-    # Soft / Process
-    "agile", "scrum",
-    # Other common JD terms
-    "rest api", "graphql", "microservices", "data modeling",
-    "data warehousing", "etl", "elt", "data lake", "lakehouse",
-    "analytics engineering", "ml ops", "llm", "rag", "vector database",
-    "prompt engineering",
+    # Process
+    "data modeling", "etl", "elt", "rest api", "graphql",
+    "microservices", "agile", "scrum",
 }
 
 

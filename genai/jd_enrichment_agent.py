@@ -37,10 +37,11 @@ class JDEnrichmentAgent:
     Post-hooks : log_cost_summary, validate_output, write_parquet_to_s3
     """
 
-    def __init__(self, gold_bucket: str, region: str, profile_path: str, dry_run: bool = False):
+    def __init__(self, gold_bucket: str, region: str, profile_path: str, dry_run: bool = False, force_rescore: bool = False):
         self._gold_bucket = gold_bucket
         self._region = region
         self._dry_run = dry_run
+        self._force_rescore = force_rescore
         self._s3 = boto3.client("s3", region_name=region)
         with open(profile_path) as f:
             raw = yaml.safe_load(f)
@@ -133,6 +134,21 @@ class JDEnrichmentAgent:
                 match_score=score,
                 score_detail=detail,
                 extraction_source="cache",
+                enriched_at=now_iso,
+            )
+
+        # force_rescore: skip LLM entirely — re-score using rules fallback
+        if self._force_rescore:
+            score, detail = self._scorer.score(rules_result, job)
+            return EnrichmentRecord(
+                job_id=job_id,
+                snapshot_date=snapshot_date,
+                skills=rules_result.skills,
+                seniority=rules_result.seniority,
+                yoe_required=rules_result.yoe_required,
+                match_score=score,
+                score_detail=detail,
+                extraction_source="rules",
                 enriched_at=now_iso,
             )
 

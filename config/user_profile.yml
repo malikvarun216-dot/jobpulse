@@ -1,15 +1,83 @@
 profile:
-  skills: [python, sql, pyspark, aws, dbt, airflow, kafka, terraform, pandas, docker]
-  seniority: mid
+  skills:
+    - python
+    - sql
+    - pyspark
+    - kafka
+    - airflow
+    - spark
+    - hive
+    - cassandra
+    - delta lake
+    - bigquery
+    - gcp
+    - aws
+    - flink
+    - kinesis
+    - databricks
+    - hadoop
+    - docker
+    - git
+    - github actions
+    - linux
+    - avro
+    - data modeling
+    - dbt
+    - terraform
+    - llm
+    - rag
+    - langchain
+    - iceberg
+    - redshift
+    - snowflake
+
+  skill_tiers:
+    core:
+      - python
+      - sql
+      - pyspark
+      - kafka
+      - airflow
+      - spark
+      - hive
+      - cassandra
+      - delta lake
+      - bigquery
+      - gcp
+      - aws
+    secondary:
+      - flink
+      - kinesis
+      - databricks
+      - hadoop
+      - docker
+      - git
+      - github actions
+      - linux
+      - avro
+      - data modeling
+      - redshift
+      - snowflake
+      - iceberg
+    learning:
+      - dbt
+      - terraform
+      - llm
+      - rag
+      - langchain
+
+  seniority: senior
   yoe: 2
-  preferred_locations: [remote, india]
+  preferred_locations: [remote, india, bangalore, mumbai]
   preferred_role_families: [DATA, SDE]
-  salary_min_usd: 60000
+  salary_min_usd: 24000
 
 # Weights must sum to 100
+# skill_overlap raised to 50 — skills are the strongest signal for DE roles
+# seniority_fit lowered to 10 — gap math is softened in scorer, not zeroed for senior roles
 weights:
-  skill_overlap:   40
-  seniority_fit:   20
+  skill_overlap:   50
+  seniority_fit:   10
   location_fit:    15
   role_family_fit: 15
   salary_fit:       5

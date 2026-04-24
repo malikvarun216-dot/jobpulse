@@ -650,3 +650,85 @@ snapshot_date = event.get("snapshot_date") or datetime.now(ist).strftime("%Y-%m-
 ### Next
 Chat 15 — RAG semantic search layer + JD embeddings.
 
+## Chat 15 — RAG Semantic Search Layer
+Date: 2026-04-24
+
+### Built
+- **genai/embedding_agent.py** — batch embeds JDs via Voyage AI (`voyage-4-lite`, 512 dims). Skips already-embedded job_ids. Writes Parquet to `s3://gold/embeddings/snapshot_date=.../`. Pure pyarrow, no pandas (Glue engine discovery issue).
+- **genai/embedding_runner.py** — Glue Python Shell entry point for EmbedJDs step. Same S3 bootstrap pattern as enrichment_runner. Fetches `description` from `fact_job_posting` via Athena.
+- **genai/semantic_search.py** — loads embedding Parquet from S3, cosine similarity (NumPy dot product on normalized vectors), returns top-K `(job_id, score)` pairs.
+- **dashboard/streamlit/app.py** — added Semantic Search tab: text query → embed → cosine search → results table. "Why this match?" expander calls Claude Haiku on top-3 results.
+- **terraform/envs/dev/glue.tf** — `aws_glue_job.embedding_runner` (voyageai>=0.2.0, pyarrow==14.0.2). Voyage key fetched from Secrets Manager.
+- **terraform/envs/dev/step_functions.tf** — `EmbedJDs` state added after `RunEnrichment`.
+
+### Pipeline (final)
+```
+ParallelIngest → RunGlueJob → RunDbtGold → RunEnrichment → EmbedJDs → PipelineComplete
+```
+
+### Verified
+- 3,528 job embeddings written to S3 ✓
+- Semantic search tab returns ranked results ✓
+- Claude Haiku "Why this match?" explanations rendering ✓
+
+---
+
+## Chat 16 — Bug Fixes (5 critical)
+Date: 2026-04-24
+
+### Bugs Fixed
+
+1. **Dedup collapse: 2,525 bronze → 24 gold rows** — Adzuna defaulted missing company_name to `"Unknown"`, causing all Unknown-company jobs with same title+country to hash-collide into one row. Fix: return `None` instead of `"Unknown"`; redesigned dedup_key to `md5(source|job_id)` (per-source unique), cross_source_key separate for multi-source tracking.
+
+2. **3-day pipeline failure: `FileNotFoundError: 'which'`** — `subprocess.run(["which", "dbt"])` fails because `which` is a shell builtin, not an executable. Fix: `shutil.which("dbt")` from Python stdlib.
+
+3. **EmbedJDs COLUMN_NOT_FOUND: description** — `fact_job_posting.sql` never selected `j.description`. Fix: added `j.description` to the model SELECT list.
+
+4. **Embedding job pyarrow engine error** — `pd.read_parquet()` couldn't discover pyarrow engine in Glue Python Shell. Fix: replaced all pandas parquet calls with direct pyarrow API (`pq.read_table`, `pq.write_table`, `pa.table`).
+
+5. **ImportError: numpy.core.multiarray** — `numpy>=1.24.0` in embedding job's `--additional-python-modules` installed a second numpy alongside Glue's pre-installed one; C extensions compiled against different versions clash. Fix: removed numpy and pandas from embedding job's additional modules entirely.
+
+### Verified
+- 15,356 jobs in dashboard (was 24) ✓
+- 3,528 embeddings, semantic search working ✓
+- Full pipeline SUCCEEDED end-to-end ✓
+
+---
+
+## Chat 17 — Match Scoring Improvements
+Date: 2026-04-24
+
+### Built
+- **config/user_profile.yml** — added `skill_tiers: {core, secondary, learning}` alongside flat `skills` list.
+- **genai/match_scorer.py** — replaced flat Jaccard with tiered weighted scoring. Core skills (python, sql, pyspark, aws, dbt) = 3x weight; secondary (airflow, kafka, terraform, pandas) = 1.5x; learning (docker) = 1x. Normalized against total user skill weight so score is always [0, 1].
+- **genai/jd_enrichment_agent.py** — added `force_rescore` param. When set, skips LLM entirely (rules + S3 cache only, zero API spend).
+- **genai/enrichment_runner.py** — added `--force_rescore` CLI arg; in Glue env, downloads `user_profile.yml` fresh from S3 before falling back to the bundled zip copy.
+- **terraform/envs/dev/glue.tf** — `aws_s3_object.user_profile` uploads profile to `s3://silver/config/user_profile.yml`; `--force_rescore = "false"` default arg on enrichment job.
+
+### How to use after a profile update
+```bash
+# 1. Edit config/user_profile.yml
+# 2. Push to S3 immediately (no terraform apply needed)
+aws s3 cp config/user_profile.yml s3://jobpulse-silver-dev/config/user_profile.yml
+# 3. Trigger rescore (zero LLM spend)
+aws glue start-job-run --job-name jobpulse-enrichment-dev \
+  --arguments '{"--force_rescore":"true","--snapshot_date":"2026-04-24"}'
+```
+
+---
+
+## Chat 18 — Profile Rebuild + Skill Scoring Fixes
+Date: 2026-04-24
+
+### Built
+- **config/user_profile.yml** — full profile rebuild from resume. 30 skills across 3 tiers (was 10 flat). Core: python, sql, pyspark, kafka, airflow, spark, hive, cassandra, delta lake, bigquery, gcp, aws. Secondary: flink, kinesis, databricks, hadoop, docker, git, github actions, linux, avro, data modeling, redshift, snowflake, iceberg. Learning: dbt, terraform, llm, rag, langchain. Weights: skill_overlap 50, seniority_fit 10 (was 40/20).
+- **genai/match_scorer.py** — softened YoE gap: `gap == 3 → 25%` (was 0%). Senior roles asking 5 YoE no longer score zero on seniority; surfaces as stretch roles instead of disappearing.
+- **genai/guardrails.py** — expanded SKILL_VOCAB from ~75 → ~95 terms. Added: kinesis, delta lake, iceberg, langchain, linux, avro, hdfs, dataproc, composer, git, spark streaming. Without these, JD skills silently dropped before scoring — matches were understated.
+
+### Why weights changed
+- skill_overlap 40→50: skills are the strongest DE hiring signal; role + location together equal seniority
+- seniority_fit 20→10: YoE gap math works against 2 YoE targeting senior roles anyway; softened gap logic (gap=3→25%) partially compensates
+
+### Why SKILL_VOCAB matters
+Skills not in the vocab are dropped by both the rule extractor and the LLM extractor (LLM output is filtered through the vocab whitelist). A JD mentioning Kinesis, Delta Lake, or Iceberg would score 0 on those skills even if you have them. Now they're recognized.
+

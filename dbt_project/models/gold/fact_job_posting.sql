@@ -36,7 +36,8 @@ select
     cast(null as double) as match_score,
     j.source,
     j.source_count,
-    j.ingested_at
+    j.ingested_at,
+    j.description
 from jobs j
 left join companies c
     on to_hex(md5(to_utf8(lower(trim(j.company_name))))) = c.company_key

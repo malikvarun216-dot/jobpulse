@@ -212,43 +212,48 @@ def build_silver_df(raw_df):
 
 
 def deduplicate_silver_df(df):
-    """Exact dedup on (company_name, title, country) within each snapshot_date.
+    """Exact dedup on (company_name, title, country, source, job_id) within each snapshot_date.
+
+    Dedup key is source+job_id (which is already globally unique) to prevent false collapse
+    when company_name is NULL. Phase 3 aggregation then groups by (company, title, country)
+    to track cross-source duplicates in source_apis and source_count.
 
     Keeps earliest publication_date row as canonical. Collects source_apis array
     and source_count for all sources that listed this job on the same snapshot_date.
     """
-    # Phase 1: dedup key — use normalized country (not location_raw) so
-    # "Worldwide" (Remotive) and "Remote" (Arbeitnow) both hash to "remote"
+    # Phase 1: dedup key — source + job_id (prevent within-source collapse on NULL company)
     df = df.withColumn(
         "dedup_key",
         F.md5(F.concat_ws(
             "|",
-            F.lower(F.trim(F.coalesce(F.col("company_name"), F.lit("")))),
-            F.lower(F.trim(F.coalesce(F.col("title"),        F.lit("")))),
-            F.lower(F.trim(F.coalesce(F.col("country"),      F.lit("")))),
+            F.col("source"),
+            F.col("job_id"),
         ))
     )
 
-    # Phase 2: rank within (dedup_key, snapshot_date); keep earliest pub date.
-    # row_number() guarantees exactly one rank-1 row even on ties.
-    window = Window.partitionBy("dedup_key", "snapshot_date").orderBy(
-        F.col("publication_date").asc_nulls_last(),
-        F.col("ingested_at").asc(),
-    )
-    canonical_df = (
-        df.withColumn("_rank", F.row_number().over(window))
-          .filter(F.col("_rank") == 1)
-          .drop("_rank")
+    # Phase 1b: cross-source grouping key (tracks duplicates across sources)
+    df = df.withColumn(
+        "cross_source_key",
+        F.md5(F.concat_ws(
+            "|",
+            F.lower(F.trim(F.coalesce(F.col("company_name"), F.lit("__null__")))),
+            F.lower(F.trim(F.coalesce(F.col("title"),        F.lit("__null__")))),
+            F.lower(F.trim(F.coalesce(F.col("country"),      F.lit("__null__")))),
+        ))
     )
 
-    # Phase 3: aggregate source_apis + source_count across ALL rows in the group
-    # (groupBy on original df, not canonical_df, to capture every source)
-    agg_df = df.groupBy("dedup_key", "snapshot_date").agg(
+    # Phase 2: no row ranking needed; each source+job_id is unique. Just keep the data.
+    # (All rows in dedup_key groups are different because dedup_key = source + job_id)
+
+    # Phase 3: aggregate source_apis + source_count across cross_source groups
+    # Group by (cross_source_key, snapshot_date) to find same job across sources
+    agg_df = df.groupBy("cross_source_key", "snapshot_date").agg(
         F.collect_set("source").alias("source_apis"),
         F.count("*").cast(IntegerType()).alias("source_count"),
     )
 
-    return canonical_df.join(agg_df, on=["dedup_key", "snapshot_date"], how="inner")
+    # Join back to preserve all original rows + cross-source counts
+    return df.join(agg_df, on=["cross_source_key", "snapshot_date"], how="inner").drop("dedup_key", "cross_source_key")
 
 
 # ---------------------------------------------------------------------------

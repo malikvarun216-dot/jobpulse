@@ -1,5 +1,45 @@
 # Incidents
 
+## [2026-04-24] — numpy.core.multiarray failed to import in embedding Glue job
+- What happened: embedding_runner Glue job failed with `ImportError: numpy.core.multiarray failed to import`
+- What I thought: numpy wasn't installed — tried adding `numpy>=1.24.0` to `--additional-python-modules`
+- Root cause: Glue 4.0 Python Shell pre-installs numpy. Installing a second version via `--additional-python-modules` places it on `sys.path` before the built-in one. C extensions (like numpy's) are compiled against a specific ABI — the two versions clash at import time.
+- Fix: removed `numpy>=1.24.0` and `pandas>=2.0.0` from the embedding job's `--additional-python-modules`. Use Glue's pre-installed numpy; only install pure-Python extras.
+- Prevention: never install numpy, scipy, or other C-extension packages via `--additional-python-modules` on a Glue job that already has them pre-installed. Check Glue 4.0 pre-installed package list first.
+- Lesson: two copies of a C-extension package on sys.path = crash. Pre-installed > re-installed.
+
+## [2026-04-24] — pd.read_parquet engine discovery fails in Glue Python Shell
+- What happened: embedding_agent.py crashed with `Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'. A suitable version of pyarrow or fastparquet is required for parquet support`
+- What I thought: pyarrow==14.0.2 was already in --additional-python-modules so it should work
+- Root cause: `pd.read_parquet()` triggers pandas' engine discovery at import time, which fails in Glue's environment even when pyarrow is installed. The pandas-to-pyarrow bridge is the broken part, not pyarrow itself.
+- Fix: replaced all `pd.read_parquet()` / `pd.to_parquet()` calls with direct pyarrow API (`pq.read_table`, `pq.write_table`, `pa.table`). Removed `import pandas` from embedding_agent.py and semantic_search.py entirely.
+- Prevention: in Glue Python Shell, use pyarrow directly for all Parquet I/O. Pandas parquet engine discovery is unreliable in this environment.
+- Lesson: the pandas ↔ pyarrow bridge has its own failure modes separate from pyarrow working correctly on its own.
+
+## [2026-04-24] — Dedup collapse: 2,525 bronze jobs → 24 gold rows
+- What happened: full pipeline succeeded but dashboard showed only 24 jobs from a 2,525-job bronze run. All tables had correct row counts except fact_job_posting (expected ~2,500, got 24).
+- What I thought: dbt model logic or Athena CTAS issue
+- Root cause: Adzuna ingestor defaulted missing company_name to the string `"Unknown"`. Dedup key = `md5(company_name|title|country)`. Hundreds of "Unknown"-company jobs with different job_ids but the same title+country hashed to the same dedup key → all collapsed to one row per title/country combo.
+- Fix: (1) Adzuna ingestor returns `None` instead of `"Unknown"` for missing company. (2) Redesigned dedup_key to `md5(source|job_id)` — unique per source, no hash collision. (3) cross_source_key (md5 on company+title+country) used only for groupBy aggregate, not for row selection.
+- Prevention: dedup keys must be constructed from fields that are guaranteed unique per source. Null-sentinel defaults ("Unknown") are dangerous in hash keys.
+- Lesson: dedup bugs produce valid-looking pipelines — all stages SUCCEED, row counts just silently collapse. Always spot-check fact table counts vs bronze source counts.
+
+## [2026-04-24] — FileNotFoundError: 'which' — 3 days of dbt pipeline failures
+- What happened: dbt Glue job failed with `FileNotFoundError: [Errno 2] No such file or directory: 'which'` for 3 consecutive pipeline runs.
+- What I thought: PATH issue in Glue environment; tried adding `which` manually; suspected Glue Python Shell restriction
+- Root cause: `subprocess.run(["which", "dbt"])` — `which` is a shell builtin in bash/zsh, not a standalone executable. Glue Python Shell (not a login shell) does not have it as an executable in PATH. `subprocess.run` executes binaries, not shell builtins.
+- Fix: `import shutil; dbt_path = shutil.which("dbt")` — Python stdlib equivalent that works in any environment.
+- Prevention: never use `subprocess.run(["which", ...])` to find executables. Use `shutil.which()` which is Python-native and works in non-shell environments.
+- Lesson: shell builtins (`which`, `source`, `export`) are not executable files. `subprocess.run` only works with real binaries. Python stdlib usually has a safe equivalent.
+
+## [2026-04-24] — Voyage API key stored with wrong prefix in Secrets Manager
+- What happened: embedding_runner failed with `AuthenticationError: Provided API key is invalid`
+- What I thought: the key wasn't copied correctly into Secrets Manager
+- Root cause: documentation showed `va-` as an example prefix. The actual Voyage AI key starts with `pa-`. The Secret was created with `va-{actual_key}` — prepending an extra prefix to the real value.
+- Fix: updated Secrets Manager secret with the correct `pa-...` key via `aws secretsmanager update-secret`.
+- Prevention: when creating Secrets Manager entries, verify the value against the provider's dashboard before saving. Don't copy example prefixes from documentation.
+- Lesson: authentication errors from third-party APIs can be caused by extra characters in the key, not just a wrong key entirely.
+
 ## [2026-04-23] — Lambda snapshot_date computed in UTC, wrote Apr 22 data on Apr 23 pipeline run
 - What happened: Apr 23 2 AM IST pipeline run (EventBridge cron at 2 AM IST = 8:30 PM UTC Apr 22) computed `snapshot_date=2026-04-22` and wrote data to wrong S3 partition. Glue job ran on Apr 23 but ingested Apr 22 data. Dashboard showed stale data.
 - What I thought: Glue job timing issue or pipeline orchestration problem

@@ -732,6 +732,130 @@ Date: 2026-04-24
 ### Why SKILL_VOCAB matters
 Skills not in the vocab are dropped by both the rule extractor and the LLM extractor (LLM output is filtered through the vocab whitelist). A JD mentioning Kinesis, Delta Lake, or Iceberg would score 0 on those skills even if you have them. Now they're recognized.
 
+## Chat 19 — CI/CD (GitHub Actions)
+Date: 2026-04-25
+
+### Goal
+Close the resume gap: deploys were entirely manual (local `terraform apply`, hand-copying zips, `aws s3 cp`). Any merge to `dev` now triggers a fully automated deploy to AWS — zero manual steps.
+
+### Built
+
+**New files:**
+- **`requirements.txt`** (repo root) — single source of truth for all Python deps needed to run tests locally and in CI: `boto3, anthropic, pydantic, pyarrow==14.0.2, pandas, requests, numpy, voyageai, pyyaml, ruff, pytest`
+- **`.github/workflows/ci.yml`** — lint + test on every push (any branch) and every PR targeting `dev`
+- **`.github/workflows/deploy.yml`** — on push to `dev` only: re-runs tests as gate, then deploys all AWS artifacts
+
+**Fixed:**
+- **`tests/test_ingest_adzuna.py`** line 184–188 — stale test `test_missing_company_defaults_to_unknown` was asserting `"Unknown"` but Chat 16 changed the ingestor to return `None` (dedup collapse fix). Updated to `test_missing_company_defaults_to_none` with `assertIsNone`.
+
+---
+
+### How CI Works (`ci.yml`)
+
+**Triggers:** every `git push` to any branch, and every pull request targeting `dev`.
+
+**Steps:**
+1. Checkout code
+2. Set up Python 3.12 (matches Lambda runtime — same interpreter = same behaviour)
+3. `pip install -r requirements.txt` (cached between runs for speed)
+4. `ruff check --select E,F --ignore E501,E402 .` — lint the entire repo
+5. `pytest tests/ spark/tests/ -v --tb=short` — run all unit tests
+
+**What passes CI:**
+- 192 unit tests across 6 test files (ingestors × 4, genai × 2)
+- 14 PySpark tests auto-skip (no PySpark installed in CI — expected and correct)
+- All AWS and external API calls are mocked — no live network calls, no credentials needed for tests
+
+**What CI does NOT do:** deploy. It only validates. Deploys happen separately via `deploy.yml`.
+
+**Why ruff, not flake8 or pylint:**
+- ruff is 10–100× faster (written in Rust), runs the full repo in <1s
+- `--select E,F`: E = pycodestyle errors (syntax, indentation), F = pyflakes (unused imports, undefined names)
+- `--ignore E501`: line length ignored — existing code has long lines, not worth the noise
+- `--ignore E402`: module-level import not at top — all ingestor tests do `sys.path.insert()` then `import ingest_X as sut`, which is intentional and correct
+
+**Env vars set in the workflow (not secrets):**
+- `BRONZE_BUCKET=test-bronze-bucket` — all ingestor tests mock S3 but still read this env var on import
+- `AWS_REGION=ap-south-1` — boto3 requires a region even when mocked
+- `ANTHROPIC_API_KEY=sk-test-dummy` — genai tests check `os.environ.get("ANTHROPIC_API_KEY")` before trying Secrets Manager; dummy value prevents any real API call
+
+---
+
+### How Deploy Works (`deploy.yml`)
+
+**Trigger:** push to `dev` only (i.e., after a PR is merged or a direct push to dev).
+
+**Two jobs run sequentially:**
+
+```
+push to dev
+  → job: test   (re-runs full lint + pytest gate)
+  → job: deploy (needs: test — only runs if test passes)
+```
+
+**Why re-run tests in deploy.yml instead of depending on ci.yml:**
+- GitHub's `workflow_run` trigger (depending on another workflow) is async and unreliable for this pattern
+- Re-running is cheap (<60s), guaranteed sequential, and self-contained — no race condition
+- Principle: the deploy job must never trust that some other workflow already ran. It validates itself.
+
+**Deploy job steps:**
+
+| Step | What it does |
+|------|-------------|
+| Configure AWS credentials | Reads `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` from GitHub Secrets; uses `aws-actions/configure-aws-credentials@v4` |
+| Deploy remotive Lambda | `cd ingestion/sources/remotive && zip ingest_remotive.zip ingest_remotive.py && aws lambda update-function-code ...` |
+| Deploy arbeitnow Lambda | Same pattern for arbeitnow |
+| Deploy adzuna Lambda | Same pattern for adzuna |
+| Upload Glue scripts | `aws s3 cp` each of: `bronze_to_silver.py`, `dbt_runner.py`, `enrichment_runner.py`, `embedding_runner.py` to `s3://jobpulse-silver-dev/glue-scripts/` |
+| Build genai_package.zip | `zip -r genai_package.zip genai/ config/user_profile.yml` → upload to `s3://jobpulse-silver-dev/glue-scripts/genai_package.zip` |
+| Build dbt_project.zip | `zip -r dbt_project.zip dbt_project/ --exclude target/* --exclude dbt_packages/*` → upload to `s3://jobpulse-silver-dev/dbt-project/dbt_project.zip` |
+| Upload user_profile.yml | `aws s3 cp config/user_profile.yml s3://jobpulse-silver-dev/config/user_profile.yml` |
+
+**Himalayas Lambda is NOT in the deploy list** — it's Cloudflare-blocked and removed from Step Functions. Deploying it would be wasteful.
+
+**Why Lambda zips are single .py files (no bundled deps):**
+- All 4 ingestors use only Python stdlib (`urllib.request`, `gzip`, `json`, `boto3`)
+- `boto3` comes pre-installed in every Lambda Python 3.12 runtime — no bundling needed
+- Single-file zip = smallest possible cold start, no dependency conflict possible
+
+**Why genai_package.zip is built in CI, not Terraform:**
+- Previously Terraform's `null_resource` built it locally on `terraform apply` — coupling code deploy to infra apply
+- Now: code change → push to dev → CI builds and uploads the zip automatically
+- Terraform still owns the Glue job definition (name, timeout, DPU) — it just doesn't manage the zip anymore
+
+---
+
+### GitHub Secrets (one-time setup)
+
+Add these in: GitHub repo → Settings → Secrets and variables → Actions → New repository secret
+
+| Secret name | What it is |
+|-------------|-----------|
+| `AWS_ACCESS_KEY_ID` | IAM user `varun-admin` access key (ap-south-1) |
+| `AWS_SECRET_ACCESS_KEY` | Matching secret key |
+
+These are the only secrets needed. `ANTHROPIC_API_KEY` is NOT a GitHub secret — it's a dummy value for tests, and the real key lives in AWS Secrets Manager (accessed by Glue jobs at runtime, not by CI).
+
+---
+
+### What Happens After You Push to dev
+
+1. GitHub Actions starts two workflow runs simultaneously:
+   - `CI` (from `ci.yml`) — runs on all pushes
+   - `Deploy` (from `deploy.yml`) — runs on push to dev only
+2. Both run the test gate. If either fails, the rest stops.
+3. Deploy job updates AWS within ~2 minutes of merge:
+   - Lambda functions are live immediately after `update-function-code`
+   - Glue scripts: live on the next Glue job invocation (Glue downloads the script from S3 each run)
+   - genai_package.zip + dbt_project.zip: live on the next enrichment/dbt Glue job run
+4. No Step Functions restart needed — the nightly EventBridge cron picks up the new code automatically
+
+---
+
+### Test Counts (post Chat 19)
+- 192 unit tests pass (was 191 — one stale test renamed and fixed)
+- 14 PySpark tests skipped (expected, no PySpark in CI)
+
 ---
 
 ## Roadmap — Priority Order
@@ -744,13 +868,7 @@ Last updated: 2026-04-25
 - Dynamic S3 profile, force_rescore, rules-first fast path, ThreadPoolExecutor
 - Terraform IaC, S3 backend, Step Functions orchestration, EventBridge schedule
 - dbt star schema, Athena workgroup, CloudWatch alarms + SNS
-
-### Next — Chat 19: CI/CD (GitHub Actions)
-**Why first:** Resume gap. Pipeline runs but deploys are manual. CI/CD is a non-negotiable in any senior DE role.
-- `.github/workflows/ci.yml` — lint (ruff) + unit tests (pytest) on every PR to dev
-- `.github/workflows/deploy.yml` — on merge to dev: re-zip + upload genai_package.zip to S3, update Lambda function code
-- Secrets: ANTHROPIC_API_KEY, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY in GitHub Actions secrets
-- Test gate: deploy only runs if all tests pass
+- CI/CD: GitHub Actions lint + test gate on PRs, auto-deploy to AWS on merge to dev
 
 ### Next — Chat 20: Great Expectations Data Quality
 **Why second:** Data quality gates between silver and gold are standard at any serious DE shop. Catches silent failures (schema drift, null rate spikes, empty partitions) before bad data reaches the dashboard.

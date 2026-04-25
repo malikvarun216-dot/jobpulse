@@ -181,11 +181,11 @@ class TestNormalizeJobs(unittest.TestCase):
         job = sut.normalize_jobs(raw)[0]
         self.assertEqual(job["job_type"], "full-time")
 
-    def test_missing_company_defaults_to_unknown(self):
+    def test_missing_company_defaults_to_none(self):
         raw = [make_raw_job(1)]
         raw[0].pop("company")
         job = sut.normalize_jobs(raw)[0]
-        self.assertEqual(job["company_name"], "Unknown")
+        self.assertIsNone(job["company_name"])
 
 
 class TestBuildS3Key(unittest.TestCase):

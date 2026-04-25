@@ -332,6 +332,48 @@
 - This is safe because the cache stores the extraction (skills, seniority), not the score. Score is always recomputed from the current profile.
 - Practical cost: rescoring 3,500 jobs with force_rescore takes ~3 min and $0.00
 
+## CI/CD: Two workflows, not one (Chat 19)
+- `ci.yml` runs on every push to every branch + every PR to dev. Purpose: fast feedback loop, catches regressions before code reaches dev.
+- `deploy.yml` runs on push to dev only. Purpose: automated AWS deploy after merge.
+- Alternative considered: one combined workflow with conditional deploy step (`if: github.ref == 'refs/heads/dev'`). Rejected — mixing test-only and deploy-capable workflows in one file makes it harder to reason about what runs when and obscures the deploy trigger in PR views.
+- Two files = two clearly named workflow runs in GitHub Actions UI. `CI` appears on every branch. `Deploy` appears only on dev. Unambiguous at a glance.
+
+## CI does not need real AWS credentials or API keys (Chat 19)
+- All 192 unit tests mock every external call: S3 (boto3.client mocked), Anthropic API (mocked via `@patch`), Adzuna HTTP (urllib.request mocked), Voyage AI (mocked).
+- Tests set their own env vars inline (`os.environ["BRONZE_BUCKET"] = "test-bronze-bucket"`) — no env setup in the workflow beyond `ANTHROPIC_API_KEY=sk-test-dummy`.
+- `sk-test-dummy` prevents JDEnrichmentAgent from hitting Secrets Manager (it checks `os.environ.get("ANTHROPIC_API_KEY")` first — if set, skips AWS). Non-empty string is enough; the value is never sent to Anthropic in tests.
+- Security benefit: CI job has zero AWS permissions. A compromised Actions runner cannot touch S3, Lambda, or Glue.
+
+## Deploy re-runs tests instead of depending on ci.yml result (Chat 19)
+- GitHub's `workflow_run` trigger can depend on another workflow completing, but it's async and doesn't guarantee the run was on the same commit. Race condition: ci.yml ran on commit A, but by the time deploy fires it might be on commit B.
+- Simpler and safer: deploy.yml has its own `test` job as the first step (`needs: test` gates the `deploy` job). If tests fail, deploy never runs.
+- Cost of re-running: <60 seconds. Cost of a failed deploy from a race condition: broken Lambda in production.
+
+## Lambda zip contains only the handler .py — no deps bundled (Chat 19)
+- All ingestors (Remotive, Arbeitnow, Adzuna) use only `urllib.request`, `gzip`, `json`, `hashlib` (stdlib) plus `boto3`.
+- `boto3` is pre-installed in every AWS Lambda Python 3.12 runtime. Bundling it would increase zip size from ~3 KB to ~40 MB.
+- Build command: `cd ingestion/sources/{source} && zip {source}.zip ingest_{source}.py` — one line, no build tool, reproducible anywhere.
+- Contrast with genai_package.zip: that zip includes the full `genai/` directory (pure Python, no C extensions) because Glue doesn't auto-install it.
+
+## genai_package.zip built in CI, not Terraform null_resource (Chat 19)
+- Terraform's `null_resource` + `local-exec` built the zip during `terraform apply`. This coupled code deploys to infra applies — changing a genai/*.py file required either running `terraform apply` (which might also change infra) or manually building the zip.
+- New pattern: CI builds the zip and uploads it on every push to dev. Terraform still owns the Glue job definition (name, timeout, IAM role, DPU) but the zip is out of its scope.
+- Clean separation: Terraform = infra state. GitHub Actions = code artifacts. Never mix.
+- Trade-off: if someone runs `terraform apply` locally and the null_resource triggers, it would upload an older copy of the zip. Mitigation: the null_resource is still in glue.tf as a fallback, but CI is the authoritative deploy path.
+
+## ruff over flake8/pylint for linting (Chat 19)
+- ruff is written in Rust, runs the full repo in <1s (vs 10–30s for flake8 on medium repos). CI feedback is faster.
+- `--select E,F`: E (pycodestyle) catches syntax/indentation errors. F (pyflakes) catches undefined names and unused imports — the two categories most likely to cause runtime failures.
+- `--ignore E501` (line length): existing codebase has many long lines, especially in SQL strings and dict literals. Enforcing this now would generate hundreds of warnings for zero functional benefit.
+- `--ignore E402` (import not at top): all 6 ingestor/genai test files do `sys.path.insert(0, ...)` before `import ingest_X as sut`. This is the correct pattern when tests live outside the package they test — ruff's E402 doesn't understand this idiom.
+- Not using W (pycodestyle warnings) or C (convention): too noisy on a codebase not designed with them from the start.
+
+## Python 3.12 in CI matches Lambda runtime (Chat 19)
+- All 4 Lambda functions use `runtime = "python3.12"` in Terraform.
+- If CI used Python 3.9 or 3.11, a syntax or stdlib API difference could pass CI but fail in Lambda.
+- Glue Python Shell jobs use Python 3.9 (Glue 4.0 limitation), but those aren't tested in CI — Glue job scripts are tested indirectly via the genai unit tests which run fine on 3.12.
+- Trade-off: if Glue-only code uses a 3.9-only pattern, CI won't catch it. Acceptable — the genai tests cover extraction logic; the Glue bootstrap boilerplate (zip extraction, sys.path) is stable.
+
 ## Lambda snapshot_date: IST (UTC+5:30) instead of UTC (Post-Chat-14 fix)
 - All ingestors compute `snapshot_date = datetime.now(ist).strftime("%Y-%m-%d")`
 - Reason: EventBridge cron fires at 2 AM IST = 8:30 PM UTC (previous day) → UTC computes wrong date

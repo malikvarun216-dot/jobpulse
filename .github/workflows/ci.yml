@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [dev]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Lint
+        run: ruff check --select E,F --ignore E501,E402 .
+
+      - name: Unit tests
+        env:
+          BRONZE_BUCKET: test-bronze-bucket
+          AWS_REGION: ap-south-1
+          ANTHROPIC_API_KEY: sk-test-dummy
+        run: pytest tests/ spark/tests/ -v --tb=short

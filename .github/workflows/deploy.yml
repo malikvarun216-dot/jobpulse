@@ -1,0 +1,113 @@
+name: Deploy
+
+on:
+  push:
+    branches: [dev]
+
+env:
+  AWS_REGION: ap-south-1
+  ENV: dev
+  SILVER_BUCKET: jobpulse-silver-dev
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Lint
+        run: ruff check --select E,F --ignore E501,E402 .
+
+      - name: Unit tests
+        env:
+          BRONZE_BUCKET: test-bronze-bucket
+          AWS_REGION: ap-south-1
+          ANTHROPIC_API_KEY: sk-test-dummy
+        run: pytest tests/ spark/tests/ -v --tb=short
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy remotive Lambda
+        run: |
+          cd ingestion/sources/remotive
+          zip ingest_remotive.zip ingest_remotive.py
+          aws lambda update-function-code \
+            --function-name jobpulse-ingest-remotive-${{ env.ENV }} \
+            --zip-file fileb://ingest_remotive.zip \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Deploy arbeitnow Lambda
+        run: |
+          cd ingestion/sources/arbeitnow
+          zip ingest_arbeitnow.zip ingest_arbeitnow.py
+          aws lambda update-function-code \
+            --function-name jobpulse-ingest-arbeitnow-${{ env.ENV }} \
+            --zip-file fileb://ingest_arbeitnow.zip \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Deploy adzuna Lambda
+        run: |
+          cd ingestion/sources/adzuna
+          zip ingest_adzuna.zip ingest_adzuna.py
+          aws lambda update-function-code \
+            --function-name jobpulse-ingest-adzuna-${{ env.ENV }} \
+            --zip-file fileb://ingest_adzuna.zip \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Upload Glue scripts
+        run: |
+          aws s3 cp spark/jobs/bronze_to_silver.py \
+            s3://${{ env.SILVER_BUCKET }}/glue-scripts/bronze_to_silver.py
+          aws s3 cp transform/dbt_runner/dbt_runner.py \
+            s3://${{ env.SILVER_BUCKET }}/glue-scripts/dbt_runner.py
+          aws s3 cp genai/enrichment_runner.py \
+            s3://${{ env.SILVER_BUCKET }}/glue-scripts/enrichment_runner.py
+          aws s3 cp genai/embedding_runner.py \
+            s3://${{ env.SILVER_BUCKET }}/glue-scripts/embedding_runner.py
+
+      - name: Build and upload genai_package.zip
+        run: |
+          zip -r genai_package.zip genai/ config/user_profile.yml
+          aws s3 cp genai_package.zip \
+            s3://${{ env.SILVER_BUCKET }}/glue-scripts/genai_package.zip
+
+      - name: Build and upload dbt_project.zip
+        run: |
+          zip -r dbt_project.zip dbt_project/ \
+            --exclude "dbt_project/target/*" \
+            --exclude "dbt_project/dbt_packages/*"
+          aws s3 cp dbt_project.zip \
+            s3://${{ env.SILVER_BUCKET }}/dbt-project/dbt_project.zip
+
+      - name: Upload user_profile.yml
+        run: |
+          aws s3 cp config/user_profile.yml \
+            s3://${{ env.SILVER_BUCKET }}/config/user_profile.yml
+
+      - name: Deploy summary
+        run: |
+          echo "Lambdas: remotive, arbeitnow, adzuna"
+          echo "Glue scripts: bronze_to_silver, dbt_runner, enrichment_runner, embedding_runner"
+          echo "Packages: genai_package.zip, dbt_project.zip, user_profile.yml"

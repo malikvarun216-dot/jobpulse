@@ -140,9 +140,11 @@ celerybeat.pid
 .venv
 env/
 venv/
+venv_ge/
 ENV/
 env.bak/
 venv.bak/
+.claire/
 
 # Spyder project settings
 .spyderproject
@@ -211,3 +213,4 @@ terraform/envs/dev/terraform.tfstate.backup
 terraform/envs/dev/builds/*.zip
 CLAUDE.md
 .claude/
+docs/learning.md

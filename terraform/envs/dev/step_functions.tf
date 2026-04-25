@@ -33,8 +33,10 @@ resource "aws_iam_policy" "sfn_policy" {
         Action = ["glue:StartJobRun", "glue:GetJobRun", "glue:BatchStopJobRun"]
         Resource = [
           aws_glue_job.bronze_to_silver.arn,
+          aws_glue_job.ge_runner.arn,
           aws_glue_job.dbt_runner.arn,
-          aws_glue_job.enrichment_runner.arn
+          aws_glue_job.enrichment_runner.arn,
+          aws_glue_job.embedding_runner.arn
         ]
       }
     ]
@@ -164,6 +166,24 @@ resource "aws_sfn_state_machine" "ingest_pipeline" {
           }
         }
         ResultPath = "$.glue"
+        Next       = "RunDataQuality"
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "PipelineFailure"
+          ResultPath  = "$.error"
+        }]
+      }
+
+      RunDataQuality = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::glue:startJobRun.sync"
+        Parameters = {
+          JobName = aws_glue_job.ge_runner.name
+          Arguments = {
+            "--snapshot_date.$" = "$.parallel[0].snapshot_date"
+          }
+        }
+        ResultPath = "$.quality"
         Next       = "RunDbtGold"
         Catch = [{
           ErrorEquals = ["States.ALL"]
@@ -197,6 +217,24 @@ resource "aws_sfn_state_machine" "ingest_pipeline" {
           }
         }
         ResultPath = "$.enrichment"
+        Next       = "EmbedJDs"
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "PipelineFailure"
+          ResultPath  = "$.error"
+        }]
+      }
+
+      EmbedJDs = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::glue:startJobRun.sync"
+        Parameters = {
+          JobName = aws_glue_job.embedding_runner.name
+          Arguments = {
+            "--snapshot_date.$" = "$.parallel[0].snapshot_date"
+          }
+        }
+        ResultPath = "$.embeddings"
         Next       = "PipelineComplete"
         Catch = [{
           ErrorEquals = ["States.ALL"]

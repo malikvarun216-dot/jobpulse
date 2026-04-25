@@ -66,7 +66,6 @@ class TestSkillExtractorRuleBased(unittest.TestCase):
         self.assertEqual(source, "rules")
 
     def test_llm_path_parses_mock_response(self):
-        import json
         from genai.skill_extractor import SkillExtractor
 
         mock_response = MagicMock()

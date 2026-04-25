@@ -10,7 +10,7 @@ Run locally: pytest tests/test_jd_enrichment_agent.py -v
 import os
 import sys
 import unittest
-from unittest.mock import MagicMock, patch, mock_open
+from unittest.mock import patch, mock_open
 
 # Minimal env vars so guardrails / boto3 imports don't explode
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
@@ -19,7 +19,7 @@ os.environ.setdefault("AWS_DEFAULT_REGION", "ap-south-1")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
-from genai.guardrails import BudgetExceededError, EnrichmentRecord, ExtractionResult
+from genai.guardrails import BudgetExceededError, ExtractionResult
 from genai.skill_extractor import RULES_MIN_SKILLS
 
 

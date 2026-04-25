@@ -17,7 +17,7 @@ import logging
 import os
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -86,7 +86,8 @@ def write_to_s3(jobs: list[dict], snapshot_date: str) -> str:
 
 
 def lambda_handler(event: dict, context) -> dict:
-    snapshot_date = event.get("snapshot_date") or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    ist = timezone(timedelta(hours=5, minutes=30))
+    snapshot_date = datetime.now(ist).strftime("%Y-%m-%d")
     dry_run = event.get("dry_run", False)
 
     logger.info("START ingest_remotive | snapshot_date=%s | dry_run=%s", snapshot_date, dry_run)

@@ -20,6 +20,7 @@ import os
 import sys
 import time
 import zipfile
+from typing import Optional
 
 import boto3
 import pandas as pd
@@ -33,6 +34,23 @@ import pandas as pd
 _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _GENAI_EXTRACT_DIR = "/tmp/genai_pkg"
 
+_S3_PROFILE_KEY = "config/user_profile.yml"
+
+
+def _try_download_profile_from_s3(silver_bucket: str, region: str) -> Optional[str]:
+    """Download user_profile.yml from S3; return local path or None on failure."""
+    local_path = "/tmp/user_profile.yml"
+    try:
+        boto3.client("s3", region_name=region).download_file(
+            silver_bucket, _S3_PROFILE_KEY, local_path
+        )
+        print(f"[profile] Downloaded from s3://{silver_bucket}/{_S3_PROFILE_KEY}")
+        return local_path
+    except Exception as exc:
+        print(f"[profile] S3 download failed ({exc}) -- using bundled profile")
+        return None
+
+
 if os.path.isdir(os.path.join(_repo_root, "genai")):
     # Local dev: script lives at genai/enrichment_runner.py; repo root has genai/
     sys.path.insert(0, _repo_root)
@@ -42,13 +60,18 @@ else:
     import argparse as _ap
     _pre = _ap.ArgumentParser(add_help=False)
     _pre.add_argument("--silver_bucket", default="jobpulse-silver-dev")
-    _silver = _pre.parse_known_args()[0].silver_bucket
+    _pre.add_argument("--region",        default="ap-south-1")
+    _preargs = _pre.parse_known_args()[0]
+    _silver  = _preargs.silver_bucket
+    _region  = _preargs.region
     _zip_local = "/tmp/genai_package.zip"
     boto3.client("s3").download_file(_silver, "glue-scripts/genai_package.zip", _zip_local)
     with zipfile.ZipFile(_zip_local) as _z:
         _z.extractall(_GENAI_EXTRACT_DIR)
     sys.path.insert(0, _GENAI_EXTRACT_DIR)
-    _DEFAULT_PROFILE_PATH = os.path.join(_GENAI_EXTRACT_DIR, "config", "user_profile.yml")
+    # Try fresh S3 profile first; fall back to the one bundled in the zip
+    _s3_profile = _try_download_profile_from_s3(_silver, _region)
+    _DEFAULT_PROFILE_PATH = _s3_profile or os.path.join(_GENAI_EXTRACT_DIR, "config", "user_profile.yml")
 
 from genai.jd_enrichment_agent import JDEnrichmentAgent
 
@@ -65,6 +88,7 @@ parser.add_argument("--gold_database",   default="jobpulse_gold_dev")
 parser.add_argument("--silver_database", default="jobpulse_silver_dev")
 parser.add_argument("--snapshot_date",   default="")
 parser.add_argument("--dry_run",         default="false")
+parser.add_argument("--force_rescore",   default="false")
 parser.add_argument("--profile_path",    default=_DEFAULT_PROFILE_PATH)
 args, _ = parser.parse_known_args()
 
@@ -74,7 +98,8 @@ REGION        = args.region
 WORKGROUP     = args.workgroup
 GOLD_DB       = args.gold_database
 SILVER_DB     = args.silver_database
-DRY_RUN       = args.dry_run.lower() == "true"
+DRY_RUN          = args.dry_run.lower() == "true"
+FORCE_RESCORE    = args.force_rescore.lower() == "true"
 PROFILE_PATH  = args.profile_path
 S3_STAGING    = f"s3://{GOLD_BUCKET}/athena-results/"
 
@@ -163,7 +188,7 @@ def repair_enrichment_partition() -> None:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    print(f"[enrichment_runner] START | dry_run={DRY_RUN}")
+    print(f"[enrichment_runner] START | dry_run={DRY_RUN} | force_rescore={FORCE_RESCORE}")
 
     jobs = fetch_jobs(args.snapshot_date)
 
@@ -177,6 +202,7 @@ if __name__ == "__main__":
         region=REGION,
         profile_path=PROFILE_PATH,
         dry_run=DRY_RUN,
+        force_rescore=FORCE_RESCORE,
     )
 
     summary = agent.run(jobs)

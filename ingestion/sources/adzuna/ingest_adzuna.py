@@ -8,7 +8,7 @@ Trigger  : EventBridge scheduled rule (daily, via Step Functions Parallel state)
 Output   : s3://{BRONZE_BUCKET}/snapshot_date=YYYY-MM-DD/source=adzuna/data.json.gz
 Idempotent: YES — same run date always writes to same S3 key (safe to retry)
 
-Adzuna covers 12 countries: gb, us, au, ca, de, fr, br, in, nz, pl, ru, za
+Adzuna covers 7 countries: gb, us, au, ca, in, nz, za
 Each country is paginated independently; results merged into a single S3 file.
 """
 
@@ -20,7 +20,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -33,7 +33,7 @@ API_BASE = "https://api.adzuna.com/v1/api/jobs"
 RESULTS_PER_PAGE = 50
 MAX_PAGES_PER_COUNTRY = 6  # 6 × 50 = 300 jobs/country × 12 countries ≈ 3,600 total
 
-COUNTRIES = ["gb", "us", "au", "ca", "de", "fr", "br", "in", "nz", "pl", "ru", "za"]
+COUNTRIES = ["gb", "us", "au", "ca", "in", "nz", "za"]
 
 # Maps Adzuna 2-letter country codes to human-readable labels embedded in location_raw.
 # The Spark extract_country() function looks for these strings in COUNTRY_MAP.
@@ -42,13 +42,8 @@ COUNTRY_LABELS = {
     "us": "US",
     "au": "AU",
     "ca": "CA",
-    "de": "DE",
-    "fr": "FR",
-    "br": "BR",
     "in": "IN",
     "nz": "NZ",
-    "pl": "PL",
-    "ru": "RU",
     "za": "ZA",
 }
 
@@ -151,7 +146,7 @@ def normalize_jobs(jobs: list[dict]) -> list[dict]:
         normalized.append({
             "job_id": str(job.get("id", "")),
             "title": job.get("title", ""),
-            "company_name": (job.get("company") or {}).get("display_name", "Unknown"),
+            "company_name": (job.get("company") or {}).get("display_name"),
             "apply_url": job.get("redirect_url", ""),
             "description": job.get("description", ""),
             "tags": [],  # Adzuna has no tags array; role_family inferred from category in Spark
@@ -201,7 +196,8 @@ def write_to_s3(jobs: list[dict], snapshot_date: str) -> str:
 
 
 def lambda_handler(event: dict, context) -> dict:
-    snapshot_date = event.get("snapshot_date") or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    ist = timezone(timedelta(hours=5, minutes=30))
+    snapshot_date = event.get("snapshot_date") or datetime.now(ist).strftime("%Y-%m-%d")
     dry_run = event.get("dry_run", False)
 
     logger.info("START ingest_adzuna | snapshot_date=%s | dry_run=%s", snapshot_date, dry_run)

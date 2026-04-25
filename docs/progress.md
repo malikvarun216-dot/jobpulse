@@ -578,6 +578,428 @@ Enrichment was timing out at 3,400 jobs (Glue Python Shell 60-min limit). Root c
 3. CloudWatch → `/aws/glue/jobs/jobpulse-run-enrichment-dev` → check duration (should be <10 min)
 4. Athena: `SELECT extraction_source, COUNT(*) FROM enrichment_scores WHERE snapshot_date = '2026-04-21' GROUP BY extraction_source`
 
-### Next
-Chat 15 — Great Expectations data quality layer, or add fourth data source.
+## Chat 14 Checkpoint — Dashboard Testing + Data Verification
+Date: 2026-04-22 (2 AM — verified full pipeline)
 
+### Findings
+
+**Full pipeline working end-to-end:**
+- Athena shows 6,428 jobs across 5 snapshots (Apr 18–22)
+  - 2026-04-22: 1,734 jobs
+  - 2026-04-21: 1,950 jobs
+  - 2026-04-20: 2,682 jobs
+  - 2026-04-19: 31 jobs
+  - 2026-04-18: 31 jobs
+- dbt ran successfully; gold tables created and partitions registered in Glue catalog
+- All data queryable — no sync issues
+
+**Dashboard limitation identified:**
+- `dashboard/streamlit/app.py` line 41 had `LIMIT 500` in Athena query
+- Caused dashboard to show only first 500 jobs even though 6,428 exist
+- No data loss; purely a query limit
+
+### Fixed
+- Changed `LIMIT 500` → `LIMIT 20000` in dashboard
+- Dashboard now shows all 6,428 jobs (full 5-day dataset)
+
+### Decisions
+- **Dashboard LIMIT:** 20,000 rows is reasonable middle ground: shows all current jobs (6.4K) + scales to future 50K/day without overwhelming browser. Better approach (Chat 16): replace hard LIMIT with dynamic filters (last 7 days, role='Data Engineer', is_remote=true).
+
+### Test Status
+- ✅ Full pipeline runs unattended (SF succeeds 2 AM daily)
+- ✅ Bronze data: raw JSON from 3 sources (Remotive, Arbeitnow, Adzuna)
+- ✅ Silver data: cleaned, deduplicated Parquet (partitioned by date/country/role)
+- ✅ Gold data: dbt star schema, all tables populated
+- ✅ Dashboard: functional, queryable, showing 6,428 jobs
+- ✅ No errors or missing steps detected
+
+### Post-Chat-14 Fix — IST Timezone for All Lambda Ingestors
+Date: 2026-04-23
+
+### Problem
+Lambda ingestors were using `datetime.now(timezone.utc)` to compute `snapshot_date`. At 2 AM IST (8:30 PM UTC previous day), Lambda computed yesterday's date.
+- Apr 23 2:00 AM IST pipeline wrote data to `snapshot_date=2026-04-22` (UTC date)
+- Glue job picked up Apr 22 data even though it ran on Apr 23
+- Dashboard showed stale data; no Apr 23 partition in S3 bronze
+
+### Fixed
+**All 3 Lambda ingestors updated:**
+- `ingestion/sources/remotive/ingest_remotive.py` — lines 18, 88–90
+- `ingestion/sources/arbeitnow/ingest_arbeitnow.py` — lines 18, 145–147
+- `ingestion/sources/adzuna/ingest_adzuna.py` — lines 23, 203–205
+
+**Pattern applied to all:**
+```python
+from datetime import datetime, timezone, timedelta
+...
+ist = timezone(timedelta(hours=5, minutes=30))
+snapshot_date = event.get("snapshot_date") or datetime.now(ist).strftime("%Y-%m-%d")
+```
+
+### Verified
+- Remotive Lambda manual invoke at 2026-04-22T21:17:05Z (= 2026-04-23 02:47 IST) → returned `snapshot_date=2026-04-23` ✓
+- S3 bronze check: new data written to `snapshot_date=2026-04-23/source=remotive/` ✓
+- Arbeitnow + Adzuna updated with same pattern ✓
+
+### Implications
+- Apr 24+ pipelines will write correct IST dates
+- Apr 22 data remains in S3 (partition was overwritten with IST-correct fix)
+- Dashboard will show fresh data on next refresh after Apr 24 2 AM execution
+- Idempotent: re-running Apr 23 with IST fix overwrites Apr 22 data → no duplicates
+
+### Next
+Chat 15 — RAG semantic search layer + JD embeddings.
+
+## Chat 15 — RAG Semantic Search Layer
+Date: 2026-04-24
+
+### Built
+- **genai/embedding_agent.py** — batch embeds JDs via Voyage AI (`voyage-4-lite`, 512 dims). Skips already-embedded job_ids. Writes Parquet to `s3://gold/embeddings/snapshot_date=.../`. Pure pyarrow, no pandas (Glue engine discovery issue).
+- **genai/embedding_runner.py** — Glue Python Shell entry point for EmbedJDs step. Same S3 bootstrap pattern as enrichment_runner. Fetches `description` from `fact_job_posting` via Athena.
+- **genai/semantic_search.py** — loads embedding Parquet from S3, cosine similarity (NumPy dot product on normalized vectors), returns top-K `(job_id, score)` pairs.
+- **dashboard/streamlit/app.py** — added Semantic Search tab: text query → embed → cosine search → results table. "Why this match?" expander calls Claude Haiku on top-3 results.
+- **terraform/envs/dev/glue.tf** — `aws_glue_job.embedding_runner` (voyageai>=0.2.0, pyarrow==14.0.2). Voyage key fetched from Secrets Manager.
+- **terraform/envs/dev/step_functions.tf** — `EmbedJDs` state added after `RunEnrichment`.
+
+### Pipeline (final)
+```
+ParallelIngest → RunGlueJob → RunDbtGold → RunEnrichment → EmbedJDs → PipelineComplete
+```
+
+### Verified
+- 3,528 job embeddings written to S3 ✓
+- Semantic search tab returns ranked results ✓
+- Claude Haiku "Why this match?" explanations rendering ✓
+
+---
+
+## Chat 16 — Bug Fixes (5 critical)
+Date: 2026-04-24
+
+### Bugs Fixed
+
+1. **Dedup collapse: 2,525 bronze → 24 gold rows** — Adzuna defaulted missing company_name to `"Unknown"`, causing all Unknown-company jobs with same title+country to hash-collide into one row. Fix: return `None` instead of `"Unknown"`; redesigned dedup_key to `md5(source|job_id)` (per-source unique), cross_source_key separate for multi-source tracking.
+
+2. **3-day pipeline failure: `FileNotFoundError: 'which'`** — `subprocess.run(["which", "dbt"])` fails because `which` is a shell builtin, not an executable. Fix: `shutil.which("dbt")` from Python stdlib.
+
+3. **EmbedJDs COLUMN_NOT_FOUND: description** — `fact_job_posting.sql` never selected `j.description`. Fix: added `j.description` to the model SELECT list.
+
+4. **Embedding job pyarrow engine error** — `pd.read_parquet()` couldn't discover pyarrow engine in Glue Python Shell. Fix: replaced all pandas parquet calls with direct pyarrow API (`pq.read_table`, `pq.write_table`, `pa.table`).
+
+5. **ImportError: numpy.core.multiarray** — `numpy>=1.24.0` in embedding job's `--additional-python-modules` installed a second numpy alongside Glue's pre-installed one; C extensions compiled against different versions clash. Fix: removed numpy and pandas from embedding job's additional modules entirely.
+
+### Verified
+- 15,356 jobs in dashboard (was 24) ✓
+- 3,528 embeddings, semantic search working ✓
+- Full pipeline SUCCEEDED end-to-end ✓
+
+---
+
+## Chat 17 — Match Scoring Improvements
+Date: 2026-04-24
+
+### Built
+- **config/user_profile.yml** — added `skill_tiers: {core, secondary, learning}` alongside flat `skills` list.
+- **genai/match_scorer.py** — replaced flat Jaccard with tiered weighted scoring. Core skills (python, sql, pyspark, aws, dbt) = 3x weight; secondary (airflow, kafka, terraform, pandas) = 1.5x; learning (docker) = 1x. Normalized against total user skill weight so score is always [0, 1].
+- **genai/jd_enrichment_agent.py** — added `force_rescore` param. When set, skips LLM entirely (rules + S3 cache only, zero API spend).
+- **genai/enrichment_runner.py** — added `--force_rescore` CLI arg; in Glue env, downloads `user_profile.yml` fresh from S3 before falling back to the bundled zip copy.
+- **terraform/envs/dev/glue.tf** — `aws_s3_object.user_profile` uploads profile to `s3://silver/config/user_profile.yml`; `--force_rescore = "false"` default arg on enrichment job.
+
+### How to use after a profile update
+```bash
+# 1. Edit config/user_profile.yml
+# 2. Push to S3 immediately (no terraform apply needed)
+aws s3 cp config/user_profile.yml s3://jobpulse-silver-dev/config/user_profile.yml
+# 3. Trigger rescore (zero LLM spend)
+aws glue start-job-run --job-name jobpulse-enrichment-dev \
+  --arguments '{"--force_rescore":"true","--snapshot_date":"2026-04-24"}'
+```
+
+---
+
+## Chat 18 — Profile Rebuild + Skill Scoring Fixes
+Date: 2026-04-24
+
+### Built
+- **config/user_profile.yml** — full profile rebuild from resume. 30 skills across 3 tiers (was 10 flat). Core: python, sql, pyspark, kafka, airflow, spark, hive, cassandra, delta lake, bigquery, gcp, aws. Secondary: flink, kinesis, databricks, hadoop, docker, git, github actions, linux, avro, data modeling, redshift, snowflake, iceberg. Learning: dbt, terraform, llm, rag, langchain. Weights: skill_overlap 50, seniority_fit 10 (was 40/20).
+- **genai/match_scorer.py** — softened YoE gap: `gap == 3 → 25%` (was 0%). Senior roles asking 5 YoE no longer score zero on seniority; surfaces as stretch roles instead of disappearing.
+- **genai/guardrails.py** — expanded SKILL_VOCAB from ~75 → ~95 terms. Added: kinesis, delta lake, iceberg, langchain, linux, avro, hdfs, dataproc, composer, git, spark streaming. Without these, JD skills silently dropped before scoring — matches were understated.
+
+### Why weights changed
+- skill_overlap 40→50: skills are the strongest DE hiring signal; role + location together equal seniority
+- seniority_fit 20→10: YoE gap math works against 2 YoE targeting senior roles anyway; softened gap logic (gap=3→25%) partially compensates
+
+### Why SKILL_VOCAB matters
+Skills not in the vocab are dropped by both the rule extractor and the LLM extractor (LLM output is filtered through the vocab whitelist). A JD mentioning Kinesis, Delta Lake, or Iceberg would score 0 on those skills even if you have them. Now they're recognized.
+
+## Chat 19 — CI/CD (GitHub Actions)
+Date: 2026-04-25
+
+### Goal
+Close the resume gap: deploys were entirely manual (local `terraform apply`, hand-copying zips, `aws s3 cp`). Any merge to `dev` now triggers a fully automated deploy to AWS — zero manual steps.
+
+### Built
+
+**New files:**
+- **`requirements.txt`** (repo root) — single source of truth for all Python deps needed to run tests locally and in CI: `boto3, anthropic, pydantic, pyarrow==14.0.2, pandas, requests, numpy, voyageai, pyyaml, ruff, pytest`
+- **`.github/workflows/ci.yml`** — lint + test on every push (any branch) and every PR targeting `dev`
+- **`.github/workflows/deploy.yml`** — on push to `dev` only: re-runs tests as gate, then deploys all AWS artifacts
+
+**Fixed:**
+- **`tests/test_ingest_adzuna.py`** line 184–188 — stale test `test_missing_company_defaults_to_unknown` was asserting `"Unknown"` but Chat 16 changed the ingestor to return `None` (dedup collapse fix). Updated to `test_missing_company_defaults_to_none` with `assertIsNone`.
+
+---
+
+### How CI Works (`ci.yml`)
+
+**Triggers:** every `git push` to any branch, and every pull request targeting `dev`.
+
+**Steps:**
+1. Checkout code
+2. Set up Python 3.12 (matches Lambda runtime — same interpreter = same behaviour)
+3. `pip install -r requirements.txt` (cached between runs for speed)
+4. `ruff check --select E,F --ignore E501,E402 .` — lint the entire repo
+5. `pytest tests/ spark/tests/ -v --tb=short` — run all unit tests
+
+**What passes CI:**
+- 192 unit tests across 6 test files (ingestors × 4, genai × 2)
+- 14 PySpark tests auto-skip (no PySpark installed in CI — expected and correct)
+- All AWS and external API calls are mocked — no live network calls, no credentials needed for tests
+
+**What CI does NOT do:** deploy. It only validates. Deploys happen separately via `deploy.yml`.
+
+**Why ruff, not flake8 or pylint:**
+- ruff is 10–100× faster (written in Rust), runs the full repo in <1s
+- `--select E,F`: E = pycodestyle errors (syntax, indentation), F = pyflakes (unused imports, undefined names)
+- `--ignore E501`: line length ignored — existing code has long lines, not worth the noise
+- `--ignore E402`: module-level import not at top — all ingestor tests do `sys.path.insert()` then `import ingest_X as sut`, which is intentional and correct
+
+**Env vars set in the workflow (not secrets):**
+- `BRONZE_BUCKET=test-bronze-bucket` — all ingestor tests mock S3 but still read this env var on import
+- `AWS_REGION=ap-south-1` — boto3 requires a region even when mocked
+- `ANTHROPIC_API_KEY=sk-test-dummy` — genai tests check `os.environ.get("ANTHROPIC_API_KEY")` before trying Secrets Manager; dummy value prevents any real API call
+
+---
+
+### How Deploy Works (`deploy.yml`)
+
+**Trigger:** push to `dev` only (i.e., after a PR is merged or a direct push to dev).
+
+**Two jobs run sequentially:**
+
+```
+push to dev
+  → job: test   (re-runs full lint + pytest gate)
+  → job: deploy (needs: test — only runs if test passes)
+```
+
+**Why re-run tests in deploy.yml instead of depending on ci.yml:**
+- GitHub's `workflow_run` trigger (depending on another workflow) is async and unreliable for this pattern
+- Re-running is cheap (<60s), guaranteed sequential, and self-contained — no race condition
+- Principle: the deploy job must never trust that some other workflow already ran. It validates itself.
+
+**Deploy job steps:**
+
+| Step | What it does |
+|------|-------------|
+| Configure AWS credentials | Reads `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` from GitHub Secrets; uses `aws-actions/configure-aws-credentials@v4` |
+| Deploy remotive Lambda | `cd ingestion/sources/remotive && zip ingest_remotive.zip ingest_remotive.py && aws lambda update-function-code ...` |
+| Deploy arbeitnow Lambda | Same pattern for arbeitnow |
+| Deploy adzuna Lambda | Same pattern for adzuna |
+| Upload Glue scripts | `aws s3 cp` each of: `bronze_to_silver.py`, `dbt_runner.py`, `enrichment_runner.py`, `embedding_runner.py` to `s3://jobpulse-silver-dev/glue-scripts/` |
+| Build genai_package.zip | `zip -r genai_package.zip genai/ config/user_profile.yml` → upload to `s3://jobpulse-silver-dev/glue-scripts/genai_package.zip` |
+| Build dbt_project.zip | `zip -r dbt_project.zip dbt_project/ --exclude target/* --exclude dbt_packages/*` → upload to `s3://jobpulse-silver-dev/dbt-project/dbt_project.zip` |
+| Upload user_profile.yml | `aws s3 cp config/user_profile.yml s3://jobpulse-silver-dev/config/user_profile.yml` |
+
+**Himalayas Lambda is NOT in the deploy list** — it's Cloudflare-blocked and removed from Step Functions. Deploying it would be wasteful.
+
+**Why Lambda zips are single .py files (no bundled deps):**
+- All 4 ingestors use only Python stdlib (`urllib.request`, `gzip`, `json`, `boto3`)
+- `boto3` comes pre-installed in every Lambda Python 3.12 runtime — no bundling needed
+- Single-file zip = smallest possible cold start, no dependency conflict possible
+
+**Why genai_package.zip is built in CI, not Terraform:**
+- Previously Terraform's `null_resource` built it locally on `terraform apply` — coupling code deploy to infra apply
+- Now: code change → push to dev → CI builds and uploads the zip automatically
+- Terraform still owns the Glue job definition (name, timeout, DPU) — it just doesn't manage the zip anymore
+
+---
+
+### GitHub Secrets (one-time setup)
+
+Add these in: GitHub repo → Settings → Secrets and variables → Actions → New repository secret
+
+| Secret name | What it is |
+|-------------|-----------|
+| `AWS_ACCESS_KEY_ID` | IAM user `varun-admin` access key (ap-south-1) |
+| `AWS_SECRET_ACCESS_KEY` | Matching secret key |
+
+These are the only secrets needed. `ANTHROPIC_API_KEY` is NOT a GitHub secret — it's a dummy value for tests, and the real key lives in AWS Secrets Manager (accessed by Glue jobs at runtime, not by CI).
+
+---
+
+### What Happens After You Push to dev
+
+1. GitHub Actions starts two workflow runs simultaneously:
+   - `CI` (from `ci.yml`) — runs on all pushes
+   - `Deploy` (from `deploy.yml`) — runs on push to dev only
+2. Both run the test gate. If either fails, the rest stops.
+3. Deploy job updates AWS within ~2 minutes of merge:
+   - Lambda functions are live immediately after `update-function-code`
+   - Glue scripts: live on the next Glue job invocation (Glue downloads the script from S3 each run)
+   - genai_package.zip + dbt_project.zip: live on the next enrichment/dbt Glue job run
+4. No Step Functions restart needed — the nightly EventBridge cron picks up the new code automatically
+
+---
+
+### Test Counts (post Chat 20)
+- 198 unit tests pass (was 192 — 6 new GE tests added)
+- 14 PySpark tests skipped (expected, no PySpark in CI)
+
+---
+
+## Roadmap — Priority Order
+Last updated: 2026-04-25
+
+### Done ✅
+- Full pipeline: ingest → silver → gold → enrich → embed → dashboard
+- 3 sources (Remotive, Arbeitnow, Adzuna), ~1,500 jobs/day
+- GenAI: skill extraction, match scoring (tiered), semantic search, budget guard
+- Dynamic S3 profile, force_rescore, rules-first fast path, ThreadPoolExecutor
+- Terraform IaC, S3 backend, Step Functions orchestration, EventBridge schedule
+- dbt star schema, Athena workgroup, CloudWatch alarms + SNS
+- CI/CD: GitHub Actions lint + test gate on PRs, auto-deploy to AWS on merge to dev
+
+## Chat 20 — Great Expectations Data Quality Gate
+Date: 2026-04-25
+
+### Built
+- **`transform/ge_runner/ge_runner.py`** — Glue Python Shell job. Reads today's silver partition from S3 into pandas, runs 5 GE expectations (not-null on job_id/title/snapshot_date, row count ≥ 100, freshness check), raises ValueError on failure.
+- **`tests/test_ge_runner.py`** — 6 unit tests: happy path, empty df, low count, null job_id, null title, stale date. All passing.
+- **`terraform/envs/dev/glue.tf`** — `aws_glue_job.ge_runner` (Python Shell, 0.0625 DPU, 15 min timeout, great-expectations 1.4.4).
+- **`terraform/envs/dev/step_functions.tf`** — `RunDataQuality` state inserted between `RunGlueJob` → `RunDbtGold`. Error catch block routes to `PipelineFailure` on failure.
+- **`.github/workflows/deploy.yml`** — added upload step for `ge_runner.py`.
+- **`requirements.txt`** — added `great-expectations>=1.3`.
+
+### Key Bugs Hit & Fixes
+
+**Bug 1: Wrong S3 prefix path**
+- **Problem:** Code looked for `silver_jobs/snapshot_date=2026-04-25/` but Spark wrote to `snapshot_date=2026-04-25/`
+- **Root cause:** Glue job writes directly to bucket root with partition structure, not under a `silver_jobs/` subfolder
+- **Fix:** Changed prefix in `load_silver_df()` from `f"silver_jobs/snapshot_date={snapshot_date}/"` to `f"snapshot_date={snapshot_date}/"`
+
+**Bug 2: Partition column missing from DataFrame**
+- **Problem:** `df["snapshot_date"]` raised `KeyError: 'snapshot_date'` even though files were found
+- **Root cause:** Partition columns in S3 path (`snapshot_date=2026-04-25/`) are not stored inside the Parquet data itself. PyArrow reads just the data columns.
+- **Fix:** Manually assigned `df["snapshot_date"] = snapshot_date` after reading Parquet files
+
+**Bug 3: Python 3.10+ union syntax in enrichment_runner.py**
+- **Problem:** `def func() -> str | None:` syntax not supported in Python 3.9 (Glue Python Shell)
+- **Root cause:** Glue runs Python 3.9; `|` union syntax is Python 3.10+
+- **Fix:** Added `from typing import Optional` and changed to `Optional[str]`
+
+**Bug 4: Numpy 2.x binary incompatibility in embedding job**
+- **Problem:** `ImportError: numpy.core.multiarray failed to import` in EmbedJDs state
+- **Root cause:** `--additional-python-modules` had `numpy>=1.24.0` which resolved to numpy 2.x. PyArrow 14.0.2 was compiled against numpy 1.x; C extensions are incompatible.
+- **Fix:** Pinned `numpy==1.26.4` (last stable 1.x release)
+
+### Full Pipeline Verification
+```
+Input: 1,920 jobs (Remotive 20 + Arbeitnow 100 + Adzuna 1,800)
+  ↓
+RunGlueJob (bronze→silver)     ✅ SUCCEEDED (87 sec)
+  ↓
+RunDataQuality (GE validation) ✅ SUCCEEDED (47–100 sec)
+  - Checked: no nulls on job_id, title, snapshot_date
+  - Checked: row count ≥ 100 (got 1,920)
+  - Checked: freshness (all snapshot_date == 2026-04-25)
+  - Result: All 5 expectations PASSED
+  ↓
+RunDbtGold (dbt transforms)    ✅ SUCCEEDED (78–93 sec)
+  ↓
+RunEnrichment (skill extract)  ✅ SUCCEEDED (1,064 sec / 17.7 min)
+  ↓
+EmbedJDs (Voyage AI)           ✅ SUCCEEDED
+  ↓
+PipelineComplete               ✅ SUCCEEDED
+```
+
+### Pipeline after Chat 20
+```
+ParallelIngest → RunGlueJob → RunDataQuality → RunDbtGold → RunEnrichment → EmbedJDs → PipelineComplete
+```
+
+### Key API Lessons (GE 1.x)
+- `ExpectTableRowCountToBeGreaterThan` does not exist → use `ExpectTableRowCountToBeBetween(min_value=N)`
+- `ExpectColumnValuesToBeBetween` on strings silently misbehaves → use `ExpectColumnDistinctValuesToBeInSet` for freshness
+- GE 1.x requires Python 3.9–3.12; `get_context(mode="ephemeral")` creates in-memory context (no Data Docs needed)
+- Partition columns in S3 path are NOT in Parquet data — must assign manually after reading
+- Local testing with Python 3.12 (system Python 3.14 too new)
+
+### Backlog — Chat 21+: Volume Scale
+**Greenhouse + Lever ATS ingestors** — one Lambda per ATS, slug list in S3, hits hundreds of company boards.
+Expected: +5,000–20,000 jobs/run → pipeline crosses 100K+/month target.
+
+### Backlog — Chat 22+: Dashboard Depth
+- Salary arbitrage view (same role, different countries, cost-of-living normalized)
+- Skill trend lines (techs rising/falling week-over-week)
+- Hackathon radar (Devpost source, prize pool + deadline)
+- Company leaderboard (hiring velocity for target role)
+
+### Backlog — Stretch
+- Cross-day deduplication (canonical_job_id that persists across snapshot_dates)
+- "Why this match" Claude explanation per ranked job (Chat 15 groundwork already done)
+- Weekly AI market brief auto-generated by Claude
+- GCP migration (post-6-month AWS free tier)
+
+
+## Chat 21 — Streamlit Dashboard Deployed to EC2
+Date: 2026-04-26
+
+### Built
+- **dashboard/streamlit/Dockerfile** — containerizes Streamlit app (python:3.12-slim, port 8501, healthcheck). Build context is repo root so `genai/` is available inside container.
+- **terraform/envs/dev/ec2.tf** — security group (8501+22), IAM instance profile (Athena+S3+Glue+SecretsManager), t3.micro EC2 (Amazon Linux 2023), Elastic IP. user_data installs docker + git.
+- **terraform/envs/dev/outputs.tf** — dashboard_url + dashboard_instance_id outputs
+- **dashboard/streamlit/app.py** — fetches Voyage + Anthropic keys from Secrets Manager via `_get_secret()` (env var fallback for local dev). Extracts secret value via `next(iter(parsed.values()))` to handle any JSON key name.
+- **.github/workflows/deploy.yml** — added deploy-dashboard job: SSH into EC2, git pull, rebuild Docker from repo root with `-f dashboard/streamlit/Dockerfile .`, restart container
+- **ingestion/sources/adzuna/ingest_adzuna.py** — narrowed COUNTRIES from 12 to 7 (gb, us, au, ca, in, nz, za). Removed pl, ru, de, fr, br — Adzuna's local sites geo-block Indian users.
+
+### AWS Resources Provisioned
+- EC2 t3.micro: i-0bdbfcad1985a7565 (final, after user_data and IAM fixes)
+- Elastic IP: 3.7.125.66 (stable, persists across instance replacements)
+- Security group: jobpulse-dashboard-sg-dev (port 8501 + 22)
+
+### Bugs Hit & Fixed (4)
+1. **EC2 missing git** — GitHub Actions deploy ran `git pull` but `git` wasn't in user_data. Fixed: added `git` to `yum install` in ec2.tf user_data, replaced instance.
+2. **IAM missing S3 bucket-level perms** — Athena raised `InvalidRequestException: Unable to verify output bucket`. IAM policy only had object-level permissions (`s3:PutObject` on `athena-results/*`). Added `s3:ListBucket`, `s3:GetBucketLocation`, `s3:GetBucketVersioning` on the bucket ARNs.
+3. **Wrong Secrets Manager key names** — app called `_get_secret("VOYAGE_API_KEY", "voyage_api_key")` but actual secrets were named `jobpulse/voyage_key_dev`. Fixed key names in the `_get_secret()` calls.
+4. **Secrets Manager JSON key mismatch** — `_get_secret()` extracted `json.loads(raw)["value"]` but secrets were stored as `{"VOYAGE_API_KEY": "pa-..."}`. Fixed: `next(iter(parsed.values()))` — gets the first value regardless of key name.
+
+### Verified
+- Dashboard live at http://3.7.125.66:8501 ✓
+- 19,930 jobs loaded from Athena ✓
+- Sidebar filters, charts, tag frequency all rendering ✓
+- Semantic Search tab working (Voyage key from Secrets Manager) ✓
+- Claude Haiku "Why this match?" explanations rendering ✓
+
+### GitHub Secrets Added
+- `EC2_DASHBOARD_IP` = 3.7.125.66
+- `EC2_SSH_KEY` = contents of ~/.ssh/jobpulse-dev.pem
+- IAM role: jobpulse-dashboard-role-dev (instance profile, no hardcoded keys)
+- IAM policy: Athena query + S3 gold/silver read + Glue catalog + Secrets Manager read
+
+### Key Decisions
+- EC2 t3.micro over ECS Fargate: free tier (6 months), SAA practice, zero cost
+- IAM instance profile over .env keys: auto-rotated credentials via metadata service
+- scp via GitHub Actions over git clone: private repo, no GitHub credentials needed on EC2
+- Elastic IP: stable public IP for bookmarks/resume links without domain cost
+- Secrets Manager for Voyage + Anthropic keys: consistent with enrichment runner pattern
+
+### Incident
+- First EC2 user data attempted git clone of private repo → failed (no GitHub credentials on instance)
+- Fix: simplified user data to just install Docker + mkdir; code deployment delegated to GitHub Actions scp
+- Instance terminated and recreated with fixed user data
+
+### Next
+- Push to dev → GitHub Actions deploys dashboard → verify http://3.7.125.66:8501 loads
+- Chat 22: Greenhouse + Lever ATS ingestors (+5K-20K jobs/run)

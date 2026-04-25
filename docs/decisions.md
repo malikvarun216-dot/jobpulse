@@ -272,3 +272,241 @@
 - No polling code written — AWS manages the wait natively
 - Alternative: .waitForTaskToken — requires writing your own callback, much more complex
 - Cost: a few extra state transitions per execution, well within 4K free tier/month
+
+## SKILL_VOCAB as a whitelist, not a passthrough (Chat 18)
+- LLM extraction output is filtered through SKILL_VOCAB before being stored. If a skill isn't in the vocab, it's dropped silently — both from the cache and from scoring.
+- This was understating matches: JDs mentioning Kinesis, Delta Lake, Iceberg, Langchain scored 0 on those skills even when the user had them.
+- Vocab expansion is a scoring fix, not just a coverage fix. Every new term added directly improves match accuracy for JDs that use that term.
+- Trade-off: too broad a vocab = noise (unrelated terms match). Keep vocab to tools/technologies only, no soft skills.
+
+## Seniority weight cut from 20 → 10 with gap softening (Chat 18)
+- User has 2 YoE targeting senior roles (typically 4–6 YoE). Gap of 3 = 0 pts under the old hard cutoff — wipes out 20% of total score on every senior JD.
+- Fix 1: gap == 3 → 25% partial credit. Senior roles still deprioritised but surface as stretch roles.
+- Fix 2: cut seniority weight from 20 → 10. Even with partial credit, seniority shouldn't dominate when skills are the real filter.
+- Combined effect: a senior DE role matching your Kafka+Spark+Python core now scores ~75 instead of ~55.
+
+## skill_overlap weight raised from 40 → 50 (Chat 18)
+- DE hiring is skills-first. "We need someone who knows Spark + Kafka + Airflow" is more specific than "we want a senior engineer."
+- Extra 10 pts came from seniority_fit (cut to 10). Location and role family unchanged.
+- With 30 skills in profile vs original 10, skill_overlap is also more meaningful — larger intersection is possible on real JDs.
+
+## Voyage AI over AWS Bedrock for embeddings (Chat 15)
+- Bedrock embedding models (Titan v2) are available but add IAM complexity and cost on top of the Glue job
+- Voyage AI: `voyage-4-lite` = 200M tokens/month free after adding a payment method; rate limits unlocked
+- Direct Python SDK (`voyageai.Client`) is simpler than a boto3 Bedrock call; no additional IAM policy needed
+- Trade-off: external dependency (one more API vendor). Acceptable — embeddings are idempotent, failure just means stale embeddings, not broken pipeline
+
+## In-memory cosine similarity over a managed vector DB (Chat 15)
+- At 3,500–20,000 jobs, loading the full embedding matrix into a NumPy array and computing cosine similarity in-process takes <1s
+- DynamoDB or OpenSearch (managed vector DB) adds per-read cost, latency, and infra complexity
+- Embeddings are loaded once per Streamlit query, not on every page load (Streamlit session state caches results)
+- Trade-off: scales to ~500K jobs before response time degrades. At that scale, switch to a FAISS index in S3 or a managed ANN service. Current scale is nowhere near that.
+
+## Pure pyarrow over pandas for all Parquet I/O in Glue Python Shell (Chat 15/16)
+- `pd.read_parquet()` and `pd.to_parquet()` require pandas to discover an engine (pyarrow or fastparquet) at runtime
+- Glue 4.0 Python Shell's environment causes engine discovery to fail even when pyarrow is installed via `--additional-python-modules`
+- Direct pyarrow API (`pq.read_table`, `pq.write_table`, `pa.table`) bypasses engine discovery entirely
+- Applied to both embedding_agent.py and semantic_search.py. enrichment_runner uses pandas for CSV reads only (not Parquet), so unaffected.
+
+## dedup_key = md5(source|job_id), cross_source_key separate (Chat 16)
+- Original dedup_key = md5(company_name|title|country) caused 2,525→24 row collapse when Adzuna defaulted company_name to "Unknown" — identical hash for hundreds of unrelated jobs
+- New design: dedup_key is per-source-unique (`md5(source|job_id)`) so no hash collision across jobs
+- cross_source_key = md5(company|title|country) is used only for aggregation (source_apis, source_count) — it drives groupBy, not row selection
+- source_count > 1 still identifies multi-confirmed jobs; dedup just no longer clobbers distinct jobs
+
+## S3-stored user_profile.yml, separate from genai_package.zip (Chat 17)
+- Previous design: profile was baked into `genai_package.zip` → updating skills required a new zip upload (`terraform apply` or manual `aws s3 cp`)
+- New design: profile uploaded as `aws_s3_object.user_profile` to `s3://silver/config/user_profile.yml`; enrichment_runner downloads it fresh on every Glue run
+- Fallback: if S3 download fails, use the bundled copy inside the zip — no single point of failure
+- Impact: updating your profile is now a one-command operation, no Terraform cycle needed
+
+## Tiered skill weights over flat Jaccard (Chat 17)
+- Flat Jaccard (|intersection| / |union|) treats python and docker as equal signals — a job matching only docker (learning tier) would score the same as one matching python (core)
+- New: core skills (python, sql, pyspark, aws, dbt) = 3x weight; secondary = 1.5x; learning = 1x
+- Normalized against total user skill weight (not union) so score stays in [0, 1] regardless of how many skills a job lists
+- Impact: jobs matching the core stack will consistently rank above jobs that only incidentally match a peripheral skill
+
+## --force_rescore skips LLM entirely (Chat 17)
+- When profile changes, old enrichment_scores are stale. Option 1: re-run LLM on all jobs (expensive). Option 2: re-score using existing cached extractions only.
+- force_rescore=True uses rules fast path + S3 extraction cache; if neither hits, uses rules fallback — zero API calls
+- This is safe because the cache stores the extraction (skills, seniority), not the score. Score is always recomputed from the current profile.
+- Practical cost: rescoring 3,500 jobs with force_rescore takes ~3 min and $0.00
+
+## Always run the linter against existing code before wiring it as a CI gate (Chat 19 incident)
+- Ruff was added as a hard CI failure on day one without a prior local dry-run. 11 existing lint errors caused the first push to fail immediately.
+- Rule: before adding any new CI check (linter, formatter, type checker), run it locally against the full codebase, fix all violations, then commit the fixes together with the CI config in the same PR.
+- Trade-off: doing it in one PR is slightly more work to review. Not doing it guarantees a broken CI on first run, which undermines trust in the gate.
+- Applied: in future chats, any new tool added to CI gets a local dry-run first — the CI config commit and the fix commit go in together.
+
+## GE as a separate Glue job, not embedded in the Spark job (Chat 20)
+- Option considered: run GE checks inside bronze_to_silver.py before the Parquet write
+- Rejected: would require adding GE as a dependency to the Spark job (different container, different bootstrap), mixing concerns (transform vs validation)
+- Chosen: separate Glue Python Shell job (ge_runner) inserted as its own Step Functions state
+- Why: one job, one responsibility. If quality fails, Step Functions sees a FAILED Glue job and routes to PipelineFailure. Clean separation.
+
+## GE ephemeral context over a persisted Data Docs setup (Chat 20)
+- GE supports file-based, S3-backed, and in-memory ("ephemeral") contexts
+- File/S3-backed: stores Data Docs (HTML reports), checkpoint configs, suite JSONs on disk or in S3. Good for teams sharing validation history.
+- Ephemeral: everything in memory, nothing persisted. Suitable for Glue Python Shell where there's no writable filesystem and S3-backed Data Docs would add unnecessary cost and complexity.
+- Decision: `gx.get_context(mode="ephemeral")` — validation result is printed to CloudWatch logs, which is sufficient for an unattended pipeline.
+
+## ExpectColumnDistinctValuesToBeInSet for freshness, not ExpectColumnValuesToBeBetween (Chat 20)
+- First attempt: `ExpectColumnValuesToBeBetween(min_value=snapshot_date, max_value=snapshot_date)` on a string column
+- Problem: silently passed on valid data and gave an empty result object (no error, no pass)
+- Root cause: GE's between-comparison on strings uses lexicographic ordering which behaves unexpectedly for date strings in some edge cases; the expectation was returning an empty validation result
+- Correct approach: `ExpectColumnDistinctValuesToBeInSet(column="snapshot_date", value_set=[snapshot_date])` — explicitly checks that the only distinct value is today's date
+- This is the semantically correct expectation for a freshness check: the set of all distinct dates must equal {today}
+
+## ExpectTableRowCountToBeBetween instead of ExpectTableRowCountToBeGreaterThan (Chat 20)
+- GE 1.x does not have `ExpectTableRowCountToBeGreaterThan` — calling it raises AttributeError
+- `ExpectTableRowCountToBeBetween(min_value=100)` with no max_value is the correct API — max_value defaults to unbounded
+- Lesson: always validate GE expectation class names against the version installed. GE APIs changed significantly between 0.x and 1.x.
+
+## Partition column must be manually assigned when reading individual Parquet files (Chat 20)
+- Hive-style partitioned Parquet: column values are stored in the directory path (`snapshot_date=2026-04-25/`), not in the file data
+- When reading with `pq.read_table(io.BytesIO(body))` on individual files, pyarrow returns only data columns — the partition column is absent
+- Dataset-level API (`pq.read_table(directory_path)`) can auto-populate partition columns, but requires filesystem access (unreliable in Glue Python Shell per Chat 15/16 incidents)
+- Decision: read files individually via boto3 (reliable), then manually assign `df["snapshot_date"] = snapshot_date`
+
+## EC2 t3.micro over ECS Fargate for dashboard hosting (Chat 21)
+- Fargate: serverless containers, no SSH, auto-scales. But: cold starts on each request, no free tier, ~$15/mo minimum
+- EC2 t3.micro: always-on, free 750 hrs/mo (6 months), SSH access for debugging, Docker runs natively
+- Decision: t3.micro is the right call for a personal dashboard — low traffic, cost matters, debugging via SSH is useful
+- Trade-off: requires instance management (patching, Docker restarts). Acceptable for a project of this scale.
+
+## IAM instance profile over access keys on EC2 (Chat 21)
+- Never store AWS credentials on the instance (in .env, ~/.aws/credentials). Keys can leak via `docker inspect`, logs, or repo accidents.
+- Instance profile: IAM role attached to EC2. boto3 auto-fetches temp credentials from EC2 metadata service (169.254.169.254). Rotated every hour automatically.
+- Zero credential management — no key generation, no rotation, no rotation tracking
+- Least-privilege: the role only has permissions the dashboard actually needs (Athena queries, S3 gold/silver read, Glue catalog, Secrets Manager read)
+
+## Elastic IP for stable dashboard endpoint (Chat 21)
+- EC2 public IP changes on every stop/start. Without a fixed IP, users must look up the new address every time.
+- Elastic IP: static, stays associated with the account even when instance is stopped. Re-attached after instance replacement (terraform apply -replace).
+- Cost: free while associated with a running instance. $0.005/hr if unassociated — only matters if the instance is stopped long-term.
+- Trade-off: not a domain name, but sufficient for a personal tool. Add Route53 + custom domain only if sharing publicly.
+
+## Docker build context at repo root, not dashboard subdirectory (Chat 21)
+- First design: `docker build .` from `dashboard/streamlit/` — only that directory's files are in the build context
+- Problem: `from genai.semantic_search import search` inside app.py fails because `genai/` is outside the build context
+- Fix: changed to `docker build -f dashboard/streamlit/Dockerfile .` from repo root — full repo is the build context
+- Dockerfile explicitly copies `COPY dashboard/streamlit/ .` then `COPY genai/ genai/` — only the necessary directories
+- Trade-off: slightly larger build context (whole repo sent to Docker daemon), but Docker layer caching means only changed files rebuild
+
+## Adzuna country list restricted to English-speaking markets (Chat 21)
+- Original list (12): gb, us, au, ca, de, fr, br, in, nz, pl, ru, za
+- Removed: pl, ru (Adzuna.pl / Adzuna.ru geo-block non-local users — "Sorry, this job is not available in your region")
+- Further removed: de, fr, br (German/French/Portuguese-language Adzuna sites have same geo-restriction behaviour)
+- Final list (7): gb, us, au, ca, in, nz, za — all English-language markets, globally accessible apply links
+- Trade-off: losing ~1,500 jobs/run from non-English markets. Acceptable — non-accessible apply links have zero value.
+
+## numpy==1.26.4 as the safe pairing with pyarrow==14.0.2 (Chat 20)
+- NumPy 2.0 removed `numpy.core` submodule. Any C extension compiled against numpy 1.x (including pyarrow 14.x) that imports `numpy.core.multiarray` will crash at load time.
+- `numpy>=1.24.0` in `--additional-python-modules` resolves to numpy 2.x — crash guaranteed
+- `numpy==1.26.4` is the last stable 1.x release and the correct pairing with `pyarrow==14.0.2`
+- Rule: when pinning pyarrow to 14.x, always pin `numpy==1.26.4`. Document this pairing in glue.tf as a comment.
+
+## loop variable `l` is ambiguous — always use descriptive names in comprehensions (Chat 19)
+- `{l.lower() for l in locations}` — ruff E741 flags single-letter variables `l`, `O`, `I` as ambiguous (look like 1, 0, 1 in many fonts).
+- Renamed to `loc`. Rule: comprehension variables should be short but descriptive — `loc`, `skill`, `tag`, not `l`, `s`, `t`.
+- Not a functional bug, but a readability issue that causes real misreads during code review.
+
+## CI/CD: Two workflows, not one (Chat 19)
+- `ci.yml` runs on every push to every branch + every PR to dev. Purpose: fast feedback loop, catches regressions before code reaches dev.
+- `deploy.yml` runs on push to dev only. Purpose: automated AWS deploy after merge.
+- Alternative considered: one combined workflow with conditional deploy step (`if: github.ref == 'refs/heads/dev'`). Rejected — mixing test-only and deploy-capable workflows in one file makes it harder to reason about what runs when and obscures the deploy trigger in PR views.
+- Two files = two clearly named workflow runs in GitHub Actions UI. `CI` appears on every branch. `Deploy` appears only on dev. Unambiguous at a glance.
+
+## CI does not need real AWS credentials or API keys (Chat 19)
+- All 192 unit tests mock every external call: S3 (boto3.client mocked), Anthropic API (mocked via `@patch`), Adzuna HTTP (urllib.request mocked), Voyage AI (mocked).
+- Tests set their own env vars inline (`os.environ["BRONZE_BUCKET"] = "test-bronze-bucket"`) — no env setup in the workflow beyond `ANTHROPIC_API_KEY=sk-test-dummy`.
+- `sk-test-dummy` prevents JDEnrichmentAgent from hitting Secrets Manager (it checks `os.environ.get("ANTHROPIC_API_KEY")` first — if set, skips AWS). Non-empty string is enough; the value is never sent to Anthropic in tests.
+- Security benefit: CI job has zero AWS permissions. A compromised Actions runner cannot touch S3, Lambda, or Glue.
+
+## Deploy re-runs tests instead of depending on ci.yml result (Chat 19)
+- GitHub's `workflow_run` trigger can depend on another workflow completing, but it's async and doesn't guarantee the run was on the same commit. Race condition: ci.yml ran on commit A, but by the time deploy fires it might be on commit B.
+- Simpler and safer: deploy.yml has its own `test` job as the first step (`needs: test` gates the `deploy` job). If tests fail, deploy never runs.
+- Cost of re-running: <60 seconds. Cost of a failed deploy from a race condition: broken Lambda in production.
+
+## Lambda zip contains only the handler .py — no deps bundled (Chat 19)
+- All ingestors (Remotive, Arbeitnow, Adzuna) use only `urllib.request`, `gzip`, `json`, `hashlib` (stdlib) plus `boto3`.
+- `boto3` is pre-installed in every AWS Lambda Python 3.12 runtime. Bundling it would increase zip size from ~3 KB to ~40 MB.
+- Build command: `cd ingestion/sources/{source} && zip {source}.zip ingest_{source}.py` — one line, no build tool, reproducible anywhere.
+- Contrast with genai_package.zip: that zip includes the full `genai/` directory (pure Python, no C extensions) because Glue doesn't auto-install it.
+
+## genai_package.zip built in CI, not Terraform null_resource (Chat 19)
+- Terraform's `null_resource` + `local-exec` built the zip during `terraform apply`. This coupled code deploys to infra applies — changing a genai/*.py file required either running `terraform apply` (which might also change infra) or manually building the zip.
+- New pattern: CI builds the zip and uploads it on every push to dev. Terraform still owns the Glue job definition (name, timeout, IAM role, DPU) but the zip is out of its scope.
+- Clean separation: Terraform = infra state. GitHub Actions = code artifacts. Never mix.
+- Trade-off: if someone runs `terraform apply` locally and the null_resource triggers, it would upload an older copy of the zip. Mitigation: the null_resource is still in glue.tf as a fallback, but CI is the authoritative deploy path.
+
+## ruff over flake8/pylint for linting (Chat 19)
+- ruff is written in Rust, runs the full repo in <1s (vs 10–30s for flake8 on medium repos). CI feedback is faster.
+- `--select E,F`: E (pycodestyle) catches syntax/indentation errors. F (pyflakes) catches undefined names and unused imports — the two categories most likely to cause runtime failures.
+- `--ignore E501` (line length): existing codebase has many long lines, especially in SQL strings and dict literals. Enforcing this now would generate hundreds of warnings for zero functional benefit.
+- `--ignore E402` (import not at top): all 6 ingestor/genai test files do `sys.path.insert(0, ...)` before `import ingest_X as sut`. This is the correct pattern when tests live outside the package they test — ruff's E402 doesn't understand this idiom.
+- Not using W (pycodestyle warnings) or C (convention): too noisy on a codebase not designed with them from the start.
+
+## Python 3.12 in CI matches Lambda runtime (Chat 19)
+- All 4 Lambda functions use `runtime = "python3.12"` in Terraform.
+- If CI used Python 3.9 or 3.11, a syntax or stdlib API difference could pass CI but fail in Lambda.
+- Glue Python Shell jobs use Python 3.9 (Glue 4.0 limitation), but those aren't tested in CI — Glue job scripts are tested indirectly via the genai unit tests which run fine on 3.12.
+- Trade-off: if Glue-only code uses a 3.9-only pattern, CI won't catch it. Acceptable — the genai tests cover extraction logic; the Glue bootstrap boilerplate (zip extraction, sys.path) is stable.
+
+## GE runner as a separate Glue Python Shell job, not inside the Spark transform (Chat 20)
+- Separation of concerns: the Spark job transforms; the GE job validates. Mixing them means a quality failure also aborts the transform — you can't distinguish "transform crashed" from "data was bad."
+- Separate job = separate Step Functions state = separate CloudWatch log stream = pinpointed failure visibility.
+- Cost: 0.0625 DPU Python Shell job, ~$0.004/run. Negligible for the observability gain.
+
+## GE ephemeral in-memory context, not file-system context (Chat 20)
+- Default GE setup writes a `great_expectations/` project directory and Data Docs HTML to disk.
+- In a Glue Python Shell job, the working directory is ephemeral — no persistent file system, no S3 Data Docs needed.
+- `gx.get_context(mode="ephemeral")` keeps everything in memory: no files written, no S3 side effects from the quality check itself.
+- Trade-off: no Data Docs HTML report persisted between runs. Acceptable — failures are logged to CloudWatch; a Data Docs site would require hosting infrastructure.
+
+## ExpectColumnDistinctValuesToBeInSet for freshness, not ExpectColumnValuesToBeBetween (Chat 20)
+- `ExpectColumnValuesToBeBetween` on string columns in GE 1.x returns an empty result object (no error, just silent wrong behaviour). Caught by the unit test — `test_valid_df_passes` was raising ValueError on a valid DataFrame.
+- `ExpectColumnDistinctValuesToBeInSet(column="snapshot_date", value_set=[today])` checks that the set of unique dates in the partition contains only today's date. A stale partition (yesterday's date) fails because the value is not in the allowed set.
+- Rule: always test the happy path AND each failure path before trusting a GE expectation on a new column type.
+
+## ExpectTableRowCountToBeBetween, not ExpectTableRowCountToBeGreaterThan (Chat 20)
+- `ExpectTableRowCountToBeGreaterThan` does not exist in GE 1.x. The correct class is `ExpectTableRowCountToBeBetween(min_value=N)`.
+- `min_value` is inclusive: `min_value=100` means "at least 100 rows."
+- Lesson: always let tests find the real class name rather than guessing from documentation.
+
+## RunDataQuality state inserted between RunGlueJob and RunDbtGold (Chat 20)
+- Insertion point: after silver is written, before dbt reads it. This is the only point where bad silver data can be stopped before it propagates to gold.
+- If GE fails before RunDbtGold: gold is untouched. dbt's CTAS only runs on valid data.
+- If GE ran after RunDbtGold: bad data would already be in gold. The check would be post-mortem, not preventive.
+
+## Lambda snapshot_date: IST (UTC+5:30) instead of UTC (Post-Chat-14 fix)
+- All ingestors compute `snapshot_date = datetime.now(ist).strftime("%Y-%m-%d")`
+- Reason: EventBridge cron fires at 2 AM IST = 8:30 PM UTC (previous day) → UTC computes wrong date
+- Issue caught: Apr 23 2 AM IST pipeline computed Apr 22 (UTC) snapshot_date, wrote to wrong S3 partition
+- Alternative: compute UTC, then offset by +5:30 hours → fragile, harder to explain
+- Choice: use IST directly in Lambda — explicit, clear, matches business time zone
+- Trade-off: Lambda is now IST-aware (not timezone-agnostic) — acceptable at project scale for single timezone
+- Impact: snapshot_date now matches the day the pipeline ran (in India time); Apr 24+ pipelines produce correct dates
+## EC2 t3.micro over ECS Fargate for dashboard (Chat 21)
+- ECS Fargate: fully serverless, ~$30-50/mo, more complex, overkill for a personal dashboard
+- EC2 t3.micro: free tier (6 months), SAA cert practice (EC2, SG, IAM instance profiles, EIP)
+- Choice: t3.micro — zero cost for 6 months, covers SAA exam surface, simple to explain
+- Trade-off: manual scaling if traffic grows (not expected for personal use)
+
+## IAM instance profile over hardcoded keys for EC2 (Chat 21)
+- Instance profile attaches an IAM role to EC2 — credentials auto-rotated by metadata service (169.254.169.254)
+- Boto3 on EC2 picks up credentials automatically: no .env file, no key rotation work
+- Alternative: IAM user keys in .env — credential leak risk, manual rotation
+- Choice: instance profile — AWS best practice, SAA exam pattern, no secrets on disk
+
+## scp via GitHub Actions over git clone in user data (Chat 21)
+- git clone in user data requires GitHub credentials on EC2 — complex to manage securely
+- scp via GitHub Actions: EC2 key pair in GitHub secrets, code pushed on every deploy
+- Choice: scp — simpler, no credentials on EC2, leverages existing GitHub Actions SSH setup
+- Trade-off: first deploy requires a code push; instance can't self-bootstrap from scratch
+
+## Elastic IP over dynamic public IP (Chat 21)
+- Dynamic public IP changes every stop/start — breaks bookmarks and resume links
+- Elastic IP: static, persists across stop/start, billed only when unattached ($0.005/hr)
+- Choice: Elastic IP — stable URL for resume/portfolio, negligible cost
+- Trade-off: must remember to release EIP when project shuts down to avoid idle charges

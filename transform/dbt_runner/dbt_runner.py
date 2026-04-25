@@ -7,7 +7,6 @@ Invoked by Step Functions after the bronze→silver Glue ETL job.
 import argparse
 import json
 import os
-import sys
 import time
 import zipfile
 
@@ -111,6 +110,7 @@ def repair_silver_partitions():
 
 def run_dbt():
     import subprocess
+    import shutil
 
     base_args = [
         "--project-dir", DBT_PROJECT_DIR,
@@ -121,8 +121,8 @@ def run_dbt():
     print(f"profiles dir: {PROFILES_DIR} (exists: {os.path.exists(PROFILES_DIR)})")
 
     # Check dbt installation
-    result = subprocess.run(["which", "dbt"], capture_output=True, text=True)
-    print(f"dbt location: {result.stdout.strip()}")
+    dbt_path = shutil.which("dbt")
+    print(f"dbt location: {dbt_path}")
     result = subprocess.run(["dbt", "--version"], capture_output=True, text=True)
     print(f"dbt version: {result.stdout}")
 

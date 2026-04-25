@@ -1,5 +1,101 @@
 # Incidents
 
+## [2026-04-25] — GE runner: wrong S3 prefix path
+- What happened: RunDataQuality Glue job failed with `FileNotFoundError: No Parquet files found at s3://jobpulse-silver-dev/silver_jobs/snapshot_date=2026-04-25/`
+- What I thought: data wasn't written yet for today's partition; checked Spark job logs
+- Root cause: Spark writes to `s3://silver-bucket/snapshot_date=YYYY-MM-DD/` (partition at bucket root). The GE runner was looking under `silver_jobs/snapshot_date=...` — a path that never existed.
+- Fix: Changed prefix in `load_silver_df()` from `f"silver_jobs/snapshot_date={snapshot_date}/"` to `f"snapshot_date={snapshot_date}/"`
+- Prevention: always verify the exact S3 path structure by listing the bucket before writing path-dependent code. The Terraform S3 bucket key and the Glue partition path are different things.
+- Lesson: confirm exact S3 paths before writing readers. `aws s3 ls s3://bucket/ --recursive | head` takes 10 seconds and prevents this entire class of bug.
+
+## [2026-04-25] — GE runner: partition column missing from DataFrame (KeyError: 'snapshot_date')
+- What happened: after fixing the S3 prefix, GE runner failed with `KeyError: 'snapshot_date'` inside `validate_silver()` even though files were being found and read
+- What I thought: snapshot_date column was being dropped somewhere in pyarrow concat
+- Root cause: partition columns (e.g. `snapshot_date=2026-04-25/` in the S3 path) are NOT stored inside Parquet file data. When pyarrow reads individual `.parquet` files directly (not a full dataset), it returns only the data columns — partition columns must be added manually.
+- Fix: added `df["snapshot_date"] = snapshot_date` after `pa.concat_tables(tables).to_pandas()` in `load_silver_df()`
+- Prevention: when reading partitioned Parquet files individually, always manually reattach partition key values. Use `pq.read_table(dataset_path)` with the dataset API if you want partition columns auto-populated.
+- Lesson: partition columns exist in the directory path, not the file. Individual file reads don't know about the path.
+
+## [2026-04-25] — Python 3.10+ union syntax breaks Glue Python 3.9 (enrichment_runner.py)
+- What happened: RunEnrichment Glue job failed instantly with `TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'` at line 39
+- What I thought: runtime error in the function body
+- Root cause: `def func() -> str | None:` — the `|` operator for type unions in annotations is only valid at runtime in Python 3.10+. Glue Python Shell 4.0 runs Python 3.9. Unlike `jd_enrichment_agent.py` and `match_scorer.py` (both had `from __future__ import annotations` which defers annotation evaluation), `enrichment_runner.py` had neither the future import nor `Optional`.
+- Fix: added `from typing import Optional`; changed return type to `-> Optional[str]`
+- Prevention: any Glue Python Shell script must be Python 3.9 compatible. `from __future__ import annotations` at the top of a file allows `|` union syntax safely on 3.9. Without it, use `Optional[T]` from `typing`.
+- Lesson: `from __future__ import annotations` is a simple one-line guard. Add it to every new Glue script as a habit.
+
+## [2026-04-25] — numpy 2.x breaks pyarrow 14.0.2 in embedding Glue job
+- What happened: EmbedJDs Glue job failed with `ImportError: numpy.core.multiarray failed to import`
+- What I thought: numpy version conflict (same class of issue as Chat 16's embedding job incident)
+- Root cause: `--additional-python-modules` had `numpy>=1.24.0` which resolved to numpy 2.x. NumPy 2.0 removed `numpy.core` submodule. PyArrow 14.0.2 C extensions were compiled against numpy 1.x and hard-import `numpy.core.multiarray` at load time → crash.
+- Fix: pinned `numpy==1.26.4` (last stable numpy 1.x release; compatible with pyarrow 14.0.2)
+- Prevention: when pinning pyarrow to 14.x, always also pin numpy to `<2.0.0`. These two must be compatible. `numpy==1.26.4` is the safe pairing.
+- Lesson: numpy 2.0 is a breaking change for any C extension compiled against 1.x. Always pin the numpy major version when any C extension dependency is pinned.
+
+## [2026-04-25] — CI failed on first push: 11 ruff lint errors
+- What happened: first GitHub Actions CI run failed in 30s with exit code 1. ruff found 11 errors across 7 files — unused imports, ambiguous variable name `l`, f-string without placeholders.
+- What I thought: tests passing locally = CI passing. Didn't run ruff locally before pushing (ruff wasn't installed in the system Python).
+- Root cause: ruff was introduced as a new CI gate but never run against the existing codebase before setting it as a hard failure. The codebase had accumulated lint debt from earlier chats — unused imports left after refactors, a loop variable named `l` (E741), an f-string prefix with no `{}` placeholder, and a `sys` import in dbt_runner.py that was removed during a refactor but the import remained.
+- Specific errors fixed:
+  - `genai/match_scorer.py` — `Optional` unused (removed); loop var `l` → `loc` (E741)
+  - `spark/jobs/bronze_to_silver.py` — `Window` unused (removed from PySpark import)
+  - `spark/tests/test_bronze_to_silver.py` — `date` unused in local import (removed, kept `datetime`)
+  - `tests/test_genai.py` — `import json` inside a test method, never used (removed)
+  - `tests/test_ingest_adzuna.py` — `call` unused import (removed); `f"London, Buckinghamshire"` has no `{}` → remove `f` prefix
+  - `tests/test_jd_enrichment_agent.py` — `MagicMock` and `EnrichmentRecord` unused imports (removed)
+  - `transform/dbt_runner/dbt_runner.py` — `import sys` unused after a prior refactor (removed)
+- Fix: fixed all 11 in-place, re-ran tests (192 passed, 14 skipped), committed and pushed.
+- Prevention: run `ruff check --select E,F --ignore E501,E402 .` locally before every push. Add to Makefile as `make lint` so it's one command.
+- Lesson: introducing a linter as a CI gate without running it against the existing codebase first guarantees a red build on the first push. Always do a dry-run lint pass before wiring it into CI.
+
+## [2026-04-24] — numpy.core.multiarray failed to import in embedding Glue job
+- What happened: embedding_runner Glue job failed with `ImportError: numpy.core.multiarray failed to import`
+- What I thought: numpy wasn't installed — tried adding `numpy>=1.24.0` to `--additional-python-modules`
+- Root cause: Glue 4.0 Python Shell pre-installs numpy. Installing a second version via `--additional-python-modules` places it on `sys.path` before the built-in one. C extensions (like numpy's) are compiled against a specific ABI — the two versions clash at import time.
+- Fix: removed `numpy>=1.24.0` and `pandas>=2.0.0` from the embedding job's `--additional-python-modules`. Use Glue's pre-installed numpy; only install pure-Python extras.
+- Prevention: never install numpy, scipy, or other C-extension packages via `--additional-python-modules` on a Glue job that already has them pre-installed. Check Glue 4.0 pre-installed package list first.
+- Lesson: two copies of a C-extension package on sys.path = crash. Pre-installed > re-installed.
+
+## [2026-04-24] — pd.read_parquet engine discovery fails in Glue Python Shell
+- What happened: embedding_agent.py crashed with `Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'. A suitable version of pyarrow or fastparquet is required for parquet support`
+- What I thought: pyarrow==14.0.2 was already in --additional-python-modules so it should work
+- Root cause: `pd.read_parquet()` triggers pandas' engine discovery at import time, which fails in Glue's environment even when pyarrow is installed. The pandas-to-pyarrow bridge is the broken part, not pyarrow itself.
+- Fix: replaced all `pd.read_parquet()` / `pd.to_parquet()` calls with direct pyarrow API (`pq.read_table`, `pq.write_table`, `pa.table`). Removed `import pandas` from embedding_agent.py and semantic_search.py entirely.
+- Prevention: in Glue Python Shell, use pyarrow directly for all Parquet I/O. Pandas parquet engine discovery is unreliable in this environment.
+- Lesson: the pandas ↔ pyarrow bridge has its own failure modes separate from pyarrow working correctly on its own.
+
+## [2026-04-24] — Dedup collapse: 2,525 bronze jobs → 24 gold rows
+- What happened: full pipeline succeeded but dashboard showed only 24 jobs from a 2,525-job bronze run. All tables had correct row counts except fact_job_posting (expected ~2,500, got 24).
+- What I thought: dbt model logic or Athena CTAS issue
+- Root cause: Adzuna ingestor defaulted missing company_name to the string `"Unknown"`. Dedup key = `md5(company_name|title|country)`. Hundreds of "Unknown"-company jobs with different job_ids but the same title+country hashed to the same dedup key → all collapsed to one row per title/country combo.
+- Fix: (1) Adzuna ingestor returns `None` instead of `"Unknown"` for missing company. (2) Redesigned dedup_key to `md5(source|job_id)` — unique per source, no hash collision. (3) cross_source_key (md5 on company+title+country) used only for groupBy aggregate, not for row selection.
+- Prevention: dedup keys must be constructed from fields that are guaranteed unique per source. Null-sentinel defaults ("Unknown") are dangerous in hash keys.
+- Lesson: dedup bugs produce valid-looking pipelines — all stages SUCCEED, row counts just silently collapse. Always spot-check fact table counts vs bronze source counts.
+
+## [2026-04-24] — FileNotFoundError: 'which' — 3 days of dbt pipeline failures
+- What happened: dbt Glue job failed with `FileNotFoundError: [Errno 2] No such file or directory: 'which'` for 3 consecutive pipeline runs.
+- What I thought: PATH issue in Glue environment; tried adding `which` manually; suspected Glue Python Shell restriction
+- Root cause: `subprocess.run(["which", "dbt"])` — `which` is a shell builtin in bash/zsh, not a standalone executable. Glue Python Shell (not a login shell) does not have it as an executable in PATH. `subprocess.run` executes binaries, not shell builtins.
+- Fix: `import shutil; dbt_path = shutil.which("dbt")` — Python stdlib equivalent that works in any environment.
+- Prevention: never use `subprocess.run(["which", ...])` to find executables. Use `shutil.which()` which is Python-native and works in non-shell environments.
+- Lesson: shell builtins (`which`, `source`, `export`) are not executable files. `subprocess.run` only works with real binaries. Python stdlib usually has a safe equivalent.
+
+## [2026-04-24] — Voyage API key stored with wrong prefix in Secrets Manager
+- What happened: embedding_runner failed with `AuthenticationError: Provided API key is invalid`
+- What I thought: the key wasn't copied correctly into Secrets Manager
+- Root cause: documentation showed `va-` as an example prefix. The actual Voyage AI key starts with `pa-`. The Secret was created with `va-{actual_key}` — prepending an extra prefix to the real value.
+- Fix: updated Secrets Manager secret with the correct `pa-...` key via `aws secretsmanager update-secret`.
+- Prevention: when creating Secrets Manager entries, verify the value against the provider's dashboard before saving. Don't copy example prefixes from documentation.
+- Lesson: authentication errors from third-party APIs can be caused by extra characters in the key, not just a wrong key entirely.
+
+## [2026-04-23] — Lambda snapshot_date computed in UTC, wrote Apr 22 data on Apr 23 pipeline run
+- What happened: Apr 23 2 AM IST pipeline run (EventBridge cron at 2 AM IST = 8:30 PM UTC Apr 22) computed `snapshot_date=2026-04-22` and wrote data to wrong S3 partition. Glue job ran on Apr 23 but ingested Apr 22 data. Dashboard showed stale data.
+- What I thought: Glue job timing issue or pipeline orchestration problem
+- Root cause: Lambda used `datetime.now(timezone.utc)` to compute snapshot_date. At 8:30 PM UTC (= 2 AM IST), UTC date is still Apr 22 (not Apr 23 IST). All 3 ingestors (Remotive, Arbeitnow, Adzuna) had this bug.
+- Fix: Changed all 3 Lambda handlers to compute `datetime.now(timezone(timedelta(hours=5, minutes=30)))` — explicit IST (UTC+5:30). Remotive manual test verified: invoked at 2026-04-22T21:17Z (= 02:47 IST Apr 23) → returned `snapshot_date=2026-04-23` ✓. All 3 Lambdas redeployed.
+- Prevention: When EventBridge fires at a specific local time (2 AM India time), compute dates in that timezone, not UTC. Document this explicitly — EventBridge schedules are always in UTC, so the offset between scheduled time and local business time must be computed inside the handler.
+- Lesson: Timezone bugs are silent — data flows to the wrong partition, but downstream jobs run successfully. Only caught when dashboard shows stale data and S3 listing shows unexpected partition structure.
+
 ## [2026-04-21] — Enrichment silently hangs at scale (3,400 jobs → 60-min TIMEOUT)
 - What happened: enrichment Glue job ran 60 min with zero log output after "Starting script execution", then hit TIMEOUT. Had worked fine at 121 jobs (Remotive + Arbeitnow only).
 - What I thought: Claude API weekly budget exhausted or API key missing from Glue env
@@ -240,3 +336,50 @@
 - Fix: mv "s3.tf " s3.tf
 - Prevention: always run `ls -la` to spot hidden filename issues
 - Lesson: "No changes" with empty state = file not loading, not a credentials issue
+## [2026-04-26] — EC2 user data git clone failed: private repo, no credentials
+- What happened: EC2 launched, user data script ran, `git clone https://github.com/...` failed with "could not read Username: No such device or address". Docker build then failed (no Dockerfile), container failed to start. Dashboard never came up.
+- What I thought: git was not installed on the instance
+- Root cause: repo is private. EC2 has no GitHub credentials — no SSH key, no token. HTTPS git clone of a private repo requires authentication which the instance has no way to provide.
+- Fix: removed git clone from user data entirely. User data now only installs Docker and creates empty directories. Code is deployed via GitHub Actions (SSH + scp) on every push to dev.
+- Prevention: never use git clone in EC2 user data for private repos. Use scp via CI/CD or store a deploy key in Secrets Manager if self-bootstrapping is required.
+- Lesson: EC2 user data runs as root with no user context. It has no GitHub credentials, no SSH agent, no .netrc. For private repos, push code to the instance — don't pull from it.
+
+## [2026-04-26] — EC2 missing git: GitHub Actions deploy-dashboard failed
+- What happened: deploy-dashboard GitHub Actions job exited with code 255. SSH succeeded but `git pull origin dev` failed with `bash: git: command not found`.
+- What I thought: git would be pre-installed on Amazon Linux 2023
+- Root cause: Amazon Linux 2023 minimal image does not include git. The user_data script only installed `docker` — git was never in the install list.
+- Fix: added `git` to `yum install -y docker git` in ec2.tf user_data. Replaced instance via `terraform apply -replace=aws_instance.dashboard`.
+- Prevention: list every binary your deploy script will call (git, docker, curl) and make sure user_data installs them all. Test the deploy script manually via SSH before relying on CI.
+- Lesson: "Amazon Linux" is not "Amazon Linux with everything installed." It's a minimal base image. Any tool you use in a deploy script must be explicitly installed.
+
+## [2026-04-26] — Athena InvalidRequestException: IAM policy missing bucket-level S3 permissions
+- What happened: dashboard loaded but immediately crashed with `InvalidRequestException: Unable to verify/create output bucket jobpulse-gold-dev` when Athena tried to run the flat JOIN query.
+- What I thought: the IAM policy was missing permissions
+- Root cause: Athena needs both object-level permissions (PutObject on `athena-results/*`) AND bucket-level permissions (`s3:ListBucket`, `s3:GetBucketLocation`, `s3:GetBucketVersioning`) to verify the output bucket. The IAM policy only had the object-level ones.
+- Fix: added `S3BucketOps` statement to `dashboard_permissions` in ec2.tf with `s3:ListBucket`, `s3:GetBucketLocation`, `s3:GetBucketVersioning` on the gold and silver bucket ARNs. Re-ran `terraform apply`.
+- Prevention: when granting Athena access to a bucket, always include both the object-path resource (`bucket-arn/prefix/*`) AND the bucket resource (`bucket-arn`) for bucket-level actions.
+- Lesson: Athena's "output bucket verification" step is a separate API call from the actual PutObject — it requires ListBucket and GetBucketLocation on the bucket itself.
+
+## [2026-04-26] — Secrets Manager key name mismatch in app.py
+- What happened: Semantic Search tab showed "VOYAGE_API_KEY not set" even though the secret existed in Secrets Manager.
+- What I thought: IAM role didn't have access to Secrets Manager
+- Root cause: `_get_secret()` was calling `SecretId="jobpulse/voyage_api_key"` but the actual secret was named `jobpulse/voyage_key_dev`. The lookup silently returned `""` (caught by the bare `except Exception`).
+- Fix: updated the `_get_secret()` calls to use the actual secret names: `"voyage_key_dev"` and `"anthropic_key_dev"`.
+- Prevention: verify secret names in Secrets Manager (`aws secretsmanager list-secrets`) before hardcoding them in code. Or store secret names as environment variables, not string literals.
+- Lesson: bare `except Exception: return ""` hides lookup failures. At minimum, log the exception to make mismatches visible without crashing the app.
+
+## [2026-04-26] — Secrets Manager JSON key was not "value"
+- What happened: even after fixing the secret name, VOYAGE_API_KEY was still empty.
+- What I thought: the fix to the secret name should have been enough
+- Root cause: `_get_secret()` extracted `json.loads(raw)["value"]` but the secret was stored as `{"VOYAGE_API_KEY": "pa-..."}`. The key in the JSON was `"VOYAGE_API_KEY"`, not `"value"` — so `json["value"]` raised a KeyError (caught silently).
+- Fix: changed to `next(iter(parsed.values()))` — gets the first value from the dict regardless of key name. Works for any single-key secret JSON.
+- Prevention: when creating Secrets Manager entries, document the JSON structure (key name) alongside the secret, or use a consistent naming convention like `{"value": "..."}` everywhere.
+- Lesson: two separate bugs can hide behind the same symptom. Fix the first, re-test, then fix the second.
+
+## [2026-04-26] — Docker build context excluded genai/ module
+- What happened: Semantic Search returned "Search failed: No module named 'genai'" after fixing the API key issues.
+- What I thought: genai/ would be available since it's in the repo
+- Root cause: `docker build .` was run from `dashboard/streamlit/` — the build context only included files in that directory. `genai/` lives at the repo root, outside the build context, so it was never copied into the image. `sys.path.insert(0, '../..')` in app.py pointed to `/` in the container, not the repo root.
+- Fix: changed Docker build command to run from repo root: `docker build -f dashboard/streamlit/Dockerfile .`. Updated Dockerfile to explicitly `COPY genai/ genai/` after copying the dashboard files.
+- Prevention: if your app imports modules outside its own directory, the Docker build context must include those modules. Always build from the directory that contains all the code your app needs.
+- Lesson: build context = what Docker can see. Anything outside the build context path is invisible to COPY, regardless of what's on the host filesystem.

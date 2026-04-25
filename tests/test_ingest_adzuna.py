@@ -8,7 +8,7 @@ import json
 import os
 import sys
 import unittest
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 os.environ["BRONZE_BUCKET"]   = "test-bronze-bucket"
 os.environ["ADZUNA_APP_ID"]   = "test-app-id"
@@ -24,7 +24,7 @@ def make_raw_job(i: int, country: str = "gb", salary_min=None, salary_max=None) 
         "id": f"adzuna-{country}-{1000 + i}",
         "title": f"Data Engineer {i}",
         "company": {"display_name": "TechCorp"},
-        "location": {"display_name": f"London, Buckinghamshire"},
+        "location": {"display_name": "London, Buckinghamshire"},
         "salary_min": salary_min,
         "salary_max": salary_max,
         "contract_time": "full_time",
@@ -181,11 +181,11 @@ class TestNormalizeJobs(unittest.TestCase):
         job = sut.normalize_jobs(raw)[0]
         self.assertEqual(job["job_type"], "full-time")
 
-    def test_missing_company_defaults_to_unknown(self):
+    def test_missing_company_defaults_to_none(self):
         raw = [make_raw_job(1)]
         raw[0].pop("company")
         job = sut.normalize_jobs(raw)[0]
-        self.assertEqual(job["company_name"], "Unknown")
+        self.assertIsNone(job["company_name"])
 
 
 class TestBuildS3Key(unittest.TestCase):

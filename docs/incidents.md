@@ -343,3 +343,43 @@
 - Fix: removed git clone from user data entirely. User data now only installs Docker and creates empty directories. Code is deployed via GitHub Actions (SSH + scp) on every push to dev.
 - Prevention: never use git clone in EC2 user data for private repos. Use scp via CI/CD or store a deploy key in Secrets Manager if self-bootstrapping is required.
 - Lesson: EC2 user data runs as root with no user context. It has no GitHub credentials, no SSH agent, no .netrc. For private repos, push code to the instance — don't pull from it.
+
+## [2026-04-26] — EC2 missing git: GitHub Actions deploy-dashboard failed
+- What happened: deploy-dashboard GitHub Actions job exited with code 255. SSH succeeded but `git pull origin dev` failed with `bash: git: command not found`.
+- What I thought: git would be pre-installed on Amazon Linux 2023
+- Root cause: Amazon Linux 2023 minimal image does not include git. The user_data script only installed `docker` — git was never in the install list.
+- Fix: added `git` to `yum install -y docker git` in ec2.tf user_data. Replaced instance via `terraform apply -replace=aws_instance.dashboard`.
+- Prevention: list every binary your deploy script will call (git, docker, curl) and make sure user_data installs them all. Test the deploy script manually via SSH before relying on CI.
+- Lesson: "Amazon Linux" is not "Amazon Linux with everything installed." It's a minimal base image. Any tool you use in a deploy script must be explicitly installed.
+
+## [2026-04-26] — Athena InvalidRequestException: IAM policy missing bucket-level S3 permissions
+- What happened: dashboard loaded but immediately crashed with `InvalidRequestException: Unable to verify/create output bucket jobpulse-gold-dev` when Athena tried to run the flat JOIN query.
+- What I thought: the IAM policy was missing permissions
+- Root cause: Athena needs both object-level permissions (PutObject on `athena-results/*`) AND bucket-level permissions (`s3:ListBucket`, `s3:GetBucketLocation`, `s3:GetBucketVersioning`) to verify the output bucket. The IAM policy only had the object-level ones.
+- Fix: added `S3BucketOps` statement to `dashboard_permissions` in ec2.tf with `s3:ListBucket`, `s3:GetBucketLocation`, `s3:GetBucketVersioning` on the gold and silver bucket ARNs. Re-ran `terraform apply`.
+- Prevention: when granting Athena access to a bucket, always include both the object-path resource (`bucket-arn/prefix/*`) AND the bucket resource (`bucket-arn`) for bucket-level actions.
+- Lesson: Athena's "output bucket verification" step is a separate API call from the actual PutObject — it requires ListBucket and GetBucketLocation on the bucket itself.
+
+## [2026-04-26] — Secrets Manager key name mismatch in app.py
+- What happened: Semantic Search tab showed "VOYAGE_API_KEY not set" even though the secret existed in Secrets Manager.
+- What I thought: IAM role didn't have access to Secrets Manager
+- Root cause: `_get_secret()` was calling `SecretId="jobpulse/voyage_api_key"` but the actual secret was named `jobpulse/voyage_key_dev`. The lookup silently returned `""` (caught by the bare `except Exception`).
+- Fix: updated the `_get_secret()` calls to use the actual secret names: `"voyage_key_dev"` and `"anthropic_key_dev"`.
+- Prevention: verify secret names in Secrets Manager (`aws secretsmanager list-secrets`) before hardcoding them in code. Or store secret names as environment variables, not string literals.
+- Lesson: bare `except Exception: return ""` hides lookup failures. At minimum, log the exception to make mismatches visible without crashing the app.
+
+## [2026-04-26] — Secrets Manager JSON key was not "value"
+- What happened: even after fixing the secret name, VOYAGE_API_KEY was still empty.
+- What I thought: the fix to the secret name should have been enough
+- Root cause: `_get_secret()` extracted `json.loads(raw)["value"]` but the secret was stored as `{"VOYAGE_API_KEY": "pa-..."}`. The key in the JSON was `"VOYAGE_API_KEY"`, not `"value"` — so `json["value"]` raised a KeyError (caught silently).
+- Fix: changed to `next(iter(parsed.values()))` — gets the first value from the dict regardless of key name. Works for any single-key secret JSON.
+- Prevention: when creating Secrets Manager entries, document the JSON structure (key name) alongside the secret, or use a consistent naming convention like `{"value": "..."}` everywhere.
+- Lesson: two separate bugs can hide behind the same symptom. Fix the first, re-test, then fix the second.
+
+## [2026-04-26] — Docker build context excluded genai/ module
+- What happened: Semantic Search returned "Search failed: No module named 'genai'" after fixing the API key issues.
+- What I thought: genai/ would be available since it's in the repo
+- Root cause: `docker build .` was run from `dashboard/streamlit/` — the build context only included files in that directory. `genai/` lives at the repo root, outside the build context, so it was never copied into the image. `sys.path.insert(0, '../..')` in app.py pointed to `/` in the container, not the repo root.
+- Fix: changed Docker build command to run from repo root: `docker build -f dashboard/streamlit/Dockerfile .`. Updated Dockerfile to explicitly `COPY genai/ genai/` after copying the dashboard files.
+- Prevention: if your app imports modules outside its own directory, the Docker build context must include those modules. Always build from the directory that contains all the code your app needs.
+- Lesson: build context = what Docker can see. Anything outside the build context path is invisible to COPY, regardless of what's on the host filesystem.

@@ -368,6 +368,38 @@
 - Dataset-level API (`pq.read_table(directory_path)`) can auto-populate partition columns, but requires filesystem access (unreliable in Glue Python Shell per Chat 15/16 incidents)
 - Decision: read files individually via boto3 (reliable), then manually assign `df["snapshot_date"] = snapshot_date`
 
+## EC2 t3.micro over ECS Fargate for dashboard hosting (Chat 21)
+- Fargate: serverless containers, no SSH, auto-scales. But: cold starts on each request, no free tier, ~$15/mo minimum
+- EC2 t3.micro: always-on, free 750 hrs/mo (6 months), SSH access for debugging, Docker runs natively
+- Decision: t3.micro is the right call for a personal dashboard — low traffic, cost matters, debugging via SSH is useful
+- Trade-off: requires instance management (patching, Docker restarts). Acceptable for a project of this scale.
+
+## IAM instance profile over access keys on EC2 (Chat 21)
+- Never store AWS credentials on the instance (in .env, ~/.aws/credentials). Keys can leak via `docker inspect`, logs, or repo accidents.
+- Instance profile: IAM role attached to EC2. boto3 auto-fetches temp credentials from EC2 metadata service (169.254.169.254). Rotated every hour automatically.
+- Zero credential management — no key generation, no rotation, no rotation tracking
+- Least-privilege: the role only has permissions the dashboard actually needs (Athena queries, S3 gold/silver read, Glue catalog, Secrets Manager read)
+
+## Elastic IP for stable dashboard endpoint (Chat 21)
+- EC2 public IP changes on every stop/start. Without a fixed IP, users must look up the new address every time.
+- Elastic IP: static, stays associated with the account even when instance is stopped. Re-attached after instance replacement (terraform apply -replace).
+- Cost: free while associated with a running instance. $0.005/hr if unassociated — only matters if the instance is stopped long-term.
+- Trade-off: not a domain name, but sufficient for a personal tool. Add Route53 + custom domain only if sharing publicly.
+
+## Docker build context at repo root, not dashboard subdirectory (Chat 21)
+- First design: `docker build .` from `dashboard/streamlit/` — only that directory's files are in the build context
+- Problem: `from genai.semantic_search import search` inside app.py fails because `genai/` is outside the build context
+- Fix: changed to `docker build -f dashboard/streamlit/Dockerfile .` from repo root — full repo is the build context
+- Dockerfile explicitly copies `COPY dashboard/streamlit/ .` then `COPY genai/ genai/` — only the necessary directories
+- Trade-off: slightly larger build context (whole repo sent to Docker daemon), but Docker layer caching means only changed files rebuild
+
+## Adzuna country list restricted to English-speaking markets (Chat 21)
+- Original list (12): gb, us, au, ca, de, fr, br, in, nz, pl, ru, za
+- Removed: pl, ru (Adzuna.pl / Adzuna.ru geo-block non-local users — "Sorry, this job is not available in your region")
+- Further removed: de, fr, br (German/French/Portuguese-language Adzuna sites have same geo-restriction behaviour)
+- Final list (7): gb, us, au, ca, in, nz, za — all English-language markets, globally accessible apply links
+- Trade-off: losing ~1,500 jobs/run from non-English markets. Acceptable — non-accessible apply links have zero value.
+
 ## numpy==1.26.4 as the safe pairing with pyarrow==14.0.2 (Chat 20)
 - NumPy 2.0 removed `numpy.core` submodule. Any C extension compiled against numpy 1.x (including pyarrow 14.x) that imports `numpy.core.multiarray` will crash at load time.
 - `numpy>=1.24.0` in `--additional-python-modules` resolves to numpy 2.x — crash guaranteed

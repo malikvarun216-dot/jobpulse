@@ -131,8 +131,7 @@ jobs:
           ssh -o StrictHostKeyChecking=no -i /tmp/ec2_key.pem ec2-user@$EC2_HOST '
             cd /home/ec2-user/jobpulse
             git pull origin dev
-            cd dashboard/streamlit
-            docker build -t jobpulse-dashboard .
+            docker build -t jobpulse-dashboard -f dashboard/streamlit/Dockerfile .
             docker stop jobpulse-dashboard || true
             docker rm jobpulse-dashboard || true
             docker run -d --restart=always -p 8501:8501 \

@@ -103,10 +103,37 @@ data "aws_iam_policy_document" "dashboard_permissions" {
     actions = [
       "s3:PutObject",
       "s3:GetObject",
+      "s3:DeleteObject",
       "s3:AbortMultipartUpload",
     ]
     resources = [
       "${aws_s3_bucket.layers["gold"].arn}/athena-results/*",
+    ]
+  }
+
+  statement {
+    sid    = "S3BucketOps"
+    effect = "Allow"
+    actions = [
+      "s3:ListBucket",
+      "s3:GetBucketLocation",
+      "s3:GetBucketVersioning",
+    ]
+    resources = [
+      aws_s3_bucket.layers["gold"].arn,
+      aws_s3_bucket.layers["silver"].arn,
+    ]
+  }
+
+  statement {
+    sid    = "AthenaGoldBucketWrite"
+    effect = "Allow"
+    actions = [
+      "s3:PutObject",
+      "s3:DeleteObject",
+    ]
+    resources = [
+      "${aws_s3_bucket.layers["gold"].arn}/*",
     ]
   }
 

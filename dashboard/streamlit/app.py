@@ -54,13 +54,14 @@ def _get_secret(env_var: str, secret_key: str) -> str:
     try:
         client = boto3.client("secretsmanager", region_name=AWS_REGION)
         raw = client.get_secret_value(SecretId=f"jobpulse/{secret_key}")["SecretString"]
-        return json.loads(raw)["value"]
+        parsed = json.loads(raw)
+        return next(iter(parsed.values()))
     except Exception:
         return ""
 
 
-VOYAGE_API_KEY = _get_secret("VOYAGE_API_KEY", "voyage_api_key")
-ANTHROPIC_API_KEY = _get_secret("ANTHROPIC_API_KEY", "anthropic_api_key")
+VOYAGE_API_KEY = _get_secret("VOYAGE_API_KEY", "voyage_key_dev")
+ANTHROPIC_API_KEY = _get_secret("ANTHROPIC_API_KEY", "anthropic_key_dev")
 
 
 def parse_tags(raw: str) -> list:

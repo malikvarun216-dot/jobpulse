@@ -8,7 +8,7 @@ Trigger  : EventBridge scheduled rule (daily, via Step Functions Parallel state)
 Output   : s3://{BRONZE_BUCKET}/snapshot_date=YYYY-MM-DD/source=adzuna/data.json.gz
 Idempotent: YES — same run date always writes to same S3 key (safe to retry)
 
-Adzuna covers 12 countries: gb, us, au, ca, de, fr, br, in, nz, pl, ru, za
+Adzuna covers 7 countries: gb, us, au, ca, in, nz, za
 Each country is paginated independently; results merged into a single S3 file.
 """
 
@@ -33,7 +33,7 @@ API_BASE = "https://api.adzuna.com/v1/api/jobs"
 RESULTS_PER_PAGE = 50
 MAX_PAGES_PER_COUNTRY = 6  # 6 × 50 = 300 jobs/country × 12 countries ≈ 3,600 total
 
-COUNTRIES = ["gb", "us", "au", "ca", "de", "fr", "br", "in", "nz", "pl", "ru", "za"]
+COUNTRIES = ["gb", "us", "au", "ca", "in", "nz", "za"]
 
 # Maps Adzuna 2-letter country codes to human-readable labels embedded in location_raw.
 # The Spark extract_country() function looks for these strings in COUNTRY_MAP.
@@ -42,13 +42,8 @@ COUNTRY_LABELS = {
     "us": "US",
     "au": "AU",
     "ca": "CA",
-    "de": "DE",
-    "fr": "FR",
-    "br": "BR",
     "in": "IN",
     "nz": "NZ",
-    "pl": "PL",
-    "ru": "RU",
     "za": "ZA",
 }
 

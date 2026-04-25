@@ -957,16 +957,34 @@ Expected: +5,000–20,000 jobs/run → pipeline crosses 100K+/month target.
 Date: 2026-04-26
 
 ### Built
-- dashboard/streamlit/Dockerfile — containerizes Streamlit app (python:3.12-slim, port 8501)
-- terraform/envs/dev/ec2.tf — security group (8501+22), IAM instance profile (Athena+S3+Glue+SecretsManager), t3.micro EC2, Elastic IP
-- terraform/envs/dev/outputs.tf — dashboard_url + dashboard_instance_id outputs
-- dashboard/streamlit/app.py — updated to fetch Voyage + Anthropic keys from Secrets Manager (env var fallback for local dev)
-- .github/workflows/deploy.yml — added deploy-dashboard job: SSHes into EC2, scp code, rebuilds Docker container
+- **dashboard/streamlit/Dockerfile** — containerizes Streamlit app (python:3.12-slim, port 8501, healthcheck). Build context is repo root so `genai/` is available inside container.
+- **terraform/envs/dev/ec2.tf** — security group (8501+22), IAM instance profile (Athena+S3+Glue+SecretsManager), t3.micro EC2 (Amazon Linux 2023), Elastic IP. user_data installs docker + git.
+- **terraform/envs/dev/outputs.tf** — dashboard_url + dashboard_instance_id outputs
+- **dashboard/streamlit/app.py** — fetches Voyage + Anthropic keys from Secrets Manager via `_get_secret()` (env var fallback for local dev). Extracts secret value via `next(iter(parsed.values()))` to handle any JSON key name.
+- **.github/workflows/deploy.yml** — added deploy-dashboard job: SSH into EC2, git pull, rebuild Docker from repo root with `-f dashboard/streamlit/Dockerfile .`, restart container
+- **ingestion/sources/adzuna/ingest_adzuna.py** — narrowed COUNTRIES from 12 to 7 (gb, us, au, ca, in, nz, za). Removed pl, ru, de, fr, br — Adzuna's local sites geo-block Indian users.
 
 ### AWS Resources Provisioned
-- EC2 t3.micro: i-0d2be7b3c20265be9 (replaced after user data fix)
-- Elastic IP: 3.7.125.66 (stable, persists across instance stop/start)
+- EC2 t3.micro: i-0bdbfcad1985a7565 (final, after user_data and IAM fixes)
+- Elastic IP: 3.7.125.66 (stable, persists across instance replacements)
 - Security group: jobpulse-dashboard-sg-dev (port 8501 + 22)
+
+### Bugs Hit & Fixed (4)
+1. **EC2 missing git** — GitHub Actions deploy ran `git pull` but `git` wasn't in user_data. Fixed: added `git` to `yum install` in ec2.tf user_data, replaced instance.
+2. **IAM missing S3 bucket-level perms** — Athena raised `InvalidRequestException: Unable to verify output bucket`. IAM policy only had object-level permissions (`s3:PutObject` on `athena-results/*`). Added `s3:ListBucket`, `s3:GetBucketLocation`, `s3:GetBucketVersioning` on the bucket ARNs.
+3. **Wrong Secrets Manager key names** — app called `_get_secret("VOYAGE_API_KEY", "voyage_api_key")` but actual secrets were named `jobpulse/voyage_key_dev`. Fixed key names in the `_get_secret()` calls.
+4. **Secrets Manager JSON key mismatch** — `_get_secret()` extracted `json.loads(raw)["value"]` but secrets were stored as `{"VOYAGE_API_KEY": "pa-..."}`. Fixed: `next(iter(parsed.values()))` — gets the first value regardless of key name.
+
+### Verified
+- Dashboard live at http://3.7.125.66:8501 ✓
+- 19,930 jobs loaded from Athena ✓
+- Sidebar filters, charts, tag frequency all rendering ✓
+- Semantic Search tab working (Voyage key from Secrets Manager) ✓
+- Claude Haiku "Why this match?" explanations rendering ✓
+
+### GitHub Secrets Added
+- `EC2_DASHBOARD_IP` = 3.7.125.66
+- `EC2_SSH_KEY` = contents of ~/.ssh/jobpulse-dev.pem
 - IAM role: jobpulse-dashboard-role-dev (instance profile, no hardcoded keys)
 - IAM policy: Athena query + S3 gold/silver read + Glue catalog + Secrets Manager read
 

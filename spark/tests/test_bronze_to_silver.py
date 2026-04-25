@@ -390,7 +390,7 @@ def test_no_logo_columns(spark):
 
 def _make_dedup_df(spark, rows):
     """Create a minimal silver-shaped DataFrame for dedup testing."""
-    from datetime import date, datetime
+    from datetime import datetime
     from pyspark.sql.types import (
         DateType, StringType, StructField, StructType, TimestampType,
     )

@@ -7,7 +7,6 @@ Invoked by Step Functions after the bronze→silver Glue ETL job.
 import argparse
 import json
 import os
-import sys
 import time
 import zipfile
 

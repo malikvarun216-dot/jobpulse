@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import date
-from typing import Any, Optional
+from typing import Any
 
 from genai.guardrails import ExtractionResult
 
@@ -42,7 +42,7 @@ class MatchScorer:
         self._user_skills    = {s.lower() for s in profile["skills"]}
         self._user_seniority = profile["seniority"].lower()
         self._user_yoe       = int(profile.get("yoe", 0))
-        self._user_locations = {l.lower() for l in profile["preferred_locations"]}
+        self._user_locations = {loc.lower() for loc in profile["preferred_locations"]}
         self._user_roles     = set(profile["preferred_role_families"])
         self._salary_min     = profile.get("salary_min_usd", 0)
         self._weights        = profile["weights"]

@@ -332,6 +332,17 @@
 - This is safe because the cache stores the extraction (skills, seniority), not the score. Score is always recomputed from the current profile.
 - Practical cost: rescoring 3,500 jobs with force_rescore takes ~3 min and $0.00
 
+## Always run the linter against existing code before wiring it as a CI gate (Chat 19 incident)
+- Ruff was added as a hard CI failure on day one without a prior local dry-run. 11 existing lint errors caused the first push to fail immediately.
+- Rule: before adding any new CI check (linter, formatter, type checker), run it locally against the full codebase, fix all violations, then commit the fixes together with the CI config in the same PR.
+- Trade-off: doing it in one PR is slightly more work to review. Not doing it guarantees a broken CI on first run, which undermines trust in the gate.
+- Applied: in future chats, any new tool added to CI gets a local dry-run first — the CI config commit and the fix commit go in together.
+
+## loop variable `l` is ambiguous — always use descriptive names in comprehensions (Chat 19)
+- `{l.lower() for l in locations}` — ruff E741 flags single-letter variables `l`, `O`, `I` as ambiguous (look like 1, 0, 1 in many fonts).
+- Renamed to `loc`. Rule: comprehension variables should be short but descriptive — `loc`, `skill`, `tag`, not `l`, `s`, `t`.
+- Not a functional bug, but a readability issue that causes real misreads during code review.
+
 ## CI/CD: Two workflows, not one (Chat 19)
 - `ci.yml` runs on every push to every branch + every PR to dev. Purpose: fast feedback loop, catches regressions before code reaches dev.
 - `deploy.yml` runs on push to dev only. Purpose: automated AWS deploy after merge.

@@ -17,7 +17,7 @@ Idempotent:   dynamic partition overwrite — reruns only replace affected parti
 import sys
 
 try:
-    from pyspark.sql import functions as F, Window
+    from pyspark.sql import functions as F
     from pyspark.sql.types import ArrayType, IntegerType, StringType
 except ImportError:
     pass  # not needed for pure-function unit tests

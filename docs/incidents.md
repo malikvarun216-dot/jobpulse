@@ -1,5 +1,21 @@
 # Incidents
 
+## [2026-04-25] — CI failed on first push: 11 ruff lint errors
+- What happened: first GitHub Actions CI run failed in 30s with exit code 1. ruff found 11 errors across 7 files — unused imports, ambiguous variable name `l`, f-string without placeholders.
+- What I thought: tests passing locally = CI passing. Didn't run ruff locally before pushing (ruff wasn't installed in the system Python).
+- Root cause: ruff was introduced as a new CI gate but never run against the existing codebase before setting it as a hard failure. The codebase had accumulated lint debt from earlier chats — unused imports left after refactors, a loop variable named `l` (E741), an f-string prefix with no `{}` placeholder, and a `sys` import in dbt_runner.py that was removed during a refactor but the import remained.
+- Specific errors fixed:
+  - `genai/match_scorer.py` — `Optional` unused (removed); loop var `l` → `loc` (E741)
+  - `spark/jobs/bronze_to_silver.py` — `Window` unused (removed from PySpark import)
+  - `spark/tests/test_bronze_to_silver.py` — `date` unused in local import (removed, kept `datetime`)
+  - `tests/test_genai.py` — `import json` inside a test method, never used (removed)
+  - `tests/test_ingest_adzuna.py` — `call` unused import (removed); `f"London, Buckinghamshire"` has no `{}` → remove `f` prefix
+  - `tests/test_jd_enrichment_agent.py` — `MagicMock` and `EnrichmentRecord` unused imports (removed)
+  - `transform/dbt_runner/dbt_runner.py` — `import sys` unused after a prior refactor (removed)
+- Fix: fixed all 11 in-place, re-ran tests (192 passed, 14 skipped), committed and pushed.
+- Prevention: run `ruff check --select E,F --ignore E501,E402 .` locally before every push. Add to Makefile as `make lint` so it's one command.
+- Lesson: introducing a linter as a CI gate without running it against the existing codebase first guarantees a red build on the first push. Always do a dry-run lint pass before wiring it into CI.
+
 ## [2026-04-24] — numpy.core.multiarray failed to import in embedding Glue job
 - What happened: embedding_runner Glue job failed with `ImportError: numpy.core.multiarray failed to import`
 - What I thought: numpy wasn't installed — tried adding `numpy>=1.24.0` to `--additional-python-modules`

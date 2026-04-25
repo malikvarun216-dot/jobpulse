@@ -338,6 +338,42 @@
 - Trade-off: doing it in one PR is slightly more work to review. Not doing it guarantees a broken CI on first run, which undermines trust in the gate.
 - Applied: in future chats, any new tool added to CI gets a local dry-run first — the CI config commit and the fix commit go in together.
 
+## GE as a separate Glue job, not embedded in the Spark job (Chat 20)
+- Option considered: run GE checks inside bronze_to_silver.py before the Parquet write
+- Rejected: would require adding GE as a dependency to the Spark job (different container, different bootstrap), mixing concerns (transform vs validation)
+- Chosen: separate Glue Python Shell job (ge_runner) inserted as its own Step Functions state
+- Why: one job, one responsibility. If quality fails, Step Functions sees a FAILED Glue job and routes to PipelineFailure. Clean separation.
+
+## GE ephemeral context over a persisted Data Docs setup (Chat 20)
+- GE supports file-based, S3-backed, and in-memory ("ephemeral") contexts
+- File/S3-backed: stores Data Docs (HTML reports), checkpoint configs, suite JSONs on disk or in S3. Good for teams sharing validation history.
+- Ephemeral: everything in memory, nothing persisted. Suitable for Glue Python Shell where there's no writable filesystem and S3-backed Data Docs would add unnecessary cost and complexity.
+- Decision: `gx.get_context(mode="ephemeral")` — validation result is printed to CloudWatch logs, which is sufficient for an unattended pipeline.
+
+## ExpectColumnDistinctValuesToBeInSet for freshness, not ExpectColumnValuesToBeBetween (Chat 20)
+- First attempt: `ExpectColumnValuesToBeBetween(min_value=snapshot_date, max_value=snapshot_date)` on a string column
+- Problem: silently passed on valid data and gave an empty result object (no error, no pass)
+- Root cause: GE's between-comparison on strings uses lexicographic ordering which behaves unexpectedly for date strings in some edge cases; the expectation was returning an empty validation result
+- Correct approach: `ExpectColumnDistinctValuesToBeInSet(column="snapshot_date", value_set=[snapshot_date])` — explicitly checks that the only distinct value is today's date
+- This is the semantically correct expectation for a freshness check: the set of all distinct dates must equal {today}
+
+## ExpectTableRowCountToBeBetween instead of ExpectTableRowCountToBeGreaterThan (Chat 20)
+- GE 1.x does not have `ExpectTableRowCountToBeGreaterThan` — calling it raises AttributeError
+- `ExpectTableRowCountToBeBetween(min_value=100)` with no max_value is the correct API — max_value defaults to unbounded
+- Lesson: always validate GE expectation class names against the version installed. GE APIs changed significantly between 0.x and 1.x.
+
+## Partition column must be manually assigned when reading individual Parquet files (Chat 20)
+- Hive-style partitioned Parquet: column values are stored in the directory path (`snapshot_date=2026-04-25/`), not in the file data
+- When reading with `pq.read_table(io.BytesIO(body))` on individual files, pyarrow returns only data columns — the partition column is absent
+- Dataset-level API (`pq.read_table(directory_path)`) can auto-populate partition columns, but requires filesystem access (unreliable in Glue Python Shell per Chat 15/16 incidents)
+- Decision: read files individually via boto3 (reliable), then manually assign `df["snapshot_date"] = snapshot_date`
+
+## numpy==1.26.4 as the safe pairing with pyarrow==14.0.2 (Chat 20)
+- NumPy 2.0 removed `numpy.core` submodule. Any C extension compiled against numpy 1.x (including pyarrow 14.x) that imports `numpy.core.multiarray` will crash at load time.
+- `numpy>=1.24.0` in `--additional-python-modules` resolves to numpy 2.x — crash guaranteed
+- `numpy==1.26.4` is the last stable 1.x release and the correct pairing with `pyarrow==14.0.2`
+- Rule: when pinning pyarrow to 14.x, always pin `numpy==1.26.4`. Document this pairing in glue.tf as a comment.
+
 ## loop variable `l` is ambiguous — always use descriptive names in comprehensions (Chat 19)
 - `{l.lower() for l in locations}` — ruff E741 flags single-letter variables `l`, `O`, `I` as ambiguous (look like 1, 0, 1 in many fonts).
 - Renamed to `loc`. Rule: comprehension variables should be short but descriptive — `loc`, `skill`, `tag`, not `l`, `s`, `t`.
@@ -384,6 +420,32 @@
 - If CI used Python 3.9 or 3.11, a syntax or stdlib API difference could pass CI but fail in Lambda.
 - Glue Python Shell jobs use Python 3.9 (Glue 4.0 limitation), but those aren't tested in CI — Glue job scripts are tested indirectly via the genai unit tests which run fine on 3.12.
 - Trade-off: if Glue-only code uses a 3.9-only pattern, CI won't catch it. Acceptable — the genai tests cover extraction logic; the Glue bootstrap boilerplate (zip extraction, sys.path) is stable.
+
+## GE runner as a separate Glue Python Shell job, not inside the Spark transform (Chat 20)
+- Separation of concerns: the Spark job transforms; the GE job validates. Mixing them means a quality failure also aborts the transform — you can't distinguish "transform crashed" from "data was bad."
+- Separate job = separate Step Functions state = separate CloudWatch log stream = pinpointed failure visibility.
+- Cost: 0.0625 DPU Python Shell job, ~$0.004/run. Negligible for the observability gain.
+
+## GE ephemeral in-memory context, not file-system context (Chat 20)
+- Default GE setup writes a `great_expectations/` project directory and Data Docs HTML to disk.
+- In a Glue Python Shell job, the working directory is ephemeral — no persistent file system, no S3 Data Docs needed.
+- `gx.get_context(mode="ephemeral")` keeps everything in memory: no files written, no S3 side effects from the quality check itself.
+- Trade-off: no Data Docs HTML report persisted between runs. Acceptable — failures are logged to CloudWatch; a Data Docs site would require hosting infrastructure.
+
+## ExpectColumnDistinctValuesToBeInSet for freshness, not ExpectColumnValuesToBeBetween (Chat 20)
+- `ExpectColumnValuesToBeBetween` on string columns in GE 1.x returns an empty result object (no error, just silent wrong behaviour). Caught by the unit test — `test_valid_df_passes` was raising ValueError on a valid DataFrame.
+- `ExpectColumnDistinctValuesToBeInSet(column="snapshot_date", value_set=[today])` checks that the set of unique dates in the partition contains only today's date. A stale partition (yesterday's date) fails because the value is not in the allowed set.
+- Rule: always test the happy path AND each failure path before trusting a GE expectation on a new column type.
+
+## ExpectTableRowCountToBeBetween, not ExpectTableRowCountToBeGreaterThan (Chat 20)
+- `ExpectTableRowCountToBeGreaterThan` does not exist in GE 1.x. The correct class is `ExpectTableRowCountToBeBetween(min_value=N)`.
+- `min_value` is inclusive: `min_value=100` means "at least 100 rows."
+- Lesson: always let tests find the real class name rather than guessing from documentation.
+
+## RunDataQuality state inserted between RunGlueJob and RunDbtGold (Chat 20)
+- Insertion point: after silver is written, before dbt reads it. This is the only point where bad silver data can be stopped before it propagates to gold.
+- If GE fails before RunDbtGold: gold is untouched. dbt's CTAS only runs on valid data.
+- If GE ran after RunDbtGold: bad data would already be in gold. The check would be post-mortem, not preventive.
 
 ## Lambda snapshot_date: IST (UTC+5:30) instead of UTC (Post-Chat-14 fix)
 - All ingestors compute `snapshot_date = datetime.now(ist).strftime("%Y-%m-%d")`

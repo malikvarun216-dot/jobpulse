@@ -852,8 +852,8 @@ These are the only secrets needed. `ANTHROPIC_API_KEY` is NOT a GitHub secret �
 
 ---
 
-### Test Counts (post Chat 19)
-- 192 unit tests pass (was 191 — one stale test renamed and fixed)
+### Test Counts (post Chat 20)
+- 198 unit tests pass (was 192 — 6 new GE tests added)
 - 14 PySpark tests skipped (expected, no PySpark in CI)
 
 ---
@@ -870,12 +870,71 @@ Last updated: 2026-04-25
 - dbt star schema, Athena workgroup, CloudWatch alarms + SNS
 - CI/CD: GitHub Actions lint + test gate on PRs, auto-deploy to AWS on merge to dev
 
-### Next — Chat 20: Great Expectations Data Quality
-**Why second:** Data quality gates between silver and gold are standard at any serious DE shop. Catches silent failures (schema drift, null rate spikes, empty partitions) before bad data reaches the dashboard.
-- GE expectations suite on silver_jobs: not_null on job_id/title/snapshot_date, row count ≥ 100, freshness check
-- Run GE as a Glue Python Shell job between RunGlueJob and RunDbtGold in Step Functions
-- On failure: Step Functions catches the error → SNS alert → pipeline stops (doesn't write bad gold data)
-- dbt schema tests already exist (Chat 7); GE adds runtime volume/freshness checks dbt can't do
+## Chat 20 — Great Expectations Data Quality Gate
+Date: 2026-04-25
+
+### Built
+- **`transform/ge_runner/ge_runner.py`** — Glue Python Shell job. Reads today's silver partition from S3 into pandas, runs 5 GE expectations (not-null on job_id/title/snapshot_date, row count ≥ 100, freshness check), raises ValueError on failure.
+- **`tests/test_ge_runner.py`** — 6 unit tests: happy path, empty df, low count, null job_id, null title, stale date. All passing.
+- **`terraform/envs/dev/glue.tf`** — `aws_glue_job.ge_runner` (Python Shell, 0.0625 DPU, 15 min timeout, great-expectations 1.4.4).
+- **`terraform/envs/dev/step_functions.tf`** — `RunDataQuality` state inserted between `RunGlueJob` → `RunDbtGold`. Error catch block routes to `PipelineFailure` on failure.
+- **`.github/workflows/deploy.yml`** — added upload step for `ge_runner.py`.
+- **`requirements.txt`** — added `great-expectations>=1.3`.
+
+### Key Bugs Hit & Fixes
+
+**Bug 1: Wrong S3 prefix path**
+- **Problem:** Code looked for `silver_jobs/snapshot_date=2026-04-25/` but Spark wrote to `snapshot_date=2026-04-25/`
+- **Root cause:** Glue job writes directly to bucket root with partition structure, not under a `silver_jobs/` subfolder
+- **Fix:** Changed prefix in `load_silver_df()` from `f"silver_jobs/snapshot_date={snapshot_date}/"` to `f"snapshot_date={snapshot_date}/"`
+
+**Bug 2: Partition column missing from DataFrame**
+- **Problem:** `df["snapshot_date"]` raised `KeyError: 'snapshot_date'` even though files were found
+- **Root cause:** Partition columns in S3 path (`snapshot_date=2026-04-25/`) are not stored inside the Parquet data itself. PyArrow reads just the data columns.
+- **Fix:** Manually assigned `df["snapshot_date"] = snapshot_date` after reading Parquet files
+
+**Bug 3: Python 3.10+ union syntax in enrichment_runner.py**
+- **Problem:** `def func() -> str | None:` syntax not supported in Python 3.9 (Glue Python Shell)
+- **Root cause:** Glue runs Python 3.9; `|` union syntax is Python 3.10+
+- **Fix:** Added `from typing import Optional` and changed to `Optional[str]`
+
+**Bug 4: Numpy 2.x binary incompatibility in embedding job**
+- **Problem:** `ImportError: numpy.core.multiarray failed to import` in EmbedJDs state
+- **Root cause:** `--additional-python-modules` had `numpy>=1.24.0` which resolved to numpy 2.x. PyArrow 14.0.2 was compiled against numpy 1.x; C extensions are incompatible.
+- **Fix:** Pinned `numpy==1.26.4` (last stable 1.x release)
+
+### Full Pipeline Verification
+```
+Input: 1,920 jobs (Remotive 20 + Arbeitnow 100 + Adzuna 1,800)
+  ↓
+RunGlueJob (bronze→silver)     ✅ SUCCEEDED (87 sec)
+  ↓
+RunDataQuality (GE validation) ✅ SUCCEEDED (47–100 sec)
+  - Checked: no nulls on job_id, title, snapshot_date
+  - Checked: row count ≥ 100 (got 1,920)
+  - Checked: freshness (all snapshot_date == 2026-04-25)
+  - Result: All 5 expectations PASSED
+  ↓
+RunDbtGold (dbt transforms)    ✅ SUCCEEDED (78–93 sec)
+  ↓
+RunEnrichment (skill extract)  ✅ SUCCEEDED (1,064 sec / 17.7 min)
+  ↓
+EmbedJDs (Voyage AI)           ✅ SUCCEEDED
+  ↓
+PipelineComplete               ✅ SUCCEEDED
+```
+
+### Pipeline after Chat 20
+```
+ParallelIngest → RunGlueJob → RunDataQuality → RunDbtGold → RunEnrichment → EmbedJDs → PipelineComplete
+```
+
+### Key API Lessons (GE 1.x)
+- `ExpectTableRowCountToBeGreaterThan` does not exist → use `ExpectTableRowCountToBeBetween(min_value=N)`
+- `ExpectColumnValuesToBeBetween` on strings silently misbehaves → use `ExpectColumnDistinctValuesToBeInSet` for freshness
+- GE 1.x requires Python 3.9–3.12; `get_context(mode="ephemeral")` creates in-memory context (no Data Docs needed)
+- Partition columns in S3 path are NOT in Parquet data — must assign manually after reading
+- Local testing with Python 3.12 (system Python 3.14 too new)
 
 ### Backlog — Chat 21+: Volume Scale
 **Greenhouse + Lever ATS ingestors** — one Lambda per ATS, slug list in S3, hits hundreds of company boards.

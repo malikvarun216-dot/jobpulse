@@ -20,6 +20,7 @@ import os
 import sys
 import time
 import zipfile
+from typing import Optional
 
 import boto3
 import pandas as pd
@@ -36,7 +37,7 @@ _GENAI_EXTRACT_DIR = "/tmp/genai_pkg"
 _S3_PROFILE_KEY = "config/user_profile.yml"
 
 
-def _try_download_profile_from_s3(silver_bucket: str, region: str) -> str | None:
+def _try_download_profile_from_s3(silver_bucket: str, region: str) -> Optional[str]:
     """Download user_profile.yml from S3; return local path or None on failure."""
     local_path = "/tmp/user_profile.yml"
     try:

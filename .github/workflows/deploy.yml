@@ -82,6 +82,8 @@ jobs:
             s3://${{ env.SILVER_BUCKET }}/glue-scripts/bronze_to_silver.py
           aws s3 cp transform/dbt_runner/dbt_runner.py \
             s3://${{ env.SILVER_BUCKET }}/glue-scripts/dbt_runner.py
+          aws s3 cp transform/ge_runner/ge_runner.py \
+            s3://${{ env.SILVER_BUCKET }}/glue-scripts/ge_runner.py
           aws s3 cp genai/enrichment_runner.py \
             s3://${{ env.SILVER_BUCKET }}/glue-scripts/enrichment_runner.py
           aws s3 cp genai/embedding_runner.py \
@@ -109,5 +111,5 @@ jobs:
       - name: Deploy summary
         run: |
           echo "Lambdas: remotive, arbeitnow, adzuna"
-          echo "Glue scripts: bronze_to_silver, dbt_runner, enrichment_runner, embedding_runner"
+          echo "Glue scripts: bronze_to_silver, dbt_runner, ge_runner, enrichment_runner, embedding_runner"
           echo "Packages: genai_package.zip, dbt_project.zip, user_profile.yml"

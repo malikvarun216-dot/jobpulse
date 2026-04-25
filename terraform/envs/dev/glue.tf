@@ -356,7 +356,7 @@ resource "aws_glue_job" "embedding_runner" {
     "--gold_database"                    = aws_glue_catalog_database.gold.name
     "--dry_run"                          = "false"
     "--enable-continuous-cloudwatch-log" = "true"
-    "--additional-python-modules"        = "voyageai>=0.2.0,pyarrow==14.0.2,pandas>=2.0.0,numpy>=1.24.0"
+    "--additional-python-modules"        = "voyageai>=0.2.0,pyarrow==14.0.2,pandas>=2.0.0,numpy==1.26.4"
     "--extra-py-files"                   = "s3://${aws_s3_bucket.layers["silver"].bucket}/glue-scripts/genai_package.zip"
   }
 
@@ -371,4 +371,47 @@ resource "aws_glue_job" "embedding_runner" {
   }
 
   depends_on = [aws_s3_object.embedding_runner_script, null_resource.genai_package_upload]
+}
+
+# ---------------------------------------------------------------------------
+# GE runner — Glue Python Shell job (data quality gate: silver → gold)
+# ---------------------------------------------------------------------------
+
+resource "aws_s3_object" "ge_runner_script" {
+  bucket = aws_s3_bucket.layers["silver"].id
+  key    = "glue-scripts/ge_runner.py"
+  source = "${path.module}/../../../transform/ge_runner/ge_runner.py"
+  etag   = filemd5("${path.module}/../../../transform/ge_runner/ge_runner.py")
+}
+
+resource "aws_glue_job" "ge_runner" {
+  name     = "${var.project}-ge-runner-${var.env}"
+  role_arn = aws_iam_role.glue_exec.arn
+
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${aws_s3_bucket.layers["silver"].bucket}/glue-scripts/ge_runner.py"
+    python_version  = "3.9"
+  }
+
+  default_arguments = {
+    "--job-language"                     = "python"
+    "--silver_bucket"                    = aws_s3_bucket.layers["silver"].bucket
+    "--region"                           = var.aws_region
+    "--enable-continuous-cloudwatch-log" = "true"
+    # GE 1.x works on Python 3.9–3.12; pyarrow + pandas read the silver Parquet partition
+    "--additional-python-modules"        = "great-expectations>=1.3.0,pandas>=2.0.0,pyarrow==14.0.2"
+  }
+
+  glue_version = "4.0"
+  max_capacity = 0.0625 # cheapest Python Shell tier (~$0.004/run), same as dbt_runner
+  timeout      = 15     # GE install + validation finishes well under 5 min; 15 is safe headroom
+
+  tags = {
+    project = var.project
+    env     = var.env
+    layer   = "quality"
+  }
+
+  depends_on = [aws_s3_object.ge_runner_script]
 }

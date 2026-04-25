@@ -1,5 +1,37 @@
 # Incidents
 
+## [2026-04-25] — GE runner: wrong S3 prefix path
+- What happened: RunDataQuality Glue job failed with `FileNotFoundError: No Parquet files found at s3://jobpulse-silver-dev/silver_jobs/snapshot_date=2026-04-25/`
+- What I thought: data wasn't written yet for today's partition; checked Spark job logs
+- Root cause: Spark writes to `s3://silver-bucket/snapshot_date=YYYY-MM-DD/` (partition at bucket root). The GE runner was looking under `silver_jobs/snapshot_date=...` — a path that never existed.
+- Fix: Changed prefix in `load_silver_df()` from `f"silver_jobs/snapshot_date={snapshot_date}/"` to `f"snapshot_date={snapshot_date}/"`
+- Prevention: always verify the exact S3 path structure by listing the bucket before writing path-dependent code. The Terraform S3 bucket key and the Glue partition path are different things.
+- Lesson: confirm exact S3 paths before writing readers. `aws s3 ls s3://bucket/ --recursive | head` takes 10 seconds and prevents this entire class of bug.
+
+## [2026-04-25] — GE runner: partition column missing from DataFrame (KeyError: 'snapshot_date')
+- What happened: after fixing the S3 prefix, GE runner failed with `KeyError: 'snapshot_date'` inside `validate_silver()` even though files were being found and read
+- What I thought: snapshot_date column was being dropped somewhere in pyarrow concat
+- Root cause: partition columns (e.g. `snapshot_date=2026-04-25/` in the S3 path) are NOT stored inside Parquet file data. When pyarrow reads individual `.parquet` files directly (not a full dataset), it returns only the data columns — partition columns must be added manually.
+- Fix: added `df["snapshot_date"] = snapshot_date` after `pa.concat_tables(tables).to_pandas()` in `load_silver_df()`
+- Prevention: when reading partitioned Parquet files individually, always manually reattach partition key values. Use `pq.read_table(dataset_path)` with the dataset API if you want partition columns auto-populated.
+- Lesson: partition columns exist in the directory path, not the file. Individual file reads don't know about the path.
+
+## [2026-04-25] — Python 3.10+ union syntax breaks Glue Python 3.9 (enrichment_runner.py)
+- What happened: RunEnrichment Glue job failed instantly with `TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'` at line 39
+- What I thought: runtime error in the function body
+- Root cause: `def func() -> str | None:` — the `|` operator for type unions in annotations is only valid at runtime in Python 3.10+. Glue Python Shell 4.0 runs Python 3.9. Unlike `jd_enrichment_agent.py` and `match_scorer.py` (both had `from __future__ import annotations` which defers annotation evaluation), `enrichment_runner.py` had neither the future import nor `Optional`.
+- Fix: added `from typing import Optional`; changed return type to `-> Optional[str]`
+- Prevention: any Glue Python Shell script must be Python 3.9 compatible. `from __future__ import annotations` at the top of a file allows `|` union syntax safely on 3.9. Without it, use `Optional[T]` from `typing`.
+- Lesson: `from __future__ import annotations` is a simple one-line guard. Add it to every new Glue script as a habit.
+
+## [2026-04-25] — numpy 2.x breaks pyarrow 14.0.2 in embedding Glue job
+- What happened: EmbedJDs Glue job failed with `ImportError: numpy.core.multiarray failed to import`
+- What I thought: numpy version conflict (same class of issue as Chat 16's embedding job incident)
+- Root cause: `--additional-python-modules` had `numpy>=1.24.0` which resolved to numpy 2.x. NumPy 2.0 removed `numpy.core` submodule. PyArrow 14.0.2 C extensions were compiled against numpy 1.x and hard-import `numpy.core.multiarray` at load time → crash.
+- Fix: pinned `numpy==1.26.4` (last stable numpy 1.x release; compatible with pyarrow 14.0.2)
+- Prevention: when pinning pyarrow to 14.x, always also pin numpy to `<2.0.0`. These two must be compatible. `numpy==1.26.4` is the safe pairing.
+- Lesson: numpy 2.0 is a breaking change for any C extension compiled against 1.x. Always pin the numpy major version when any C extension dependency is pinned.
+
 ## [2026-04-25] — CI failed on first push: 11 ruff lint errors
 - What happened: first GitHub Actions CI run failed in 30s with exit code 1. ruff found 11 errors across 7 files — unused imports, ambiguous variable name `l`, f-string without placeholders.
 - What I thought: tests passing locally = CI passing. Didn't run ruff locally before pushing (ruff wasn't installed in the system Python).

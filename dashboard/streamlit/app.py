@@ -5,7 +5,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 from athena_client import run_query
 
 st.set_page_config(page_title="JobPulse", layout="wide", page_icon="📊")
@@ -251,7 +251,7 @@ with tab_semantic:
             with st.spinner("Embedding query and searching..."):
                 _vo = _voyageai.Client(api_key=VOYAGE_API_KEY)
                 _s3 = _boto3.client("s3", region_name=AWS_REGION)
-                results = _semantic_search(query.strip(), _vo, _s3, GOLD_BUCKET, k=20)
+                results = _semantic_search(query.strip(), _vo, _s3, GOLD_BUCKET, k=50)
 
             st.session_state.sem_results = results
             st.session_state.sem_query = query.strip()
@@ -272,18 +272,34 @@ with tab_semantic:
             )
         else:
             df_sem["similarity"] = (df_sem["job_id"].map(score_map) * 100).round(1)
-            df_sem = df_sem.sort_values("similarity", ascending=False)
 
-            st.markdown(f"**{len(df_sem)} results** for: *{st.session_state.sem_query}*")
+            # Hybrid score: semantic relevance + profile match (equal weight)
+            # Clips match_score at 0 so -1 (no enrichment) doesn't help irrelevant jobs
+            df_sem["combined_score"] = (
+                df_sem["similarity"] * 0.5
+                + df_sem["match_score"].clip(lower=0) * 0.5
+            ).round(1)
+            df_sem = df_sem.sort_values("combined_score", ascending=False)
+
+            # Drop jobs with no profile overlap at all (match_score == -1 means no enrichment ran)
+            df_sem = df_sem[df_sem["match_score"] > 0]
+
+            st.markdown(
+                f"**{len(df_sem)} results** for: *{st.session_state.sem_query}*  \n"
+                f"💡 **Score** = semantic relevance × 50% + profile match × 50%.  "
+                f"Jobs with zero profile match are filtered out."
+            )
 
             sem_display_cols = [
-                "similarity", "title", "company_name", "role_family",
-                "country", "job_type", "publication_date", "salary_raw", "apply_url",
+                "combined_score", "similarity", "match_score", "title", "company_name",
+                "role_family", "country", "job_type", "publication_date", "salary_raw", "apply_url",
             ]
             st.dataframe(
                 df_sem[sem_display_cols],
                 column_config={
-                    "similarity": st.column_config.NumberColumn("Similarity %", format="%.1f"),
+                    "combined_score": st.column_config.NumberColumn("Score", format="%.1f"),
+                    "similarity": st.column_config.NumberColumn("Semantic %", format="%.1f"),
+                    "match_score": st.column_config.NumberColumn("Profile Match %", format="%.1f"),
                     "title": st.column_config.TextColumn("Title"),
                     "company_name": st.column_config.TextColumn("Company"),
                     "role_family": st.column_config.TextColumn("Role"),

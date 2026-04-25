@@ -49,3 +49,13 @@ output "gold_database_name" {
 output "enrichment_job_name" {
   value = aws_glue_job.enrichment_runner.name
 }
+
+output "dashboard_url" {
+  value       = "http://${aws_eip.dashboard.public_ip}:8501"
+  description = "JobPulse Streamlit dashboard public URL"
+}
+
+output "dashboard_instance_id" {
+  value       = aws_instance.dashboard.id
+  description = "EC2 instance ID for SSH and console access"
+}

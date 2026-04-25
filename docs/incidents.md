@@ -336,3 +336,10 @@
 - Fix: mv "s3.tf " s3.tf
 - Prevention: always run `ls -la` to spot hidden filename issues
 - Lesson: "No changes" with empty state = file not loading, not a credentials issue
+## [2026-04-26] — EC2 user data git clone failed: private repo, no credentials
+- What happened: EC2 launched, user data script ran, `git clone https://github.com/...` failed with "could not read Username: No such device or address". Docker build then failed (no Dockerfile), container failed to start. Dashboard never came up.
+- What I thought: git was not installed on the instance
+- Root cause: repo is private. EC2 has no GitHub credentials — no SSH key, no token. HTTPS git clone of a private repo requires authentication which the instance has no way to provide.
+- Fix: removed git clone from user data entirely. User data now only installs Docker and creates empty directories. Code is deployed via GitHub Actions (SSH + scp) on every push to dev.
+- Prevention: never use git clone in EC2 user data for private repos. Use scp via CI/CD or store a deploy key in Secrets Manager if self-bootstrapping is required.
+- Lesson: EC2 user data runs as root with no user context. It has no GitHub credentials, no SSH agent, no .netrc. For private repos, push code to the instance — don't pull from it.

@@ -455,3 +455,26 @@
 - Choice: use IST directly in Lambda — explicit, clear, matches business time zone
 - Trade-off: Lambda is now IST-aware (not timezone-agnostic) — acceptable at project scale for single timezone
 - Impact: snapshot_date now matches the day the pipeline ran (in India time); Apr 24+ pipelines produce correct dates
+## EC2 t3.micro over ECS Fargate for dashboard (Chat 21)
+- ECS Fargate: fully serverless, ~$30-50/mo, more complex, overkill for a personal dashboard
+- EC2 t3.micro: free tier (6 months), SAA cert practice (EC2, SG, IAM instance profiles, EIP)
+- Choice: t3.micro — zero cost for 6 months, covers SAA exam surface, simple to explain
+- Trade-off: manual scaling if traffic grows (not expected for personal use)
+
+## IAM instance profile over hardcoded keys for EC2 (Chat 21)
+- Instance profile attaches an IAM role to EC2 — credentials auto-rotated by metadata service (169.254.169.254)
+- Boto3 on EC2 picks up credentials automatically: no .env file, no key rotation work
+- Alternative: IAM user keys in .env — credential leak risk, manual rotation
+- Choice: instance profile — AWS best practice, SAA exam pattern, no secrets on disk
+
+## scp via GitHub Actions over git clone in user data (Chat 21)
+- git clone in user data requires GitHub credentials on EC2 — complex to manage securely
+- scp via GitHub Actions: EC2 key pair in GitHub secrets, code pushed on every deploy
+- Choice: scp — simpler, no credentials on EC2, leverages existing GitHub Actions SSH setup
+- Trade-off: first deploy requires a code push; instance can't self-bootstrap from scratch
+
+## Elastic IP over dynamic public IP (Chat 21)
+- Dynamic public IP changes every stop/start — breaks bookmarks and resume links
+- Elastic IP: static, persists across stop/start, billed only when unattached ($0.005/hr)
+- Choice: Elastic IP — stable URL for resume/portfolio, negligible cost
+- Trade-off: must remember to release EIP when project shuts down to avoid idle charges

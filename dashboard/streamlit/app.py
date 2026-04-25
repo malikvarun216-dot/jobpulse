@@ -1,6 +1,8 @@
+import json
 import os
 import sys
 
+import boto3
 import pandas as pd
 import plotly.express as px
 import streamlit as st
@@ -43,8 +45,22 @@ LIMIT 20000
 
 GOLD_BUCKET = os.environ.get("GOLD_BUCKET", "jobpulse-gold-dev")
 AWS_REGION = os.environ.get("AWS_REGION", "ap-south-1")
-VOYAGE_API_KEY = os.environ.get("VOYAGE_API_KEY", "")
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+
+
+def _get_secret(env_var: str, secret_key: str) -> str:
+    """Return env var value if set (local dev), else fetch from Secrets Manager."""
+    if val := os.environ.get(env_var):
+        return val
+    try:
+        client = boto3.client("secretsmanager", region_name=AWS_REGION)
+        raw = client.get_secret_value(SecretId=f"jobpulse/{secret_key}")["SecretString"]
+        return json.loads(raw)["value"]
+    except Exception:
+        return ""
+
+
+VOYAGE_API_KEY = _get_secret("VOYAGE_API_KEY", "voyage_api_key")
+ANTHROPIC_API_KEY = _get_secret("ANTHROPIC_API_KEY", "anthropic_api_key")
 
 
 def parse_tags(raw: str) -> list:

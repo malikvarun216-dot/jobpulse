@@ -1003,3 +1003,40 @@ Date: 2026-04-26
 ### Next
 - Push to dev → GitHub Actions deploys dashboard → verify http://3.7.125.66:8501 loads
 - Chat 22: Greenhouse + Lever ATS ingestors (+5K-20K jobs/run)
+
+## Chat 22 — Greenhouse ATS Ingestor
+Date: 2026-04-26
+
+### Goal
+Add Greenhouse as the 4th ingestor. Greenhouse covers ~30 major companies (Stripe, Airbnb, Figma, etc.) with no auth required. Expected: +1,000–5,000 jobs/run.
+
+### Phase 0 — API Verification from Datacenter IP (EC2 3.7.125.66)
+- ✅ Greenhouse `boards-api.greenhouse.io/v1/boards/{slug}/jobs` — no Cloudflare, returns jobs cleanly
+- ❌ Lever — tested 40+ slugs, found only 2 active boards (Sector7 + Unwind). Market shifted to Greenhouse. Deleted entirely.
+- ❌ Ashby — API requires auth header (401). Not a free public API. Skipped.
+
+### Built
+- **`ingestion/sources/greenhouse/ingest_greenhouse.py`** — Lambda handler. No external dependencies. Hardcoded SLUGS list: 30 companies. Handles 404 silently (inactive boards). Returns `{"source": "greenhouse", "snapshot_date": ..., "record_count": n, "status": "OK/EMPTY"}`.
+- **`tests/test_ingest_greenhouse.py`** — 16 unit tests: load_slugs, fetch_company_jobs (200/404/500), normalize_jobs (field mapping, slug prefix, missing location, empty departments), fetch_all_jobs, build_s3_key, lambda_handler (happy path, dry_run, empty, default date). All passing.
+- **`terraform/envs/dev/lambda.tf`** — added `aws_lambda_function.greenhouse` (timeout=120, memory=256).
+- **`terraform/envs/dev/step_functions.tf`** — added Greenhouse as 4th parallel branch. SF IAM policy updated.
+- **`.github/workflows/deploy.yml`** — added Greenhouse Lambda deploy step.
+
+### Lever deleted
+- `ingestion/sources/lever/` removed (was only in worktree, never committed)
+- Rationale: 2 active jobs out of 40+ slugs tested = not worth the maintenance cost
+
+### Incident — Lambda YAML Import Error
+- **Problem:** `Unable to import module 'ingest_greenhouse': No module named 'yaml'`
+- **Root cause:** Terraform zipped `greenhouse_slugs.yml` alongside the handler. Lambda runtime has no pyyaml.
+- **Fix:** Converted to hardcoded `SLUGS = [...]` list in Python. Removed YAML file entirely.
+- **Verified:** Lambda invoked successfully, returned 4,115 jobs (dry_run=true).
+
+### Pipeline Flow (4 ingestors)
+```
+ParallelIngest (Remotive | Arbeitnow | Adzuna | Greenhouse)
+  → RunGlueJob → RunDataQuality → RunDbtGold → RunEnrichment → EmbedJDs → PipelineComplete
+```
+
+### Test count: 103 passing (16 new Greenhouse tests)
+### Live volume: ~6,600 jobs/run (~198K/month across 4 sources)

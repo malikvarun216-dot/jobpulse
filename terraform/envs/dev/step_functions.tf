@@ -25,6 +25,7 @@ resource "aws_iam_policy" "sfn_policy" {
           aws_lambda_function.remotive.arn,
           aws_lambda_function.arbeitnow.arn,
           aws_lambda_function.adzuna.arn,
+          aws_lambda_function.greenhouse.arn,
         ]
       },
       {
@@ -143,6 +144,33 @@ resource "aws_sfn_state_machine" "ingest_pipeline" {
               AdzunaFailure = {
                 Type  = "Fail"
                 Cause = "Adzuna ingestor returned non-OK status"
+              }
+            }
+          },
+          {
+            StartAt = "InvokeGreenhouse"
+            States = {
+              InvokeGreenhouse = {
+                Type       = "Task"
+                Resource   = aws_lambda_function.greenhouse.arn
+                ResultPath = "$"
+                Next       = "CheckGreenhouse"
+              }
+              CheckGreenhouse = {
+                Type = "Choice"
+                Choices = [{
+                  Variable     = "$.status"
+                  StringEquals = "OK"
+                  Next         = "GreenhouseDone"
+                }]
+                Default = "GreenhouseFailure"
+              }
+              GreenhouseDone = {
+                Type = "Succeed"
+              }
+              GreenhouseFailure = {
+                Type  = "Fail"
+                Cause = "Greenhouse ingestor returned non-OK status"
               }
             }
           }

@@ -98,3 +98,30 @@ resource "aws_lambda_function" "arbeitnow" {
     }
   }
 }
+
+# Greenhouse — ATS board API, no auth, no Cloudflare (verified 2026-04-26 from EC2 datacenter IP)
+# One request per company slug; slugs bundled in greenhouse_slugs.yml alongside the handler.
+# source_dir zips both .py and .yml so lambda_handler can load_slugs() at runtime.
+data "archive_file" "greenhouse_zip" {
+  type        = "zip"
+  source_dir  = "${path.module}/../../../ingestion/sources/greenhouse"
+  output_path = "${path.module}/builds/ingest_greenhouse.zip"
+}
+
+resource "aws_lambda_function" "greenhouse" {
+  function_name    = "${var.project}-ingest-greenhouse-${var.env}"
+  filename         = data.archive_file.greenhouse_zip.output_path
+  source_code_hash = data.archive_file.greenhouse_zip.output_base64sha256
+  handler          = "ingest_greenhouse.lambda_handler"
+  runtime          = "python3.12"
+  role             = aws_iam_role.lambda_exec.arn
+  timeout          = 120  # 30 slugs × ~0.5s/req ≈ 15s; 120s is safe headroom
+  memory_size      = 256
+
+  environment {
+    variables = {
+      BRONZE_BUCKET = aws_s3_bucket.layers["bronze"].bucket
+    }
+  }
+}
+

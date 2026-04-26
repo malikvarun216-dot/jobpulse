@@ -138,8 +138,12 @@ jobs:
           echo "$EC2_KEY" > /tmp/ec2_key.pem
           chmod 600 /tmp/ec2_key.pem
           ssh -o StrictHostKeyChecking=no -i /tmp/ec2_key.pem ec2-user@$EC2_HOST '
-            cd /home/ec2-user/jobpulse
-            git pull origin dev
+            if [ -d /home/ec2-user/jobpulse/.git ]; then
+              cd /home/ec2-user/jobpulse && git pull origin dev
+            else
+              git clone https://github.com/malikvarun216-dot/jobpulse.git /home/ec2-user/jobpulse
+              cd /home/ec2-user/jobpulse && git checkout dev
+            fi
             docker build -t jobpulse-dashboard -f dashboard/streamlit/Dockerfile .
             docker stop jobpulse-dashboard || true
             docker rm jobpulse-dashboard || true

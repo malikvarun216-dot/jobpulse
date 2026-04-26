@@ -8,7 +8,7 @@ import json
 import os
 import sys
 import unittest
-from unittest.mock import MagicMock, patch, mock_open
+from unittest.mock import MagicMock, patch
 
 os.environ["BRONZE_BUCKET"] = "test-bronze-bucket"
 os.environ["AWS_REGION"]    = "ap-south-1"

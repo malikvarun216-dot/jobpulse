@@ -510,3 +510,35 @@
 - Elastic IP: static, persists across stop/start, billed only when unattached ($0.005/hr)
 - Choice: Elastic IP — stable URL for resume/portfolio, negligible cost
 - Trade-off: must remember to release EIP when project shuts down to avoid idle charges
+
+## Hardcoded slug list over YAML file in Lambda (Chat 22 — Greenhouse)
+- Original plan: bundle `greenhouse_slugs.yml` in Lambda zip, load via `import yaml`
+- Problem: pyyaml not installed in Lambda runtime → `No module named 'yaml'` on first invoke
+- Alternative 1: bundle pyyaml in zip → adds ~50 KB for 30 strings (overkill)
+- Alternative 2: store in S3, fetch at runtime → adds network latency + IAM permission
+- Choice: hardcoded `SLUGS = [...]` directly in the .py file
+- Rule: Lambda ingestors have zero file dependencies. All config is hardcoded or in env vars.
+- Trade-off: adding a company requires code redeploy. Acceptable at <1/month frequency.
+
+## One Lambda per ATS, not per company (Chat 22 — Greenhouse)
+- Greenhouse has thousands of company boards. One Lambda per company = unscalable.
+- Pattern: one Lambda per ATS reads a slug list, iterates companies, one API call per company.
+- Step Functions: one Parallel branch per ATS. Adding an ATS = one new Lambda + one new branch.
+- Applied: 30 companies fetched in one Lambda invocation (~15s wall time, 120s timeout).
+
+## Silent 404 on inactive ATS boards (Chat 22 — Greenhouse)
+- Greenhouse returns 404 for slugs with no active public board.
+- Decision: catch HTTPError(404), log warning, return []. Continue to next slug.
+- Alternative: treat 404 as fatal → one dead board aborts entire Lambda (wrong).
+- Fault-tolerant: 1 inactive board out of 30 does not abort the run.
+
+## Lever deleted — market shifted to Greenhouse (Chat 22)
+- Tested 40+ Lever slugs. Found only 2 active boards. Market shifted after ~2021.
+- Cost of keeping: Lambda + tests + Terraform + CI/CD step for 2 jobs/run.
+- Decision: delete entirely. Technical debt with no payoff.
+- Lesson: curl-test before building. If adoption is near-zero, skip.
+
+## Ashby skipped — requires auth (Chat 22)
+- Ashby is a growing ATS but all API endpoints return 401 without an API key.
+- Unlike Greenhouse (public boards), Ashby is B2B SaaS — no free public tier.
+- Decision: skip. Revisit only if a customer API key becomes available.

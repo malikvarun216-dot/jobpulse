@@ -383,3 +383,19 @@
 - Fix: changed Docker build command to run from repo root: `docker build -f dashboard/streamlit/Dockerfile .`. Updated Dockerfile to explicitly `COPY genai/ genai/` after copying the dashboard files.
 - Prevention: if your app imports modules outside its own directory, the Docker build context must include those modules. Always build from the directory that contains all the code your app needs.
 - Lesson: build context = what Docker can see. Anything outside the build context path is invisible to COPY, regardless of what's on the host filesystem.
+
+## [2026-04-26] — Greenhouse Lambda: No module named 'yaml'
+- What happened: First Greenhouse Lambda invoke returned `Runtime.ImportModuleError: No module named 'yaml'`. Lambda deployed but completely non-functional.
+- What I thought: the zip was malformed or missing the handler file
+- Root cause: `greenhouse_slugs.yml` was bundled in the zip and `ingest_greenhouse.py` had `import yaml` to load it. Lambda Python 3.12 runtime does not include pyyaml. The import fails at module load time before any handler code runs.
+- Fix: removed the YAML file and import entirely. Converted slug list to a hardcoded Python list `SLUGS = [...]` directly in the module. `load_slugs()` simplified to `return SLUGS`.
+- Prevention: Lambda runtime only includes Python stdlib + boto3. Any third-party package must be bundled or handled via a Layer. For 30 static strings, hardcoding is simpler than bundling.
+- Lesson: test `python3.12 -c "import ingest_greenhouse"` locally before deploying. The import error would have been caught immediately.
+
+## [2026-04-26] — Terraform state lock stale from interrupted session
+- What happened: `terraform plan` failed with `Error acquiring the state lock: ConditionalCheckFailedException`. Lock held from 2026-04-25 22:50 — a previous session that ended without releasing.
+- What I thought: another apply was running concurrently
+- Root cause: previous `terraform apply` was interrupted (session ended). DynamoDB lock record written but never deleted. Terraform refused to proceed, assuming another apply in progress.
+- Fix: `terraform force-unlock 85025acf-b0e9-c3a4-977f-d28b97aea659` — deleted the DynamoDB lock record manually. Plan succeeded immediately.
+- Prevention: always let `terraform apply` complete or cancel cleanly with Ctrl+C (which triggers lock cleanup). Avoid force-killing the process.
+- Lesson: force-unlock is safe only when certain no other apply is running. One person, one machine, lock from yesterday = safe to force-unlock.

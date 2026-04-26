@@ -76,6 +76,15 @@ jobs:
             --zip-file fileb://ingest_adzuna.zip \
             --region ${{ env.AWS_REGION }}
 
+      - name: Deploy greenhouse Lambda
+        run: |
+          cd ingestion/sources/greenhouse
+          zip ingest_greenhouse.zip ingest_greenhouse.py greenhouse_slugs.yml
+          aws lambda update-function-code \
+            --function-name jobpulse-ingest-greenhouse-${{ env.ENV }} \
+            --zip-file fileb://ingest_greenhouse.zip \
+            --region ${{ env.AWS_REGION }}
+
       - name: Upload Glue scripts
         run: |
           aws s3 cp spark/jobs/bronze_to_silver.py \
@@ -110,7 +119,7 @@ jobs:
 
       - name: Deploy summary
         run: |
-          echo "Lambdas: remotive, arbeitnow, adzuna"
+          echo "Lambdas: remotive, arbeitnow, adzuna, greenhouse"
           echo "Glue scripts: bronze_to_silver, dbt_runner, ge_runner, enrichment_runner, embedding_runner"
           echo "Packages: genai_package.zip, dbt_project.zip, user_profile.yml"
 

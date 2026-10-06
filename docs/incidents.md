@@ -1,5 +1,55 @@
 # Incidents
 
+Newest first. Chat 23 entries were reconstructed from AWS history (Step Functions, Glue job runs, CloudWatch alarm history).
+
+## [2026-08-15 → 2026-09-19] — Enrichment crept up to its timeout, then failed every night
+- What happened: `jobpulse-enrichment-dev` ended in `TIMEOUT` at exactly 60 min — first on Jul 25–26, then every night from ~Aug 15 (29 TIMEOUTs total). Whole pipeline FAILED nightly until the schedule was disabled on Sep 19.
+- What I thought: (Chat 23 recon) a Claude API outage or the budget cap.
+- Root cause: no single bug — **slow creep**. Enrichment took 15–20 min in late April, then **48–56 min every night from Apr 29** (4th source added, ~6.6K jobs/run) on a 60-min timeout. It kept succeeding, so nobody looked. Volume grew to 7,855 jobs (Aug 14) and runs tipped past 60 min. Every job is re-processed every night (not incremental) on a 1/16-DPU Python Shell job.
+- Fix: pending (Chat 25) — per-stage timing logs, incremental enrichment (skip already-scored content hashes), right-size DPU.
+- Prevention: CloudWatch alarm on Glue duration > 70% of timeout; track duration as a trend, not just success/fail.
+- Lesson: a job that succeeds at 90% of its limit is already failing — it just hasn't told you yet.
+
+## [2026-08-01 → 2026-08-09] — Source changed `tags` from a list to text; silver failed 6 nights
+- What happened: `jobpulse-bronze-to-silver-dev` FAILED in ~1 min with `AnalysisException: cannot resolve 'job.tags' due to data type mismatch: cannot cast string to array<string>`. Recovered by itself on Aug 10.
+- What I thought: (Chat 23 recon) a code change — but nothing was deployed in August.
+- Root cause: one source started sending `tags` as a string. The Spark job **infers** the JSON schema across all sources (`source=*/`); the conflict made the inferred type string, and the explicit `cast(ArrayType(StringType()))` failed. Which source: **unknown** — bronze files expire after 7 days, so the evidence was gone before anyone looked.
+- Fix: pending (Chat 25) — normalize `tags` type in every ingestor; accept string-or-array in Spark; explicit schema.
+- Prevention: explicit schema instead of inference; GE expectation on column types; unit test with both shapes; bronze retention ≥ debugging window.
+- Lesson: schema inference turns one source's change into everyone's failure — and short retention deletes the evidence.
+
+## [2026-08 → 2026-09-19] — Failure alarm reset itself every night; ~5 weeks of failures went unhandled
+- What happened: `jobpulse-sfn-failures-dev` went to ALARM at ~2 AM and back to OK ~15 min later, every night. SNS emails were delivered (subscription confirmed). The pipeline failed nightly from early August until the schedule was disabled on Sep 19 — still billing Glue for a 60-min timeout each night.
+- What I thought: the ALARM → OK pairs looked like transient blips.
+- Root cause: alarm design. `ExecutionsFailed ≥ 1` over a short period is only true for the period containing the failure; with no new failure the next period it returns to OK automatically. A failed night looks the same as a hiccup.
+- Fix: pending (Chat 25) — alarm on **absence of success** (`ExecutionsSucceeded < 1` per 24 h, missing data = breaching), which stays red until a run succeeds.
+- Prevention: one alarm per failure *state*, not per failure *event*; plus a duration-vs-timeout alarm (see above).
+- Lesson: an alarm that fixes itself teaches you to ignore it.
+
+## [2026-04-24 → found 2026-10-06] — "Why these match?" sent Claude no job descriptions
+- What happened: the dashboard's "Why these match?" produced fluent explanations for the top-3 semantic search results.
+- What I thought: (Chat 23 code review) it was working — the explanations read well.
+- Root cause: `app.py` only adds a description excerpt if `description` is a column of the loaded DataFrame, but `FLAT_JOIN_SQL` never selects `description`. The check always failed; the prompt had an empty excerpt. Claude explained matches from titles alone.
+- Fix: pending (Chat 25) — select/pass the description into the prompt.
+- Prevention: log the full prompt + retrieved context for every LLM call; a test that asserts the prompt contains JD text.
+- Lesson: in RAG, when the answer looks wrong — or suspiciously fine — inspect the retrieved context first. An empty augment step still produces confident output.
+
+## [2026-10-06] — Local checkout 30 commits behind GitHub; `terraform apply` would have deleted production
+- What happened: at the start of Chat 23 the main checkout was on `dev` at `ccf0cc4` (Chat 9). `git status` said "up to date with origin/dev" — because `origin/dev` hadn't been fetched since Apr 19. GitHub `dev` was at `98b1e4c` (Chat 22). There was also an uncommitted Terraform edit on the old tree.
+- What I thought: the docs on disk (Chat 9) were the latest state of the project.
+- Root cause: no `git fetch` for 5 months; "up to date" only compares with the *last fetched* remote ref. Terraform state lives in S3 and reflects Chat 22, so a plan from the Chat 9 code would destroy EC2, 3 Lambdas, 2 Glue jobs, the `enrichment_scores` table and more.
+- Fix: `git fetch origin`; work in a fresh worktree from `origin/dev`; Varun fast-forwards the main checkout (`git pull --ff-only origin dev`). No apply was run.
+- Prevention: start every session with `git fetch origin && git status`; runbook §14 and §16.
+- Lesson: remote state + stale code = a destroy plan. "Up to date" means "up to date with what I last fetched".
+
+## [2026-04-21 → found 2026-10-06] — Adzuna API key committed to git
+- What happened: `terraform/envs/dev/terraform.tfvars` with a real-looking Adzuna `app_id` (8 chars) / `app_key` (32 chars) is tracked in the repo (private, but in history). `progress.md` (Chat 5) said tfvars was gitignored.
+- What I thought: the docs said it was ignored, so it was.
+- Root cause: `.gitignore` never had a tfvars rule — the file has been tracked since Chat 5 (`9283575`, alert email only); the Adzuna keys were added in Chat 13 (`c1aa4d7`).
+- Fix: pending (Chat 24) — rotate the key; move it to `TF_VAR_` env vars / GitHub secret; gitignore tfvars.
+- Prevention: `git check-ignore -v <file>` before putting secrets in a file; secret scanning in CI.
+- Lesson: verify ignore rules with git, not with the docs.
+
 ## [2026-04-25] — GE runner: wrong S3 prefix path
 - What happened: RunDataQuality Glue job failed with `FileNotFoundError: No Parquet files found at s3://jobpulse-silver-dev/silver_jobs/snapshot_date=2026-04-25/`
 - What I thought: data wasn't written yet for today's partition; checked Spark job logs

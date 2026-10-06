@@ -1,10 +1,10 @@
-Chat 1 — Repo Setup
+## Chat 1 — Repo Setup
 - Created GitHub repo: jobpulse (private)
 - Scaffolded full folder structure
 - Branching strategy: dev → main
 
 ## Chat 2 — Himalayas Ingestor + AWS Setup
-Date: 2025-04-17
+Date: 2026-04-17
 
 ### Built
 - ingestion/sources/himalayas/ingest_himalayas.py
@@ -1040,3 +1040,77 @@ ParallelIngest (Remotive | Arbeitnow | Adzuna | Greenhouse)
 
 ### Test count: 103 passing (16 new Greenhouse tests)
 ### Live volume: ~6,600 jobs/run (~198K/month across 4 sources)
+
+---
+
+## Production Run — Unattended (2026-04-26 → 2026-09-19)
+Reconstructed in Chat 23 from AWS (Step Functions, Glue job history, CloudWatch alarm history). Not written at the time.
+
+### What happened
+- **Ran every night unattended for ~3 months.** Enrichment Glue job: **115 SUCCEEDED** runs on record.
+- **Enrichment crept up to its timeout.** 15–20 min in late April → **48–56 min every night from Apr 29** (after Greenhouse, ~6.6K jobs/run) against a **60-min timeout**. First TIMEOUTs Jul 25–26; TIMEOUT every night from ~Aug 15. Total: 29 TIMEOUTs. Volume had grown to **7,855 jobs** (Aug 14).
+- **Source schema drift.** `bronze_to_silver` FAILED Aug 1–9 (6 runs): `cannot resolve 'job.tags' … cannot cast string to array<string>`. Recovered by itself Aug 10. Source not identified — bronze (7-day lifecycle) had expired.
+- **Alarm fired but self-reset.** `jobpulse-sfn-failures-dev` → ALARM ~2 AM, back to OK ~15 min later, every night. Emails delivered (subscription confirmed) but read like one-off blips.
+- **Step Functions history (90-day window, Jul 10 → Sep 19):** 20 SUCCEEDED, 52 FAILED.
+- **2026-09-19:** EventBridge rule `jobpulse-daily-ingest-dev` set to DISABLED (Varun; uncommitted `eventbridge.tf` edit, applied in AWS).
+- **EC2 dashboard instance + Elastic IP** no longer exist in AWS (removed outside Terraform; date not recorded) but are still declared in `ec2.tf`.
+- **Dependency drift:** unpinned `anthropic>=0.40.0` in the enrichment job resolved to 0.125.0 by September.
+
+### Data left in S3 (2026-10-06)
+| Location | Size | Note |
+|---|---|---|
+| `jobpulse-silver-dev` | 179 MB, 8,219 objects | **153 daily snapshots (Apr 18 – Sep 19)** with full descriptions |
+| `jobpulse-gold-dev/embeddings/` | 633 MB, 96 files | one file per day; every job re-embedded daily |
+| `jobpulse-gold-dev/athena-results/` | 1.5 GB, 5,016 objects | mostly old dashboard query CSVs (no lifecycle); dbt CTAS tables (85 MB) live under `tables/` |
+| `jobpulse-gold-dev/enrichment-scores/` | 15 MB | |
+| `jobpulse-gold-dev/enrichment-cache/` | 40 KB, 698 objects | LLM extraction cache + budget ledgers |
+| bronze, archive | 0 | bronze expires after 7 days |
+
+---
+
+## Chat 23 — Recon, AWS Decision, Docs Overhaul
+Date: 2026-10-06
+
+### Goal
+Pick the project back up after 5 months away, find out what happened in production, decide what to do about the
+AWS free plan ending (~Oct 16), and turn JobPulse into an AI Data Engineer project with interview-ready docs.
+
+### Found
+- **Local checkout was stale:** main checkout on `dev` at `ccf0cc4` (Chat 9) while GitHub `dev` was at `98b1e4c` (Chat 22 + 3 EC2 deploy fixes). Running `terraform apply` from it would have planned to destroy everything built in Chats 10–22 (shared S3 state).
+- **Production history** — see "Production Run" above.
+- **Adzuna API key committed** in `terraform/envs/dev/terraform.tfvars` (docs claimed the file was gitignored).
+- **Docs vs code gaps** (code is the truth):
+  - README / CLAUDE.md describe things never built: `SalaryParser`, `SeniorityClassifier`, `DedupAgent`, Batch API, JSON guardrails, MinHash/LSH, SCD2 `dim_company`, `dim_date`, `dim_location`, "Claude embeddings".
+  - `dbt_runner.py` runs `dbt run`, not `dbt build` → the 21 dbt tests never ran in production.
+  - 2 of 5 GE expectations can't fail (`ge_runner.py` sets `snapshot_date` itself before checking it).
+  - Dashboard "Why these match?" never receives the job description (`FLAT_JOIN_SQL` doesn't select it) → Claude explains jobs it never saw.
+  - Embeddings use only the first 4,000 characters of each JD; every job re-embedded daily; search covers latest day only.
+  - Budget tracker checks without reserving (race across 16 threads); price constants are Haiku 3.5's; prompt caching set on a prompt too short to cache.
+  - Step Functions: `Catch` on every step, no `Retry` anywhere.
+  - Real test count: 228 test functions (~214 run in CI; 14 PySpark tests skipped).
+- **Three outside claims verified:** (1) "NumPy in-memory cosine" — true, but a vector DB is not the main gap at 8K vectors; (2) "nothing measures search quality" — true, and extraction quality isn't measured either; (3) "resume undersells semantic search / dbt" — false (both already on the resume); GE missing is true; "orchestrator/sub-agent" should NOT be added (not true in code).
+
+### Decided (details in decisions.md)
+- Stay on AWS, upgrade to a paid plan (not migrate to GCP / a $0 stack).
+- No Redshift — Athena fits the workload.
+- Dashboard runs locally on demand; EC2 hosting retired.
+- Vector store chosen by evaluation: pgvector (RDS) vs Amazon S3 Vectors vs exact NumPy (Chat 29).
+- Go live first (cheap on AWS), but evaluate on a frozen, versioned corpus.
+- Roadmap Chats 24–33 in `docs/roadmap.md`.
+
+### Built (docs only — no code or infra changes)
+- **`docs/interview_guide.md`** (new) — pitch, one-posting story, full pipeline (current + target), layer-by-layer why/why-not, AWS services vs popular alternatives (Athena vs Redshift, Step Functions vs MWAA…), design patterns, AI theory in simple words mapped to JobPulse, 12 stories, numbers, honest limits, likely questions, resume bullets, timeline. Updated every chat from now on.
+- **`docs/roadmap.md`** (new) — Chats 24–33 with done-criteria.
+- **`docs/runbook.md`** — was empty; now 16 failure modes with commands.
+- **`docs/incidents.md`** — 6 new incidents (timeout creep, tags drift, self-resetting alarm, empty RAG context, stale checkout, committed key).
+- **`docs/decisions.md`** — Chat 23 decisions.
+- **`README.md`** — rewritten to match the code.
+- `progress.md` — Chat 1 heading + Chat 2 date (2025 → 2026) fixed; this entry + "Production Run".
+- `CLAUDE.md` (local, gitignored) — current status, docs table, end-of-chat routine now includes the interview guide.
+
+### Verified
+- Account plan: `PAID / ACTIVE`, $68.13 credits remaining (shared with ledgerline). Budgets already in place and account-wide: $20/month, $2/day, $0.01 zero-spend.
+- AWS read-only inventory: EventBridge rule DISABLED; EC2/EIP gone; 5 Lambdas, 5 Glue jobs, state machine, 2 secrets, tfstate bucket + DynamoDB lock still exist; SNS subscription confirmed; IAM user created 2026-04-16 (free plan likely ends ~2026-10-16).
+
+### Next
+Chat 24 — Stabilize: secrets out of git, remove EC2 from Terraform, cost hygiene (athena-results lifecycle, log retention, pinned deps), local backup, clean `terraform plan`. **Before it:** `git pull --ff-only origin dev` in the main checkout, rotate the Adzuna key. (Account already paid; budgets already cover it.)

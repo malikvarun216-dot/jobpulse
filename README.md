@@ -1,179 +1,132 @@
 # JobPulse
 
-**A production-grade, serverless data engineering pipeline that ingests 3,600+ job postings daily from multiple APIs, enriches them with a custom GenAI agent, and delivers market intelligence through an interactive dashboard.**
+**A serverless AWS data pipeline that collects ~7,000 job postings a night from four public job APIs, models
+them into a star schema, uses an LLM as a parser to extract skills and seniority, scores every job against a
+personal profile, and supports semantic (meaning-based) job search.**
 
-Built end-to-end on AWS free tier — runs unattended, 24/7, laptop-off.
-
----
-
-## Demo
-
-> Dashboard live on Streamlit — filter by role, country, seniority, salary, and match score. Semantic job search coming in the next release.
-
----
-
-## What It Does
-
-| Question | Answer |
-|----------|--------|
-| How many offers per role / location / seniority? | Live counts, updated daily |
-| Which stacks and companies are trending? | Skill frequency + company leaderboard |
-| Where's the best salary-to-cost-of-living ratio? | Salary arbitrage view (in progress) |
-| Which jobs are worth applying to today? | Ranked by personal match score (0–100) |
+> **Status (Oct 2026):** ran unattended from late April to August 2026; nightly schedule paused since
+> 2026-09-19 after the enrichment step outgrew its timeout. Being stabilized and extended with a measured
+> AI layer (retrieval evaluation, vector store comparison, extraction evaluation) — see
+> [`docs/roadmap.md`](docs/roadmap.md).
 
 ---
+
+## What it answers
+
+| Question | How |
+|---|---|
+| How many openings per role / country / source? | Star schema in Athena, dashboard filters |
+| Which skills and companies show up most? | Tag frequency, company leaderboard |
+| Which jobs are worth applying to? | Personal `match_score` (0–100) |
+| Which jobs *mean* what I'm looking for, even with different words? | Embedding-based semantic search |
 
 ## Architecture
 
 ```
-APIs (20+ sources)
-    │
-    ▼
-Lambda ingestors  ──  EventBridge (daily 2 AM IST)
-    │
-    ▼
-S3 bronze  (raw JSON, 7-day lifecycle)
-    │
-    ▼  Step Functions
-Glue Spark job
-    │
-    ▼
-S3 silver  (Parquet, deduplicated, partitioned by date/country/role)
-    │
-    ▼  dbt + Athena
-S3 gold  (star schema: fact_job_posting + 4 dimensions)
-    │
-    ▼
-GenAI enrichment  (skills · seniority · match score)
-    │
-    ▼
-Streamlit dashboard
+EventBridge (2:00 AM IST)
+  └─ Step Functions (STANDARD)
+      ├─ ParallelIngest   Lambda × 4: Remotive | Arbeitnow | Adzuna (7 countries) | Greenhouse (30 companies)
+      │                   → S3 bronze   raw JSON.gz, 7-day lifecycle
+      ├─ RunGlueJob       Glue Spark → S3 silver   Parquet, partitioned snapshot_date / country / role_family
+      ├─ RunDataQuality   Great Expectations on silver (fail before gold)
+      ├─ RunDbtGold       dbt-athena → gold star schema (fact_job_posting + dim_company / dim_role / dim_country)
+      ├─ RunEnrichment    rules → Claude Haiku fallback → skills, seniority, YoE → match_score
+      ├─ EmbedJDs         Voyage AI voyage-4-lite (512-d) → embeddings Parquet in S3
+      └─ Complete / Failure → CloudWatch alarm → SNS email
+Dashboard: Streamlit (Athena + NumPy cosine search + Claude "why these match"), run locally on demand
+IaC: Terraform (S3 remote state + DynamoDB lock) · CI/CD: GitHub Actions (ruff + pytest → deploy on push to dev)
 ```
 
----
-
-## Tech Stack
+## Tech stack
 
 | Layer | Tools |
-|-------|-------|
-| Ingestion | AWS Lambda, Python |
-| Orchestration | AWS Step Functions, EventBridge |
-| Processing | AWS Glue (PySpark), S3 |
-| Warehousing | Athena, Glue Data Catalog |
-| Transformation | dbt-core (Athena adapter) |
-| GenAI | Claude API (Haiku), custom agentic pipeline |
-| Dashboard | Streamlit |
-| IaC | Terraform |
-| CI/CD | GitHub Actions (planned) |
-| Data Quality | dbt tests, Great Expectations (planned) |
-| Monitoring | CloudWatch, SNS |
+|---|---|
+| Ingestion | AWS Lambda (Python 3.12, stdlib + boto3 only) |
+| Orchestration | EventBridge, Step Functions |
+| Processing | AWS Glue (PySpark 4.0; Python Shell for dbt / GE / LLM / embeddings) |
+| Storage & query | S3 (Parquet + Snappy), Glue Data Catalog, Athena (1 GB per-query scan cap) |
+| Transformation | dbt-core 1.9 + dbt-athena-community |
+| Data quality | Great Expectations (silver), dbt schema tests (gold) |
+| GenAI | Claude Haiku 4.5 (extraction, explanations), Voyage AI embeddings |
+| Dashboard | Streamlit + Plotly |
+| IaC / CI/CD | Terraform, GitHub Actions |
+| Monitoring | CloudWatch Logs + Alarms, SNS |
 
----
+## Data sources
 
-## Data Sources
+| Source | Jobs/run (approx.) | Notes |
+|---|---|---|
+| Greenhouse | ~4,000 | 30 company boards, public JSON |
+| Adzuna | ~1,500–2,000 | 7 English-language markets; structured salary min/max |
+| Arbeitnow | ~1,000 | public API |
+| Remotive | ~20–30 | public API |
 
-Three live, more in progress:
+~6,600 jobs/run in April 2026, ~7,900 by August. Himalayas and RemoteOK are implemented but blocked by
+Cloudflare from AWS IP addresses; Lever and Ashby were evaluated and dropped.
 
-| Source | Jobs/run | Salary data |
-|--------|---------|-------------|
-| Adzuna | ~2,500 | ✅ min / max (12 countries) |
-| Arbeitnow | ~1,000 | — |
-| Remotive | ~25 | — |
+## GenAI layer (what exists today)
 
-**Planned:** Greenhouse, Lever, USAJobs, Reed.co.uk, HN Algolia, Devpost hackathons
+- **Rules first, LLM second:** regex against a skill whitelist + seniority patterns; Claude Haiku only when
+  regex finds < 5 skills or no seniority. Took enrichment from a 57-min timeout to ~3–5 min for 3,400 jobs.
+- **Guardrails:** Pydantic schemas, skill whitelist (no invented skills), retries with backoff, fallback to the
+  rules result on any failure, $0.50/day budget cap.
+- **Cost:** results cached in S3 by md5 of the description — the same description is never paid for twice;
+  `--force_rescore` re-scores from cache with zero LLM spend after a profile change.
+- **Match score (0–100):** skills 50 (core skills weighted 3×) · seniority 10 (YoE-aware) · location 15 ·
+  role family 15 · salary 5 · freshness 5. Profile in `config/user_profile.yml`.
+- **Semantic search:** query and job descriptions embedded with Voyage (512-d), cosine similarity in NumPy,
+  top-50 blended with `match_score`.
 
-All sources tested for Cloudflare/bot-protection from Lambda datacenter IPs before implementation.
+**Not built yet** (planned, with measurement): retrieval evaluation, hybrid keyword + vector search, a vector
+database (pgvector vs Amazon S3 Vectors), incremental / versioned embeddings, extraction evaluation, weekly
+AI brief. See [`docs/roadmap.md`](docs/roadmap.md).
 
----
-
-## GenAI Enrichment
-
-A custom agentic pipeline — built in plain Python, no frameworks.
-
-**Extracts per job description:**
-- `skills[]` — normalized against a curated vocabulary
-- `seniority` — intern → exec
-- `role_family` — DE, SDE, PM, DS, ML, DevOps, etc.
-- `remote_policy` — onsite / hybrid / remote
-- `salary_min`, `salary_max`, `currency`
-- `yoe_required`
-
-**Architecture patterns used:**
-- Orchestrator agent + specialized sub-agents (SkillExtractor, SalaryParser, SeniorityClassifier)
-- Pre/post hooks for validation, budget enforcement, S3 cache writes
-- Rules-first fast path — regex handles ~70% of jobs in <1ms, LLM only for the rest
-- 16-thread parallel enrichment via `ThreadPoolExecutor`
-- Thread-safe budget tracker with `threading.Lock`
-- S3 response cache keyed by JD hash — never pays twice for the same job
-
-**Result:** 3,400 jobs enriched in ~3–5 minutes. Cost capped at $0.50/day.
-
----
-
-## Match Scoring
-
-Every job is scored 0–100 against a personal profile (`config/user_profile.yml`):
-
-| Signal | Weight |
-|--------|--------|
-| Skill overlap | 40% |
-| Seniority fit | 20% |
-| Location fit | 15% |
-| Role family | 15% |
-| Salary fit | 5% |
-| Freshness | 5% |
-
----
-
-## Data Model
-
-Star schema on S3, queried through Athena:
+## Data model
 
 ```
-fact_job_posting
-    ├── dim_company      (SCD Type 2)
-    ├── dim_location     (city · country · timezone)
-    ├── dim_role         (role_family · seniority)
-    └── dim_date
+fact_job_posting   grain: one row per posting per snapshot_date
+  ├── dim_company   company_key = md5(lower(trim(company_name)))
+  ├── dim_role      role_key on (role_family, category)
+  └── dim_country
+enrichment_scores  (separate table owned by the enrichment job — dbt rebuilds would wipe it otherwise)
 ```
 
-Deduplication: md5 hash on `(company + title + country)` — canonical row keeps earliest post date, tracks all source APIs in an array.
+Same-day cross-source duplicates are tagged with `source_apis[]` / `source_count`. Cross-day dedup, SCD Type 2,
+`dim_date`, `dim_location` and skill bridge tables are not built.
 
----
+## Engineering practices
 
-## Production Discipline
+- **Idempotent:** dynamic partition overwrite per `snapshot_date`; dbt CTAS rebuilds; reruns don't duplicate.
+- **Cost guards:** S3 lifecycle (bronze 7 days, silver → Standard-IA 30 days, archive → Glacier IR 180 days),
+  Athena scan cap, LLM daily cap.
+- **Tested:** 228 test functions, every external call mocked, no AWS credentials in CI.
+- **Least privilege:** ingestion Lambdas can write only to bronze.
+- **Documented:** decisions, incidents (55), runbook, interview guide in [`docs/`](docs/).
 
-- **Serverless-first** — EventBridge + Lambda run unattended, no always-on server
-- **Idempotent** — all Lambda and Glue jobs safe to rerun without side effects
-- **Cost-guardrailed** — S3 lifecycle rules, Athena 1 GB scan cap, AWS Budgets alerts at $0.01 / $1 / $5
-- **Monitored** — CloudWatch Logs + Alarms → SNS email on any pipeline failure
-- **Tested** — 87 unit tests, all mock-based, no real AWS or API calls in CI
-
----
-
-## Repo Structure
+## Repo layout
 
 ```
-├── ingestion/sources/     # one folder per API (remotive, arbeitnow, adzuna, ...)
-├── transform/spark/       # Glue bronze → silver Spark job
-├── transform/dbt/         # gold layer — star schema models + dbt tests
-├── genai/                 # enrichment agent, skill extractor, match scorer
-├── config/                # user_profile.yml, aws_config.yml
-├── terraform/envs/dev/    # all AWS infra as code
-├── tests/                 # 87 unit tests
-└── docs/                  # architecture decisions, runbook, incident log
+├── ingestion/sources/<source>/   one Lambda ingestor per API
+├── spark/jobs/                   Glue bronze → silver job (+ spark/tests/)
+├── dbt_project/                  staging + gold models, schema tests
+├── transform/dbt_runner/         Glue Python Shell wrapper for dbt
+├── transform/ge_runner/          Great Expectations quality gate
+├── genai/                        enrichment agent, skill extractor, match scorer, guardrails, embeddings, search
+├── dashboard/streamlit/          Streamlit app (+ Dockerfile)
+├── config/user_profile.yml       personal profile + scoring weights
+├── terraform/envs/dev/           all AWS infrastructure
+├── tests/                        unit tests
+├── .github/workflows/            ci.yml, deploy.yml
+└── docs/                         progress, decisions, incidents, runbook, roadmap, interview_guide
+```
+
+## Run the tests
+
+```bash
+pip install -r requirements.txt
+pytest tests/ spark/tests/ -v
 ```
 
 ---
 
-## What's Coming
-
-- **Semantic search** — JD embeddings via Claude API + cosine similarity, no managed vector DB
-- **"Why this job" explanations** — per-result generated by Claude
-- **More sources** — Greenhouse, Lever, USAJobs, Reed.co.uk (~15K–20K jobs/day at full scale)
-- **CI/CD** — GitHub Actions lint → test → deploy
-- **Salary arbitrage view** — same role across countries, cost-of-living normalized
-
----
-
-*Built as a personal learning project — DE + GenAI + AWS, end-to-end, from scratch.*
+*Personal learning project — data engineering + GenAI + AWS, built end to end.*

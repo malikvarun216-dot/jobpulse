@@ -542,3 +542,44 @@
 - Ashby is a growing ATS but all API endpoints return 401 without an API key.
 - Unlike Greenhouse (public boards), Ashby is B2B SaaS — no free public tier.
 - Decision: skip. Revisit only if a customer API key becomes available.
+
+---
+
+## Stay on AWS (paid plan) — not migrate to GCP or a $0 stack (Chat 23)
+- Context: the 6-month AWS free plan ends ~2026-10-16; the account closes unless upgraded.
+- Options: (a) $0 portable stack (DuckDB + dbt-duckdb + Postgres/pgvector + GitHub Actions cron), (b) GCP trial (BigQuery + vector search), (c) upgrade AWS to paid.
+- Choice: (c). JobPulse's purpose is learning AWS + AI in data engineering; a rebuild would spend weeks re-creating what already works instead of building the AI layer.
+- Status: account was already upgraded to PAID (shared with ledgerline, $68.13 credits left on 2026-10-06).
+- Cost guard: existing account-wide budgets ($20/month, $2/day spike) cover both projects; lifecycle + log retention + dashboard off EC2 keep the pipeline at ~$3–6/month (estimate).
+- Trade-off: real monthly cost; the free-tier story ends.
+
+## Athena, not Redshift (Chat 23, revisited)
+- Workload: silver 179 MB total, one dbt run per night, one dashboard user.
+- Athena = pay per data scanned over S3; with Parquet + partitions each query scans MBs → fractions of a cent. 1 GB/query workgroup cap.
+- Redshift = compute that runs (provisioned nodes, or Serverless capacity with a minimum base while active) → dollars per day of use for zero benefit at this size. No ANN vector index either.
+- Revisit only if measured Athena latency/cost blocks the dashboard or many concurrent users appear.
+
+## Dashboard runs locally on demand; EC2 hosting retired (Chat 23)
+- The pipeline must run with the laptop off; the dashboard only needs to exist while it's being looked at.
+- EC2 t3.micro + public IPv4 ≈ $12/month after the free period. Local `streamlit run` against AWS = $0.
+- EC2 + CI deploy stays in git history as proof it was built (Chat 21). Instance + EIP already removed in AWS; Terraform cleanup in Chat 24.
+
+## Vector store chosen by evaluation, not by brand (Chat 23)
+- Today: NumPy brute-force cosine over Parquet — exact and <1 s at ~8K × 512, which is correct at this size.
+- Candidates on AWS: **pgvector on RDS Postgres** (SQL filters + `tsvector` hybrid in one query, ~$13–18/month while running) and **Amazon S3 Vectors** (serverless, cents/month, vector + metadata filters only).
+- Not considered: OpenSearch Serverless (minimum capacity bills 24/7, well over $100/month), Pinecone (external vendor, adds nothing pgvector can't show), Redshift (no ANN index).
+- Method (Chat 29): same vectors in both, measured vs exact NumPy as ground truth — recall@10, nDCG@10 on labelled queries, p95 latency, $/month.
+
+## Go live first, evaluate on a frozen corpus (Chat 23)
+- Going live on AWS = fix 2 failures + re-enable 1 rule (Chat 25) — cheap.
+- Evaluation must run on a pinned, versioned snapshot (`eval/corpus_v1`): if the corpus changes nightly, metrics move because the data changed, not because retrieval improved.
+
+## Measure before adding AI complexity (Chat 23)
+- Order: eval set → baseline → hybrid / chunking → vector store → incremental embeddings → extraction eval → generation.
+- Every AI change must move a number on the eval set; no number, no resume claim.
+- Agentic RAG / graph RAG out of scope: trend questions are answered by SQL, which is more reliable than retrieval.
+
+## Code is the source of truth over docs (Chat 23)
+- Chat 23 found README / CLAUDE.md describing components that were never built (SalaryParser, SeniorityClassifier, DedupAgent, Batch API, JSON guardrails, MinHash/LSH, SCD2, dim_date).
+- Rule: docs describe what exists; planned items are marked as planned with a chat number. The interview guide uses ✅ built / 🔜 planned / ⚠️ weakness.
+- Do not claim an "orchestrator / sub-agent" pattern: the code is one orchestrator class + helper classes with one LLM call per document.

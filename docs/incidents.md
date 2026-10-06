@@ -2,6 +2,14 @@
 
 Newest first. Chat 23 entries were reconstructed from AWS history (Step Functions, Glue job runs, CloudWatch alarm history).
 
+## [2026-10-06] — `terraform apply` wrote the literal text `<new key>` into the Adzuna Lambda
+- What happened: after the Chat 24 apply, the Lambda's `ADZUNA_APP_KEY` was 9 characters and not hex. It equalled `"<new key>"` (and the id `"<new id>"`) — placeholder text from the step list.
+- What I thought: the User-scope env vars held the real rotated key (id 8 / key 32 chars, checked in another window).
+- Root cause: earlier, in the window later used for apply, the placeholders had been run verbatim (`$env:TF_VAR_adzuna_app_key = "<new key>"`). Process-scope vars beat User-scope ones, so that window kept the placeholder. The plan showed `ADZUNA_APP_KEY = (sensitive value)` — Terraform hides the value, so nothing looked wrong.
+- Fix: a retry from an older tab still had the placeholder ("No changes" — Terraform's value already equalled the Lambda's). Final fix: shell that loaded the User-scope values explicitly → saved plan (`-out`) showing exactly 1 change → apply that plan file → verified at the destination: key 32 chars, hex, equals the User value. Pipeline was paused, so no failed runs.
+- Prevention: never give a runnable command containing placeholders for secrets; apply from a **saved plan file** so what you reviewed is what runs; check the **length in the same window** right before plan/apply; after apply, compare the deployed value's length/format (`aws lambda get-function-configuration … length(...)`).
+- Lesson: `sensitive` hides mistakes as well as secrets — verify secrets by length/format at the destination.
+
 ## [2026-10-06] — `git reset --hard` wiped the uncommitted Chat 24 changes in the main checkout
 - What happened: the step list said commit → push → renormalize (`git rm -rq --cached .` then `git reset --hard HEAD`). The commit was skipped; `git push` printed "Everything up-to-date"; the reset rolled the checkout back to `a6de5ea`. All 15 Chat 24 edits, 3 `git rm`s and the Chat 24 interview guide were gone from the main checkout.
 - What I thought: "Everything up-to-date" looked like success.

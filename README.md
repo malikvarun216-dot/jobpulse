@@ -101,7 +101,7 @@ Same-day cross-source duplicates are tagged with `source_apis[]` / `source_count
   Athena scan cap, LLM daily cap.
 - **Tested:** 228 test functions, every external call mocked, no AWS credentials in CI.
 - **Least privilege:** ingestion Lambdas can write only to bronze.
-- **Documented:** decisions, incidents (58), runbook, roadmap in [`docs/`](docs/).
+- **Documented:** decisions, incidents (59), runbook, roadmap in [`docs/`](docs/).
 
 ## Repo layout
 

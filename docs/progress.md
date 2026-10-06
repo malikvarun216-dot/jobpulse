@@ -1155,5 +1155,14 @@ a local backup, and a `terraform plan` that shows only intended changes.
 - `ruff` clean; pytest 208 passed / 14 skipped / 6 failed — the 6 are `test_ge_runner.py`, GE not installed in the local
   Python (repo's `great_expectations/` folder imports as an empty namespace package); CI installs it.
 
+### Closed out (2026-10-07)
+- Committed `7d7aedb` (18 files: incl. `git rm` of `ec2.tf`, `terraform.tfvars`; `interview_guide.md` untracked — now local only with `learning.md`).
+- Applied: 9 imported, 23 changed, 5 destroyed. Verified: 9 log groups at 14 d; dashboard IAM role + SG gone; 3 Glue jobs pinned.
+- Adzuna key rotated; first apply wrote the literal `<new key>` (stale PowerShell window) → fixed with a saved one-change plan;
+  Lambda key verified 32 hex chars, equal to the User-scope value (incident logged).
+- A skipped commit + `git reset --hard` wiped the uncommitted changes once → restored from the worktree (incident logged).
+- Cost allocation tags `project` and `layer` activated. Worktrees removed; work now happens in the main checkout.
+
 ### Next
 Chat 25 — fix the failures, move gold tables out of `athena-results/` then add the expiry, absence-of-success alarm, go live.
+First step: one test invoke of the Adzuna Lambda to prove the rotated key works.

@@ -1,6 +1,6 @@
 # JobPulse Roadmap — Data + AI track (Chat 24 onward)
 
-Last updated: **Chat 24 (2026-10-06)**. Update this file at the end of every chat: tick the chat, adjust the next one.
+Last updated: **Chat 24 (2026-10-07)**. Update this file at the end of every chat: tick the chat, adjust the next one.
 
 ## Why this roadmap exists
 
@@ -20,7 +20,7 @@ Ground rules for every chat:
 | Chat | Theme | Status |
 |---|---|---|
 | 23 | Recon, AWS decision, docs overhaul, interview guide | ✅ done (2026-10-06) |
-| 24 | Stabilize the account and repo (must finish before ~Oct 16) | ✅ done (2026-10-06) — apply + key rotation by Varun |
+| 24 | Stabilize the account and repo (must finish before ~Oct 16) | ✅ done (2026-10-07) |
 | 25 | Fix the failures, go live again | ⏭ next |
 | 26 | AI concepts lab (learning session) | |
 | 27 | Evaluation foundations: freeze a corpus, label it | |
@@ -59,8 +59,8 @@ Ground rules for every chat:
 **Done when:** plan is clean, key rotated, backup file count matches S3, Budgets active.
 
 **Result (Chat 24):** ✅ secrets → `TF_VAR_`, EC2 out of IaC + CI, 14-day log retention (import blocks), Glue pins,
-`.gitattributes` LF, backup 943 MB (counts match). ✅ Budgets (already active). ⏳ Varun: apply, rotate key, untrack tfvars,
-cost-allocation tag. ❌ Moved to Chat 25: `athena-results/` expiry (gold tables live there). Plan has a known benign diff
+`.gitattributes` LF, backup 943 MB (counts match). ✅ Budgets (already active). ✅ Applied, key rotated + verified, tfvars removed,
+cost allocation tags `project` + `layer` active. ❌ Moved to Chat 25: `athena-results/` expiry (gold tables live there). Plan has a known benign diff
 (CI + Terraform both deploy code).
 
 ## Chat 25 — Fix the failures, go live

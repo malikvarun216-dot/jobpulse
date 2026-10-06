@@ -583,3 +583,33 @@
 - Chat 23 found README / CLAUDE.md describing components that were never built (SalaryParser, SeniorityClassifier, DedupAgent, Batch API, JSON guardrails, MinHash/LSH, SCD2, dim_date).
 - Rule: docs describe what exists; planned items are marked as planned with a chat number. The interview guide uses ✅ built / 🔜 planned / ⚠️ weakness.
 - Do not claim an "orchestrator / sub-agent" pattern: the code is one orchestrator class + helper classes with one LLM call per document.
+
+## Terraform secrets via `TF_VAR_` env vars, not a committed tfvars (Chat 24)
+- Problem: the Adzuna key sat in `terraform.tfvars` on GitHub (Chat 23 finding).
+- Options: (a) `TF_VAR_` env vars / local gitignored tfvars, (b) Secrets Manager, read by the Lambda at runtime, (c) SSM Parameter Store SecureString.
+- Choice: (a) now — smallest change, no code change in the Lambda. `*.tfvars` gitignored; `alert_email` got a default (not a secret).
+- Trade-off: the value still lands in the encrypted S3 state and in the Lambda's env vars (visible in the console). (b) removes both for $0.40/month and one `GetSecretValue` per run — the pattern already used for the Anthropic/Voyage keys. Revisit if more keys appear.
+- Terraform does not run in CI, so no GitHub secret is needed for it.
+- The key is still in git history → rotation is the actual fix; removing the file only stops future leaks.
+
+## Pin Glue Python packages with `==` (Chat 24)
+- `--additional-python-modules` used `>=`: Glue installs at the start of every run, so each night could get a new version. Logs show `anthropic` 0.117 → 0.125 across runs.
+- Pinned to what the last green runs installed: `anthropic==0.125.0`, `pydantic==2.13.5`, `voyageai==0.5.0`, `great-expectations==1.8.1`, `pandas==2.3.3`.
+- Trade-off: no automatic fixes; upgrades become a deliberate change (bump, run once, check).
+
+## Log retention 14 days, adopted with Terraform `import` blocks (Chat 24)
+- Lambda/Glue create their log groups on first run with "never expire". Terraform can't `create` them (already exist).
+- `import` blocks (Terraform ≥1.5, `for_each` ≥1.7) adopt them in the plan — reviewable, no manual `terraform import` commands.
+- 14 days = enough to debug a failure noticed within two weeks. The Aug–Sep Glue logs Chat 25 needs were exported to the local backup first.
+- `/aws-glue/*` names are account-wide; OK because only JobPulse runs Glue in this account (checked 2026-10-06). Revisit if ledgerline adds Glue.
+
+## No expiry on `athena-results/` yet (Chat 24)
+- The dbt gold tables live in `athena-results/tables/` (see incidents, 2026-10-06). Expiring the prefix would delete them.
+- Cost of waiting: 1.5 GB × ~$0.025/GB-month ≈ $0.04/month. Fix order (Chat 25): tables out of the results prefix → verify → expire.
+
+## EC2 dashboard removed from Terraform and CI (Chat 24)
+- Instance + EIP were already gone; SG, IAM role/policy/instance profile remained. Removed `ec2.tf`, the 2 outputs, and the `deploy-dashboard` job (it failed on every push — no host).
+- Leftovers outside Terraform for Varun: key pair `jobpulse-dev`, GitHub secrets `EC2_DASHBOARD_IP` / `EC2_SSH_KEY`.
+
+## `.gitattributes` forces LF (Chat 24)
+- Windows `autocrlf` + Terraform file hashing = phantom diffs. LF everywhere makes hashes identical on Mac, Windows and CI.

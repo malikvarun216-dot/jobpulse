@@ -1,6 +1,6 @@
 # JobPulse Roadmap — Data + AI track (Chat 24 onward)
 
-Last updated: **Chat 23 (2026-10-06)**. Update this file at the end of every chat: tick the chat, adjust the next one.
+Last updated: **Chat 24 (2026-10-06)**. Update this file at the end of every chat: tick the chat, adjust the next one.
 
 ## Why this roadmap exists
 
@@ -12,7 +12,7 @@ Ground rules for every chat:
 - **Measure before adding complexity.** Every AI change must move a number on the eval set. No number, no claim.
 - **Stay on AWS (paid account, shared with ledgerline).** Account-wide budgets: $20/month, $2/day spike.
 - **Dashboard runs locally on demand** (`streamlit run`), the pipeline stays laptop-independent.
-- **Interview guide is updated every chat** (`docs/interview_guide.md`).
+- **Learning notes + interview guide are updated every chat** (`docs/learning.md`, `docs/interview_guide.md` — local only, not in git).
 - Ledgerline covers lakehouse / streaming / CDC / governance / point-in-time ML. JobPulse owns **AI-for-data**. No overlap.
 
 ## Status board
@@ -20,8 +20,8 @@ Ground rules for every chat:
 | Chat | Theme | Status |
 |---|---|---|
 | 23 | Recon, AWS decision, docs overhaul, interview guide | ✅ done (2026-10-06) |
-| 24 | Stabilize the account and repo (must finish before ~Oct 16) | ⏭ next |
-| 25 | Fix the failures, go live again | |
+| 24 | Stabilize the account and repo (must finish before ~Oct 16) | ✅ done (2026-10-06) — apply + key rotation by Varun |
+| 25 | Fix the failures, go live again | ⏭ next |
 | 26 | AI concepts lab (learning session) | |
 | 27 | Evaluation foundations: freeze a corpus, label it | |
 | 28 | Baseline + better retrieval (hybrid, chunk grain) | |
@@ -58,6 +58,11 @@ Ground rules for every chat:
 
 **Done when:** plan is clean, key rotated, backup file count matches S3, Budgets active.
 
+**Result (Chat 24):** ✅ secrets → `TF_VAR_`, EC2 out of IaC + CI, 14-day log retention (import blocks), Glue pins,
+`.gitattributes` LF, backup 943 MB (counts match). ✅ Budgets (already active). ⏳ Varun: apply, rotate key, untrack tfvars,
+cost-allocation tag. ❌ Moved to Chat 25: `athena-results/` expiry (gold tables live there). Plan has a known benign diff
+(CI + Terraform both deploy code).
+
 ## Chat 25 — Fix the failures, go live
 
 - **Enrichment timeout:** add per-stage timing logs (`genai/enrichment_runner.py`, `genai/jd_enrichment_agent.py`) → find where the ~50 min goes. Make enrichment incremental (only JDs not already scored, keyed by content hash across days). Right-size DPU. Alarm when Glue duration > 70% of timeout.
@@ -65,6 +70,11 @@ Ground rules for every chat:
 - **Alarm:** replace the self-resetting failure alarm with an **absence-of-success** alarm (`ExecutionsSucceeded < 1` per day, missing data = breaching).
 - **Real gates:** `dbt_runner.py` → `dbt build` (21 tests start gating); GE checks `snapshot_date` from the data, not an injected value; fix/delete the 2 contradictory PySpark tests.
 - **Empty-context bug:** pass `description` to the "Why these match?" call (`dashboard/streamlit/app.py`).
+- **Gold tables out of `athena-results/`:** make dbt write to `gold/models/` (workgroup enforcement currently drops
+  `s3_data_dir`), run once, verify catalog locations, **then** add the 7-day expiry on query results. Clean orphaned
+  `athena-results/tables/*` (only the 4 live folders are referenced).
+- **One owner for code deploys:** CI or Terraform, not both (`lifecycle { ignore_changes }` or drop CI uploads).
+- Use the exported Glue logs (`jobpulse_backup/2026-10-06/logs/`) to find which source changed `tags`.
 - Re-enable EventBridge.
 
 **Done when:** 3 green nights in a row; a deliberate failure fires the new alarm once and does not auto-reset.

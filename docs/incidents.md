@@ -2,6 +2,30 @@
 
 Newest first. Chat 23 entries were reconstructed from AWS history (Step Functions, Glue job runs, CloudWatch alarm history).
 
+## [2026-10-06] — `git reset --hard` wiped the uncommitted Chat 24 changes in the main checkout
+- What happened: the step list said commit → push → renormalize (`git rm -rq --cached .` then `git reset --hard HEAD`). The commit was skipped; `git push` printed "Everything up-to-date"; the reset rolled the checkout back to `a6de5ea`. All 15 Chat 24 edits, 3 `git rm`s and the Chat 24 interview guide were gone from the main checkout.
+- What I thought: "Everything up-to-date" looked like success.
+- Root cause: a destructive command was described as "safe after a commit" but had **no check that the commit happened**. "Everything up-to-date" means there was nothing new to push — a warning sign, not success.
+- Fix: recovered in minutes — the Chat 24 worktree still held every file; the interview guide came from `jobpulse_private_docs/`; `.gitattributes` and `learning.md` survived (`reset --hard` only touches tracked files).
+- Prevention: destructive commands for the human now carry a **built-in guard** (`if (git status --porcelain) { STOP } else { ... }`) — rule in CLAUDE.md; runbook §14 updated. Worktree kept until the commit is confirmed on GitHub.
+- Lesson: "safe if X" must be enforced by the command, not by the reader. Delete the backup only after the copy is verified.
+
+## [2026-10-06] — Near miss: a "cost cleanup" lifecycle rule would have deleted the gold layer
+- What happened: Chat 24 planned a 7-day expiry on `s3://jobpulse-gold-dev/athena-results/` to clear 1.5 GB of old query CSVs. The rule was written before checking where the gold tables live.
+- What I thought: `athena-results/` holds only throwaway query output; the star schema lives elsewhere in gold.
+- Root cause: all four dbt tables (`fact_job_posting`, `dim_company`, `dim_country`, `dim_role`) physically live in `athena-results/tables/<uuid>/`. The Athena workgroup has `enforce_workgroup_configuration = true`, so dbt-athena ignores the models' `s3_data_dir='.../models/'` and Athena writes CTAS output under the workgroup result location. With the pipeline paused (no nightly rebuild), the rule would have emptied the gold tables 7 days after apply.
+- Fix: rule removed before any apply; warning comment in `s3.tf` + runbook §15. Chat 25: move table data out of the results prefix, then add the expiry.
+- Prevention: before any delete/expire rule, list what the Glue Catalog points at under that prefix (`aws glue get-tables … StorageDescriptor.Location`).
+- Lesson: a prefix name says what the data was meant to be, not what it is — check the catalog before you expire anything.
+
+## [2026-10-06] — `terraform plan` showed every Lambda and Glue script as changed (CRLF + two deployers)
+- What happened: first plan from the Windows checkout wanted to update 5 Lambdas, 6 S3 script objects and replace both `null_resource` uploads — none of them edited.
+- What I thought: someone changed code in AWS by hand.
+- Root cause: (1) `core.autocrlf=true` checks files out with CRLF; Terraform's `filemd5` / `archive_file` hash the CRLF bytes, while CI deployed LF copies. (2) After fixing that, Lambdas + S3 objects still differed: `deploy.yml` also deploys the same code — its `zip` makes different bytes than `archive_file`, and `aws s3 cp` drops object tags.
+- Fix: `.gitattributes` with `* text=auto eol=lf` → `null_resource` noise gone. The two-deployer diff is harmless (same code) and documented in runbook §14; picking one owner is open.
+- Prevention: `.gitattributes` in every repo that is hashed by IaC; one tool owns each artifact.
+- Lesson: a noisy plan trains you to stop reading plans — remove the noise so a real change stands out.
+
 ## [2026-08-15 → 2026-09-19] — Enrichment crept up to its timeout, then failed every night
 - What happened: `jobpulse-enrichment-dev` ended in `TIMEOUT` at exactly 60 min — first on Jul 25–26, then every night from ~Aug 15 (29 TIMEOUTs total). Whole pipeline FAILED nightly until the schedule was disabled on Sep 19.
 - What I thought: (Chat 23 recon) a Claude API outage or the budget cap.

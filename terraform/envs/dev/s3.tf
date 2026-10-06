@@ -52,6 +52,10 @@ resource "aws_s3_bucket_lifecycle_configuration" "silver" {
   }
 }
 
+# Gold — NO expiry on athena-results/ yet. The dbt star-schema tables physically live in
+# athena-results/tables/<uuid>/ (workgroup enforces its output location, so the models' s3_data_dir
+# is ignored). Expiring that prefix would delete the gold layer. Move tables out first (Chat 25).
+
 # Lifecycle rules — archive (Glacier after 180 days)
 resource "aws_s3_bucket_lifecycle_configuration" "archive" {
   bucket = aws_s3_bucket.layers["archive"].id

@@ -152,15 +152,49 @@ Region: `ap-south-1`. Environment: `dev`. Last updated: Chat 23 (2026-10-06).
   State lives in S3 and reflects the newest applied code.
 - **`plan` says "No changes" but you added a file:** check the filename (`ls -la`) — a trailing space once hid `s3.tf`.
 - **Resources deleted outside Terraform** (e.g. EC2 + Elastic IP, gone by Oct 2026) → plan will try to recreate them; remove them
-  from the `.tf` files (or `terraform state rm`) instead.
+  from the `.tf` files (or `terraform state rm`) instead. (`ec2.tf` removed in Chat 24.)
+- **`No value for required variable "adzuna_app_id"`:** secrets are no longer in a committed file (Chat 24). They are
+  stored as **User-scope** Windows env vars (persist across reboots; every *new* PowerShell window gets them).
+  One-time setup (or after a key rotation):
+  ```powershell
+  [Environment]::SetEnvironmentVariable("TF_VAR_adzuna_app_id", "<id>", "User"); [Environment]::SetEnvironmentVariable("TF_VAR_adzuna_app_key", "<key>", "User")
+  ```
+  A window opened *before* the setup doesn't see them — load them into it:
+  ```powershell
+  $env:TF_VAR_adzuna_app_id = [Environment]::GetEnvironmentVariable("TF_VAR_adzuna_app_id","User"); $env:TF_VAR_adzuna_app_key = [Environment]::GetEnvironmentVariable("TF_VAR_adzuna_app_key","User")
+  ```
+  Check without printing the secret (expect `id length: 8, key length: 32`):
+  ```powershell
+  "id length: $($env:TF_VAR_adzuna_app_id.Length), key length: $($env:TF_VAR_adzuna_app_key.Length)"
+  ```
+  Don't also keep a `terraform.tfvars` with the key — a tfvars file beats env vars, so a stale key there would win.
+  The value still ends up in the (encrypted) S3 state and in the Lambda's env vars — Secrets Manager would fix that (not done).
+- **Plan shows every Lambda / Glue script "changed" but you edited nothing:**
+  1. *Line endings.* A Windows checkout with `core.autocrlf=true` has CRLF files; Terraform hashes them → new md5 / zip hash.
+     `.gitattributes` (`eol=lf`, Chat 24) prevents it. Existing checkout: `git ls-files --eol | grep w/crlf` → if any, re-checkout:
+     only after committing — the guard refuses if anything is uncommitted (PowerShell):
+     `if (git status --porcelain) { "STOP: uncommitted changes - commit first" } else { git rm -rq --cached .; git reset --hard HEAD }`
+     Without the guard, `reset --hard` silently deletes uncommitted work (incidents, 2026-10-06).
+  2. *Two deployers.* `deploy.yml` (CI) also uploads the Lambda code and Glue scripts. CI's `zip` gives different bytes than
+     Terraform's `archive_file` (`source_code_hash` differs, same code) and `aws s3 cp` drops the object tags (`tags_all` diff).
+     Harmless to apply — same code goes back. Known drift until one tool owns code deploys.
+- **Plan wants to import log groups:** expected once (Chat 24 `import` blocks in `monitoring.tf`). After the first apply they are
+  no-ops.
 
 ## 15. Cost check
 
-- **Biggest silent growers:** `s3://jobpulse-gold-dev/athena-results/` (query CSVs — 1.5 GB by Oct 2026, no
-  lifecycle yet), CloudWatch log groups (no retention set), Glue job duration creeping up.
+- **Biggest silent growers:** `s3://jobpulse-gold-dev/athena-results/` (query CSVs — 1.5 GB / 5K objects by Oct 2026,
+  no lifecycle yet), Glue job duration creeping up. CloudWatch logs: 14-day retention since Chat 24 (`monitoring.tf`).
   ```bash
   aws s3 ls s3://jobpulse-gold-dev/athena-results/ --recursive --summarize | tail -2
   ```
+- ⚠️ **Do not put an expiry rule on `athena-results/`** (or delete files there by hand) while the gold tables live in
+  `athena-results/tables/<uuid>/`. Check first:
+  `aws glue get-tables --database-name jobpulse_gold_dev --query 'TableList[].StorageDescriptor.Location'`.
+  Why they live there: the workgroup has `enforce_workgroup_configuration = true`, so dbt-athena drops the models'
+  `s3_data_dir` and Athena writes CTAS output under the workgroup result location. Chat 25 moves them out.
+- **Python package drift in Glue:** `--additional-python-modules` are pinned with `==` since Chat 24. Check what a run
+  actually installed: CloudWatch `/aws-glue/python-jobs/output`, filter `"Successfully installed"`.
 - Glue Python Shell at 1/16 DPU ≈ $0.03 per hour of runtime; Glue Spark G.1X × 2 ≈ $0.03 per 2-min run (approx.).
 - AWS Budgets (account-wide, shared with ledgerline): `ledgerline-monthly` $20 (50/80/100% + forecast), `ledgerline-daily-spike` $2/day, zero-spend $0.01.
 - Plan state: `aws freetier get-account-plan-state --region us-east-1`.
@@ -173,3 +207,13 @@ git status            # "behind" = pull before doing anything
 git log --oneline -1 origin/dev
 ```
 Never `terraform apply` from a checkout that is behind `origin/dev`.
+
+## 17. Local backup / restore
+
+- Chat 24 snapshot: `C:\Users\malik\jobpulse_backup\2026-10-06\` — silver (all partitions), gold `embeddings/`,
+  `enrichment-scores/`, `enrichment-cache/`, the 4 live dbt tables, and Glue logs Aug 1 – Sep 20 (`logs/*.json`, 122K events).
+  `manifest.txt` has S3-vs-local file counts.
+- Refresh: same commands with a new date folder — `aws s3 sync s3://<bucket>/<prefix> <local>`.
+- Git Bash gotcha: with `MSYS_NO_PATHCONV=1` (needed for log-group names like `/aws-glue/...`), pass Windows paths
+  (`C:/Users/...`) to `aws.exe` — `/c/Users/...` is taken literally and lands in `C:\c\Users\...`.
+- Restore: `aws s3 sync <local> s3://<bucket>/<prefix>`, then `MSCK REPAIR TABLE` for partitioned tables.

@@ -309,7 +309,7 @@ resource "aws_glue_job" "enrichment_runner" {
     "--dry_run"                          = "false"
     "--force_rescore"                    = "false"
     "--enable-continuous-cloudwatch-log" = "true"
-    "--additional-python-modules"        = "anthropic>=0.40.0,pydantic>=2.0.0,pyyaml,pyarrow==14.0.2"
+    "--additional-python-modules"        = "anthropic==0.125.0,pydantic==2.13.5,pyyaml,pyarrow==14.0.2"
     "--extra-py-files"                   = "s3://${aws_s3_bucket.layers["silver"].bucket}/glue-scripts/genai_package.zip"
   }
 
@@ -356,7 +356,7 @@ resource "aws_glue_job" "embedding_runner" {
     "--gold_database"                    = aws_glue_catalog_database.gold.name
     "--dry_run"                          = "false"
     "--enable-continuous-cloudwatch-log" = "true"
-    "--additional-python-modules"        = "voyageai>=0.2.0,pyarrow==14.0.2,pandas>=2.0.0,numpy==1.26.4"
+    "--additional-python-modules"        = "voyageai==0.5.0,pyarrow==14.0.2,pandas==2.3.3,numpy==1.26.4"
     "--extra-py-files"                   = "s3://${aws_s3_bucket.layers["silver"].bucket}/glue-scripts/genai_package.zip"
   }
 
@@ -400,7 +400,8 @@ resource "aws_glue_job" "ge_runner" {
     "--region"                           = var.aws_region
     "--enable-continuous-cloudwatch-log" = "true"
     # GE 1.x works on Python 3.9–3.12; pyarrow + pandas read the silver Parquet partition
-    "--additional-python-modules"        = "great-expectations>=1.3.0,pandas>=2.0.0,pyarrow==14.0.2"
+    # Pinned (Chat 24) to the versions the last green runs installed — unpinned ">=" drifted night to night
+    "--additional-python-modules"        = "great-expectations==1.8.1,pandas==2.3.3,pyarrow==14.0.2"
   }
 
   glue_version = "4.0"

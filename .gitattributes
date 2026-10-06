@@ -1,0 +1,7 @@
+# Force LF everywhere (Chat 24). Terraform hashes these files (filemd5 / archive_file);
+# CRLF checkouts on Windows made every Lambda + Glue script look "changed" in terraform plan.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.zip binary
+*.parquet binary

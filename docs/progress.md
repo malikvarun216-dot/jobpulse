@@ -1114,3 +1114,46 @@ AWS free plan ending (~Oct 16), and turn JobPulse into an AI Data Engineer proje
 
 ### Next
 Chat 24 — Stabilize: secrets out of git, remove EC2 from Terraform, cost hygiene (athena-results lifecycle, log retention, pinned deps), local backup, clean `terraform plan`. **Before it:** `git pull --ff-only origin dev` in the main checkout, rotate the Adzuna key. (Account already paid; budgets already cover it.)
+
+---
+
+## Chat 24 — Stabilize
+Date: 2026-10-06
+
+### Goal
+Make the account and repo safe before going live again: secrets out of git, Terraform matching reality, cost hygiene,
+a local backup, and a `terraform plan` that shows only intended changes.
+
+### Built
+- **Secrets:** `adzuna_app_id` / `adzuna_app_key` now come from `TF_VAR_` env vars (or a local tfvars); `*.tfvars` gitignored;
+  `alert_email` got a default. `terraform.tfvars` must be untracked with `git rm --cached` (Varun).
+- **EC2 retired from code:** `ec2.tf` deleted (SG, IAM role/policy/attachment, instance profile → destroyed on apply; instance +
+  EIP were already gone), 2 outputs removed, `deploy-dashboard` job removed from `deploy.yml`.
+- **Log retention:** 9 log groups (5 Lambda + 4 `/aws-glue/*`) at 14 days, adopted with `import` blocks in `monitoring.tf`.
+  `required_version >= 1.7`.
+- **Pinned Glue packages:** `anthropic==0.125.0`, `pydantic==2.13.5`, `voyageai==0.5.0`, `great-expectations==1.8.1`,
+  `pandas==2.3.3` (versions the last green runs installed).
+- **`.gitattributes`:** `* text=auto eol=lf`.
+- **Local backup:** `C:\Users\malik\jobpulse_backup\2026-10-06\` — 943 MB; silver 8,219 / gold embeddings 96 /
+  enrichment-scores 103 / enrichment-cache 698 / 4 gold tables (21 files) — all counts match S3. Plus Glue logs
+  Aug 1 – Sep 20 (122K events) for the Chat 25 tags-drift + timeout investigation.
+- Docs: runbook §14/§15/§17, decisions (6), incidents (2), interview guide (§3, §4, §5, story 13, §10, §11, §14).
+
+### Not done (on purpose)
+- **No `athena-results/` lifecycle rule.** The gold tables live in `athena-results/tables/<uuid>/` (workgroup enforces its
+  output location → dbt's `s3_data_dir` ignored). An expiry rule would have deleted them. Moved to Chat 25.
+
+### Found
+- `core.autocrlf=true` made Terraform see every Python file as changed → `.gitattributes`.
+- CI (`deploy.yml`) and Terraform both deploy Lambda code + Glue scripts → recurring benign diff (zip bytes, S3 tags).
+- `deploy-dashboard` CI job failed on every push since the EC2 was removed.
+- Glue logs show `anthropic` drifting 0.117 → 0.125 across nights (unpinned `>=`).
+
+### Verified
+- `terraform plan` (worktree, LF-normalized): 9 to import, 23 to change, 5 to destroy. Intended: 9 imports + retention,
+  3 Glue jobs (pins), 5 EC2 leftovers destroyed. Benign (two deployers): 5 Lambdas `source_code_hash`, 6 S3 objects `tags_all`.
+- `ruff` clean; pytest 208 passed / 14 skipped / 6 failed — the 6 are `test_ge_runner.py`, GE not installed in the local
+  Python (repo's `great_expectations/` folder imports as an empty namespace package); CI installs it.
+
+### Next
+Chat 25 — fix the failures, move gold tables out of `athena-results/` then add the expiry, absence-of-success alarm, go live.

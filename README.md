@@ -101,7 +101,7 @@ Same-day cross-source duplicates are tagged with `source_apis[]` / `source_count
   Athena scan cap, LLM daily cap.
 - **Tested:** 228 test functions, every external call mocked, no AWS credentials in CI.
 - **Least privilege:** ingestion Lambdas can write only to bronze.
-- **Documented:** decisions, incidents (55), runbook, interview guide in [`docs/`](docs/).
+- **Documented:** decisions, incidents (58), runbook, roadmap in [`docs/`](docs/).
 
 ## Repo layout
 
@@ -117,14 +117,41 @@ Same-day cross-source duplicates are tagged with `source_apis[]` / `source_count
 ├── terraform/envs/dev/           all AWS infrastructure
 ├── tests/                        unit tests
 ├── .github/workflows/            ci.yml, deploy.yml
-└── docs/                         progress, decisions, incidents, runbook, roadmap, interview_guide
+└── docs/                         progress, decisions, incidents, runbook, roadmap
 ```
 
-## Run the tests
+## Local development (Windows PowerShell)
 
-```bash
+Work happens on `dev` in the main checkout; `main` gets milestone merges only.
+
+Install dependencies:
+
+```powershell
 pip install -r requirements.txt
+```
+
+Run the tests (same as CI):
+
+```powershell
 pytest tests/ spark/tests/ -v
+```
+
+Terraform secrets come from environment variables, never a committed file (`*.tfvars` is gitignored):
+
+```powershell
+$env:TF_VAR_adzuna_app_id = "<id>"; $env:TF_VAR_adzuna_app_key = "<key>"
+```
+
+Then plan from `terraform/envs/dev/` and read every line before applying:
+
+```powershell
+terraform plan
+```
+
+Dashboard, run locally against AWS:
+
+```powershell
+streamlit run dashboard/streamlit/app.py
 ```
 
 ---

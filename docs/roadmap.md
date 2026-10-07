@@ -21,8 +21,8 @@ Ground rules for every chat:
 |---|---|---|
 | 23 | Recon, AWS decision, docs overhaul, interview guide | ✅ done (2026-10-06) |
 | 24 | Stabilize the account and repo (must finish before ~Oct 16) | ✅ done (2026-10-07) |
-| 25 | Fix the failures, go live again | ✅ live 2026-10-08 (green manual run, schedule on) — done-criteria: 3 green nights |
-| 26 | AI concepts lab (learning session) | |
+| 25 | Fix the failures, go live again | ✅ live 2026-10-08 — closes after 3 green scheduled nights (Oct 9–11) + alarm test |
+| 26 | AI concepts lab (learning session) | ⏭ next — can start now, runs in parallel with Chat 25's 3 nights |
 | 27 | Evaluation foundations: freeze a corpus, label it | |
 | 28 | Baseline + better retrieval (hybrid, chunk grain) | |
 | 29 | Vector stores on AWS: pgvector (RDS) vs S3 Vectors, by eval | |
@@ -95,6 +95,9 @@ cost allocation tags `project` + `layer` active. ❌ Moved to Chat 25: `athena-r
   999 silver rows share source + job_id + day (dedup, Chat 30).
 
 ## Chat 26 — AI concepts lab (no AWS changes)
+
+> First 5 minutes: Chat 25 night check — last 3 Step Functions executions green? enrichment `[timing] total` < 60 s?
+> `jobpulse-sfn-no-success-26h-dev` left "Unchecked"? (if not → metric-math `FILL(m1, 0)` rebuild).
 
 Notebook on ~20 real JDs from the exported silver data:
 1. Embed 5 JDs, look at the 512 numbers, print the similarity matrix.

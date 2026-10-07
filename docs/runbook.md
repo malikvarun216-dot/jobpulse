@@ -160,8 +160,10 @@ Region: `ap-south-1`. Environment: `dev`. Last updated: Chat 25 (2026-10-08).
 - **Expected:** it is in ALARM whenever the pipeline is paused (nothing succeeds). That is correct, not noise.
 - **Caveat seen 2026-10-08:** created while the pipeline had been paused 19 days, it sat in `INSUFFICIENT_DATA`
   ("Unchecked: Initial alarm creation") instead of ALARM. CloudWatch drops a metric after ~15 days without data, so
-  `ExecutionsSucceeded` for this state machine didn't exist and there was nothing to evaluate. So: **after a pause
-  longer than ~2 weeks, this alarm stays silent** — check Step Functions by hand when resuming.
+  `ExecutionsSucceeded` for this state machine didn't exist and there was nothing to evaluate. Recreating it
+  (`terraform plan "-replace=aws_cloudwatch_metric_alarm.sfn_no_success"`) after the metric came back did not fix it
+  within minutes either. So: **after a pause longer than ~2 weeks, this alarm may stay silent** — check Step Functions
+  by hand when resuming. Planned fix if it persists: metric math `FILL(m1, 0)` (empty hour = 0, never "missing").
 - Test the email path without breaking anything:
   `aws cloudwatch set-alarm-state --alarm-name jobpulse-sfn-no-success-26h-dev --state-value ALARM --state-reason "test" --region ap-south-1`
   (it re-evaluates to the real state within minutes).

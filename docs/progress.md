@@ -1211,12 +1211,22 @@ Find the real causes of the Aug–Sep failures, fix them, turn the quality check
 - Step Functions history (Jul 11 – Sep 19, 72 runs) split by duration: <1 s = **Arbeitnow `KeyError: 0`** (5 nights, new finding — PHP API sends objects for lists; fixed with `as_list()`), 2–3.5 min = `tags` drift, ~1 h 10 = enrichment timeout. The one August success (Aug 14) finished enrichment at 59.3 min.
 - GitGuardian flagged the old Adzuna key in the public repo (from the Chat 24 deletion diff); key already rotated, live key verified different. `*.tfplan` gitignored.
 - No-success alarm stayed `INSUFFICIENT_DATA` after creation: the success metric had expired during the 19-day pause (runbook §12).
-- Phase 2 prepared: EventBridge `ENABLED`, `athena-results/` expiry `Enabled` (apply with the closing commit).
+- Phase 2 (commit `896c75e`): Arbeitnow `as_list()` deployed by CI; applied with the no-success alarm **replaced**
+  (1 added, 2 changed, 1 destroyed). Verified: EventBridge rule `ENABLED`, gold lifecycle `athena-results-expire` `Enabled`.
+- Saved plan files deleted (they hold the Adzuna key in plain text). GitGuardian alert: old key confirmed revoked at
+  Adzuna, alert marked revoked.
+- Recreated no-success alarm still `INSUFFICIENT_DATA` / "Unchecked: Initial alarm creation" minutes later — open (see Next).
 
 ### Not done
-- Done-criteria (3 green nights; a deliberate failure fires the alarm once and does not auto-reset) — next 3 nights.
+- Done-criteria: 3 green **scheduled** nights (Oct 9, 10, 11, 2:00 AM IST — the schedule was enabled after tonight's slot) and a
+  deliberate failure that fires the no-success alarm once without auto-reset. Can't be fast-forwarded: they test the
+  unattended trigger, new data each day, and the alarm's 26 h window — re-running today only overwrites the same partition.
+
+### Next
+- Chat 26 starts now, in parallel (notebook on exported data, no AWS changes). Each chat opens with a night check;
+  Chat 25 closes when Oct 9–11 are green.
+- If the alarm is still "Unchecked" after the Oct 9 run: rebuild it with metric math (`FILL(m1, 0)`, so an empty hour
+  counts as 0 instead of missing).
 - Why the Claude calls fail (key vs credits) — check console.anthropic.com.
 - Done-criteria (3 green nights; a deliberate failure fires the alarm once and does not auto-reset) — after go-live.
 
-### Next
-Chat 25 phase 2 (after one green manual run): enable EventBridge + the expiry. Then Chat 26 — AI concepts lab.

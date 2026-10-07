@@ -158,6 +158,10 @@ Region: `ap-south-1`. Environment: `dev`. Last updated: Chat 25 (2026-10-08).
 - The no-success alarm replaced `jobpulse-sfn-failures-dev` (Chat 25), which returned to OK ~15 min after every
   failure — a month of red nights looked green in the console.
 - **Expected:** it is in ALARM whenever the pipeline is paused (nothing succeeds). That is correct, not noise.
+- **Caveat seen 2026-10-08:** created while the pipeline had been paused 19 days, it sat in `INSUFFICIENT_DATA`
+  ("Unchecked: Initial alarm creation") instead of ALARM. CloudWatch drops a metric after ~15 days without data, so
+  `ExecutionsSucceeded` for this state machine didn't exist and there was nothing to evaluate. So: **after a pause
+  longer than ~2 weeks, this alarm stays silent** — check Step Functions by hand when resuming.
 - Test the email path without breaking anything:
   `aws cloudwatch set-alarm-state --alarm-name jobpulse-sfn-no-success-26h-dev --state-value ALARM --state-reason "test" --region ap-south-1`
   (it re-evaluates to the real state within minutes).
@@ -165,7 +169,7 @@ Region: `ap-south-1`. Environment: `dev`. Last updated: Chat 25 (2026-10-08).
 
 - **Pause:** set `state = "DISABLED"` on `aws_cloudwatch_event_rule.daily_ingest` (`terraform/envs/dev/eventbridge.tf`)
   and apply, or in the console: EventBridge → Rules → `jobpulse-daily-ingest-dev` → Disable.
-  Current status (2026-10-06): **DISABLED** since 2026-09-19.
+  Status: DISABLED 2026-09-19 → re-enabled 2026-10-08 (Chat 25) after a green manual run.
 - **Resume:** fix the failure first, then `state = "ENABLED"`. Watch the next 3 nights.
 
 ## 14. Terraform
@@ -204,6 +208,9 @@ Region: `ap-south-1`. Environment: `dev`. Last updated: Chat 25 (2026-10-08).
      `dbt_project.zip`, `user_profile.yml`. Terraform creates those resources and then ignores their content
      (`lifecycle { ignore_changes }`). **So `terraform apply` no longer deploys code — push to `dev` does.**
      A brand-new environment needs one CI deploy after the first apply.
+- **`Error: Too many command line arguments`** on `plan -out=x.tfplan` in **PowerShell 5.1**: PowerShell splits
+  `-flag=value.ext` at the dot before Terraform sees it. Quote it: `terraform plan "-out=chat25.tfplan"`.
+  Saved plan files hold every variable **in plain text** — `*.tfplan` is gitignored; delete them after apply.
 - **Plan wants to import log groups:** expected once (Chat 24 `import` blocks in `monitoring.tf`). After the first apply they are
   no-ops.
 

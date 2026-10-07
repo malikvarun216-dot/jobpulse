@@ -2,11 +2,27 @@
 
 Newest first. Chat 23 entries were reconstructed from AWS history (Step Functions, Glue job runs, CloudWatch alarm history).
 
+## [2026-08-05 → found 2026-10-08] — Arbeitnow Lambda crashed in <1 s on 5 nights (`KeyError: 0`)
+- What happened: Aug 5, 8, 12, 13, 18 the whole pipeline failed in under one second. These looked like the other August failures in the alarm emails.
+- What I thought: (Chat 23) all August failures were the `tags` drift or the enrichment timeout.
+- Root cause: `ingest_arbeitnow.normalize_jobs` did `job_types[0]`; on those nights `job_types` arrived as a JSON **object**, not a list. Arbeitnow is a PHP API, and PHP's `json_encode` turns an array into an object when its keys aren't 0..n-1 (e.g. after a filter removed item 0). The same quirk on `tags` is the most likely cause of the Aug 1–9 Spark failures (object where Spark expected a list) — circumstantial, not proven. Today the API sends lists again (325 jobs checked).
+- Fix: `as_list()` accepts list / object / string / null for `job_types` and `tags`; 3 tests.
+- Prevention: group failures by **duration** first — sub-second, minutes and ~1 h runs were three different bugs hiding under one alarm. Normalize container types at the ingestor, not only in Spark.
+- Lesson: one red alarm can hide several bugs; the run duration is the cheapest classifier.
+
+## [2026-10-08] — GitGuardian: old Adzuna key exposed in a public repo
+- What happened: right after the Chat 25 push, GitGuardian emailed "Generic High Entropy Secret exposed on GitHub" for `malikvarun216-dot/jobpulse`. The flagged hunk was `terraform/envs/dev/terraform.tfvars` `@@ -1,3 +0,0` — the Chat 24 commit that **deleted** the file still shows the removed lines (`adzuna_app_id`, `adzuna_app_key`).
+- What I thought: today's commit leaked something; and (Chat 23 notes) the repo was private.
+- Root cause: the repo is **public** (GitHub API: `"visibility": "public"`). A deleted file's content stays in every old commit and in the deletion diff — removing a file never removes a secret.
+- Fix: none needed in code. The key had already been rotated (Chat 24). Verified without printing values: the Lambda's key and the `TF_VAR` key are identical and do not start with the leaked prefix. Varun confirms the old key is revoked in the Adzuna portal, then marks the GitGuardian alert "revoked". History not rewritten (key is dead; a rewrite + force-push would buy nothing).
+- Prevention: `*.tfplan` gitignored (saved plans hold secrets in plain text); keep secrets out of files entirely; external scanners (GitGuardian / GitHub secret scanning) as a second net.
+- Lesson: rotation is the fix, deletion is cosmetic — and check repo visibility instead of trusting the notes.
+
 ## [2026-04-26 → found 2026-10-08] — `dim_company` had 3 rows per key; every company join inflated rows by 75%
-- What happened: Chat 25 ran the 21 dbt tests against live gold before switching the runner to `dbt build`. `unique_dim_company_company_key` failed (368 duplicate keys) and `not_null_fact_job_posting_source_count` failed (24 rows). `fact_job_posting` joined to `dim_company` turned **1,147,783 rows into 2,011,211 (+75%)**.
+- What happened: Chat 25 ran the 21 dbt tests against live gold before switching the runner to `dbt build`. `unique_dim_company_company_key` failed (368 duplicate keys) and `not_null_fact_job_posting_source_count` failed (24 rows). The dashboard-style join `fact_job_posting ⋈ dim_company` returned 2,011,211 rows. After the fix the fact table has **770,151 rows = silver's 770,151**: the fact model itself joins `dim_company`, so the **fact table was already inflated ~55%** (1,147,783 company rows vs ~742K real), and the dashboard's second join took it to ~2.7×.
 - What I thought: dbt tests had been passing all along — they're in `schema.yml`.
 - Root cause: (1) the runner called `dbt run`, which never executes tests — they had not run in production since they were written. (2) `dim_company` was `DISTINCT company_name` but keyed on `md5(lower(trim(name)))`, so "GitLab / Gitlab / gitlab" were 3 rows with one key; the fact join multiplied each posting. (3) Apr 18–20 silver partitions predate the dedup step, so `source_count` is null there.
-- Fix: `dim_company` groups by the normalized name and keeps the most common spelling (`max_by`) — verified 28,260 rows = 28,260 keys; staging coalesces `source_count` → 1 and `source_apis` → `[source]`. Runner now calls `dbt build`.
+- Fix: `dim_company` groups by the normalized name and keeps the most common spelling (`max_by`); staging coalesces `source_count` → 1 and `source_apis` → `[source]`. Runner now calls `dbt build`. First production `dbt build` (2026-10-08): **26/26 PASS**; dim 28,539 rows = 28,539 keys; fact = silver row for row. Leftover: 999 silver rows (0.13%) share source + job_id + day — a dedup question, not a fan-out.
 - Prevention: tests only count if they gate the pipeline; before turning a gate on, run it once against current data (a gate that fails on day 1 just gets switched off again).
 - Lesson: a test that never runs is documentation, not a test. Grain bugs hide in dimension keys — `unique` on every surrogate key.
 

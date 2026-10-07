@@ -53,16 +53,16 @@ resource "aws_s3_bucket_lifecycle_configuration" "silver" {
 }
 
 # Gold — expire Athena query-result CSVs after 7 days (1.5 GB of them in Oct 2026).
-# DISABLED until the gold tables have moved: until Chat 25 the dbt tables lived in
-# athena-results/tables/<uuid>/, and enabling this then would delete the gold layer.
-# Flip to "Enabled" only after the Glue catalog shows all 4 dbt tables under gold/models/
-# (check: docs/runbook.md → "Gold tables location"). It also cleans the orphaned table folders.
+# Enabled 2026-10-08 only after runbook §18 passed: all 4 dbt tables live under gold/models/
+# since Chat 25 (before, they sat in athena-results/tables/<uuid>/ and this rule would have
+# deleted the gold layer). Also cleans the orphaned athena-results/tables/* folders.
+# Before re-pointing any table at athena-results/, remove this rule.
 resource "aws_s3_bucket_lifecycle_configuration" "gold" {
   bucket = aws_s3_bucket.layers["gold"].id
 
   rule {
     id     = "athena-results-expire"
-    status = "Disabled"
+    status = "Enabled"
 
     filter {
       prefix = "athena-results/"

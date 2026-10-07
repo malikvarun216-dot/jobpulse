@@ -106,6 +106,26 @@ class TestNormalizeJobs(unittest.TestCase):
         self.assertEqual(job["tags"], [])
 
 
+    def test_php_object_instead_of_list(self):
+        """Aug 2026: job_types/tags arrived as JSON objects → KeyError: 0 crashed the Lambda."""
+        raw = [{**make_raw_job(1), "job_types": {"1": "full-time"}, "tags": {"2": "python", "3": "aws"}}]
+        job = sut.normalize_jobs(raw)[0]
+        self.assertEqual(job["job_type"], "full-time")
+        self.assertEqual(job["tags"], ["python", "aws"])
+
+    def test_string_instead_of_list(self):
+        raw = [{**make_raw_job(1), "job_types": "full-time", "tags": "python"}]
+        job = sut.normalize_jobs(raw)[0]
+        self.assertEqual(job["job_type"], "full-time")
+        self.assertEqual(job["tags"], ["python"])
+
+    def test_empty_object(self):
+        raw = [{**make_raw_job(1), "job_types": {}, "tags": {}}]
+        job = sut.normalize_jobs(raw)[0]
+        self.assertIsNone(job["job_type"])
+        self.assertEqual(job["tags"], [])
+
+
 class TestBuildS3Key(unittest.TestCase):
 
     def test_key_format(self):

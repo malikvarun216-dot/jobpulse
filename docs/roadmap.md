@@ -21,7 +21,7 @@ Ground rules for every chat:
 |---|---|---|
 | 23 | Recon, AWS decision, docs overhaul, interview guide | ✅ done (2026-10-06) |
 | 24 | Stabilize the account and repo (must finish before ~Oct 16) | ✅ done (2026-10-07) |
-| 25 | Fix the failures, go live again | 🟡 code done 2026-10-08 — apply, green run, then phase 2 (enable schedule + expiry) |
+| 25 | Fix the failures, go live again | ✅ live 2026-10-08 (green manual run, schedule on) — done-criteria: 3 green nights |
 | 26 | AI concepts lab (learning session) | |
 | 27 | Evaluation foundations: freeze a corpus, label it | |
 | 28 | Baseline + better retrieval (hybrid, chunk grain) | |
@@ -88,8 +88,11 @@ cost allocation tags `project` + `layer` active. ❌ Moved to Chat 25: `athena-r
 - Gates: `dbt build` (first run vs live gold found 2 failing tests → `dim_company` fan-out +75%, fixed), GE freshness from
   `ingested_at`, `tags` type check, PySpark tests running in CI for the first time (9 of 14 had been failing).
 - Alarms: absence-of-success (26 × 1 h) + duration > 70% of timeout. Gold tables → `gold/models/`. CI owns code deploys.
-- `terraform plan`: 4 add, 4 change, 3 destroy (intended only). ❌ Not yet: apply, green run, EventBridge + expiry (phase 2),
-  3 green nights. Open: why Claude calls fail (key or credits); Greenhouse descriptions (`?content=true`) — decision.
+- Go-live 2026-10-08: applied (4/4/3), manual run green in 9 min 36 s (enrichment 23 s, dbt 26/26), tables in `gold/models/`,
+  then schedule + expiry enabled. Found during go-live: Arbeitnow `KeyError: 0` (PHP object instead of list) caused the
+  sub-second August failures → `as_list()`; the fact table itself was ~55% inflated by the `dim_company` bug.
+- Open: 3 green nights; why Claude calls fail (key or credits); Greenhouse descriptions (`?content=true`) — decision;
+  999 silver rows share source + job_id + day (dedup, Chat 30).
 
 ## Chat 26 — AI concepts lab (no AWS changes)
 

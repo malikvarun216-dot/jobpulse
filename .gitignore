@@ -213,6 +213,8 @@ terraform/envs/dev/terraform.tfstate.backup
 terraform/envs/dev/builds/*.zip
 # Secrets live in TF_VAR_* env vars or a local tfvars file — never committed
 *.tfvars
+# Saved plans (plan -out=...) contain every variable in plain text, secrets included
+*.tfplan
 CLAUDE.md
 .claude/
 # Personal study docs — local only, backed up outside the repo (see CLAUDE.md → Keep In Sync)

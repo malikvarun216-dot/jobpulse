@@ -34,10 +34,9 @@ resource "aws_iam_role_policy_attachment" "eventbridge_attach" {
 resource "aws_cloudwatch_event_rule" "daily_ingest" {
   name                = "${var.project}-daily-ingest-${var.env}"
   schedule_expression = "cron(30 20 * * ? *)"
-  # Disabled 2026-09-19 while jobpulse is paused. The nightly run had been
-  # FAILING every night and still billing Glue. Flip back to ENABLED when
-  # work resumes -- and fix the failure first.
-  state = "DISABLED"
+  # Re-enabled 2026-10-08 (Chat 25) after the fixes and one green manual run (9.6 min end to end).
+  # Was DISABLED 2026-09-19 -> 2026-10-08 while every night failed. To pause: runbook §13.
+  state = "ENABLED"
 }
 
 resource "aws_cloudwatch_event_target" "trigger_sfn" {

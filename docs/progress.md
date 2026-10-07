@@ -1204,8 +1204,17 @@ Find the real causes of the Aug–Sep failures, fix them, turn the quality check
 - GE on real silver (Aug 14, Jul 31): pass. dbt tests on live gold before the fix: 19/21. New `dim_company` SQL on Athena: 28,260 rows = 28,260 keys.
 - `terraform validate` OK; `terraform plan`: **4 add, 4 change, 3 destroy** — exactly the intended set; the Chat 24 "two deployers" diff is gone.
 
+### Go-live (2026-10-08)
+- Committed `4de9a58`, CI green (test + spark-tests + deploy; deployed scripts match the commit by md5). Applied: 4 added, 4 changed, 3 destroyed.
+- Manual run **SUCCEEDED in 9 min 36 s**: ingest 28 s · Spark 2 min 10 s · GE 6/6 on 6,891 rows · `dbt build` **26/26 PASS** (113 s) · enrichment **23 s** (6,923 jobs, rules 6,506 / cache 417, 0 LLM errors) · embeddings 39 s (2,442 new). Both runners published `JobPulse/JobDurationSeconds`.
+- Runbook §18 passed: all 4 dbt tables under `gold/models/`. Fact = silver row for row (770,151) — the fact table had been ~55% inflated by the `dim_company` bug.
+- Step Functions history (Jul 11 – Sep 19, 72 runs) split by duration: <1 s = **Arbeitnow `KeyError: 0`** (5 nights, new finding — PHP API sends objects for lists; fixed with `as_list()`), 2–3.5 min = `tags` drift, ~1 h 10 = enrichment timeout. The one August success (Aug 14) finished enrichment at 59.3 min.
+- GitGuardian flagged the old Adzuna key in the public repo (from the Chat 24 deletion diff); key already rotated, live key verified different. `*.tfplan` gitignored.
+- No-success alarm stayed `INSUFFICIENT_DATA` after creation: the success metric had expired during the 19-day pause (runbook §12).
+- Phase 2 prepared: EventBridge `ENABLED`, `athena-results/` expiry `Enabled` (apply with the closing commit).
+
 ### Not done
-- Not applied, not committed (Varun). Pipeline not run. EventBridge still DISABLED; `athena-results/` expiry still Disabled (phase 2, after a green run + runbook §18).
+- Done-criteria (3 green nights; a deliberate failure fires the alarm once and does not auto-reset) — next 3 nights.
 - Why the Claude calls fail (key vs credits) — check console.anthropic.com.
 - Done-criteria (3 green nights; a deliberate failure fires the alarm once and does not auto-reset) — after go-live.
 

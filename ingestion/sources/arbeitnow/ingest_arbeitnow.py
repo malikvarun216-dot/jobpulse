@@ -71,12 +71,25 @@ def build_salary_raw(job: dict) -> str | None:
     return None  # Arbeitnow does not expose salary data
 
 
+def as_list(value) -> list:
+    """Arbeitnow is a PHP API: a PHP array whose keys aren't 0, 1, 2... is JSON-encoded as an
+    object ({"1": "full-time"}) instead of a list. In Aug 2026 that crashed this Lambda
+    (`KeyError: 0` on job_types[0]) on 5 nights. Accept list, object, string or null."""
+    if value is None:
+        return []
+    if isinstance(value, dict):
+        return [v for v in value.values() if v is not None]
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    return [v for v in value if v is not None]
+
+
 def normalize_jobs(jobs: list[dict]) -> list[dict]:
     """Map Arbeitnow fields to the canonical bronze schema used by all ingestors."""
     normalized = []
     for job in jobs:
-        # job_types is an array like ["full-time"]; use first element
-        job_types = job.get("job_types") or []
+        # job_types is an array like ["full-time"] (sometimes an object, see as_list); use first element
+        job_types = as_list(job.get("job_types"))
         job_type = job_types[0] if job_types else None
 
         # location: "Remote" if remote=True and location is blank
@@ -97,7 +110,7 @@ def normalize_jobs(jobs: list[dict]) -> list[dict]:
             "company_name": job.get("company_name"),
             "apply_url": job.get("url"),
             "description": job.get("description"),
-            "tags": job.get("tags") or [],
+            "tags": as_list(job.get("tags")),
             "location_raw": location,
             "salary": None,
             "job_type": job_type,

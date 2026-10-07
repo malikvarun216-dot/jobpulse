@@ -1166,3 +1166,48 @@ a local backup, and a `terraform plan` that shows only intended changes.
 ### Next
 Chat 25 — fix the failures, move gold tables out of `athena-results/` then add the expiry, absence-of-success alarm, go live.
 First step: one test invoke of the Adzuna Lambda to prove the rotated key works.
+
+---
+
+## Chat 25 — Fix the failures, go live
+Date: 2026-10-08
+
+### Goal
+Find the real causes of the Aug–Sep failures, fix them, turn the quality checks into real gates, then go live again.
+
+### Found (measured, from the Chat 24 log export + local backup)
+- **Enrichment timeout = a failure path, not volume.** No Claude call has succeeded since 2026-04-21 (cache writes stop that day; `llm=0`, `$0` in every snapshot). Each failure: 3 retries with 1+2+4 s sleeps, then labelled "rules". Greenhouse JDs are empty (4,035 / 5,729 on Aug 14), so only 17 jobs passed the regex fast path. Rules for all 5,729 JDs: 4 s.
+- **Glue Python Shell stdout is buffered** → timed-out runs logged nothing.
+- **`tags` drift:** traceback confirmed (`cannot cast string to array<string>`); the source can't be identified (logs show only the Spark plan; bronze expired).
+- **dbt tests never ran in prod.** Run against live gold: 19 pass, 2 fail — `dim_company` 368 duplicate keys (fact→company join 1,147,783 → 2,011,211 rows, +75%), `source_count` null in 24 pre-dedup rows.
+- **9 of 14 PySpark tests failed** once Spark was available (always skipped in CI).
+- `requirements.txt` let numpy 2 install next to pyarrow 14 (import fails) — pinned 1.26.4.
+- Adzuna rotated key works: dry-run invoke fetched 1,200 jobs, wrote nothing.
+- Adzuna descriptions are 500-char snippets; Greenhouse sends none (`?content=true` would — decision open).
+
+### Built
+- `genai/jd_enrichment_agent.py` — one decision path (rules → cache → LLM), empty JDs skip the LLM, circuit breaker (5 in a row), `use_llm` flag, per-source timing, progress every 1,000 jobs, `llm_errors` / `breaker_open` in the summary.
+- `genai/skill_extractor.py` — own retry loop removed; `extract_llm()` raises so failures are counted.
+- `genai/enrichment_runner.py`, `genai/embedding_runner.py` — line-buffered stdout, `[timing]` per stage, `--use_llm`, publish `JobPulse/JobDurationSeconds`. New `genai/run_metrics.py`.
+- `spark/jobs/bronze_to_silver.py` — `bronze_schema()` (explicit, all strings), `parse_tags()`.
+- `transform/ge_runner/ge_runner.py` — freshness from `ingested_at` (IST), `tags`-is-list expectation (6 total).
+- `transform/dbt_runner/dbt_runner.py` — `dbt build`; `s3_data_dir` = `gold/models/`.
+- dbt: `dim_company` one row per key; staging coalesces `source_count` / `source_apis`.
+- `dashboard/streamlit/app.py` — "Why these match?" gets real description text from silver.
+- Terraform: workgroup enforcement off; gold `athena-results/` 7-day expiry (**Disabled** until the tables move); enrichment timeout 60 → 20, `--use_llm false`; `cloudwatch:PutMetricData` (namespace JobPulse); absence-of-success alarm replaces the failure alarm; 2 duration alarms; CI owns code (`ignore_changes`, `null_resource`s removed).
+- CI: `spark-tests` job (PySpark 3.3.2, Java 11) in `ci.yml` and gating `deploy.yml`; Greenhouse zip step fixed; `requirements.txt` pins numpy 1.26.4, GE 1.8.1.
+- Tests: +6 `parse_tags`, +3 Spark tags/schema, +4 agent LLM guards, +2 GE; 2 contradictory dedup tests rewritten.
+
+### Verified
+- `ruff` clean; pytest without Spark (as in CI) **226 passed, 17 skipped**; PySpark tests with Spark 3.4.4 + JDK 11 locally: **128 passed** (`spark/tests/`).
+- Agent on 5,729 real JDs: 4.4 s (LLM off), 14 s (LLM on, every call failing) — was ~60 min.
+- GE on real silver (Aug 14, Jul 31): pass. dbt tests on live gold before the fix: 19/21. New `dim_company` SQL on Athena: 28,260 rows = 28,260 keys.
+- `terraform validate` OK; `terraform plan`: **4 add, 4 change, 3 destroy** — exactly the intended set; the Chat 24 "two deployers" diff is gone.
+
+### Not done
+- Not applied, not committed (Varun). Pipeline not run. EventBridge still DISABLED; `athena-results/` expiry still Disabled (phase 2, after a green run + runbook §18).
+- Why the Claude calls fail (key vs credits) — check console.anthropic.com.
+- Done-criteria (3 green nights; a deliberate failure fires the alarm once and does not auto-reset) — after go-live.
+
+### Next
+Chat 25 phase 2 (after one green manual run): enable EventBridge + the expiry. Then Chat 26 — AI concepts lab.

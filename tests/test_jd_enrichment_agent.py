@@ -73,7 +73,7 @@ def _sparse_description() -> str:
     return "We need someone great with data. Apply now."
 
 
-def _make_agent(dry_run: bool = True):
+def _make_agent(dry_run: bool = True, use_llm: bool = True):
     """Build a JDEnrichmentAgent with all external calls mocked."""
     from genai.jd_enrichment_agent import JDEnrichmentAgent
 
@@ -88,6 +88,7 @@ def _make_agent(dry_run: bool = True):
             region="ap-south-1",
             profile_path="/fake/profile.yml",
             dry_run=dry_run,
+            use_llm=use_llm,
         )
     return agent
 
@@ -130,7 +131,7 @@ class TestCachePath(unittest.TestCase):
         cached = ExtractionResult(skills=["python", "sql"], seniority="mid", yoe_required=3)
 
         with patch.object(agent, "_read_cache", return_value=cached) as mock_cache, \
-             patch.object(agent._extractor, "extract") as mock_llm:
+             patch.object(agent._extractor, "extract_llm") as mock_llm:
             record = agent._process_job(job)
 
         mock_cache.assert_called_once()
@@ -143,7 +144,7 @@ class TestCachePath(unittest.TestCase):
         llm_result = ExtractionResult(skills=["python", "sql"], seniority="junior", yoe_required=1)
 
         with patch.object(agent, "_read_cache", return_value=None), \
-             patch.object(agent._extractor, "extract", return_value=(llm_result, "llm")) as mock_llm, \
+             patch.object(agent._extractor, "extract_llm", return_value=llm_result) as mock_llm, \
              patch.object(agent, "_write_cache"):
             record = agent._process_job(job)
 
@@ -159,13 +160,69 @@ class TestBudgetFallback(unittest.TestCase):
         job = _make_job(4, _sparse_description())
 
         with patch.object(agent, "_read_cache", return_value=None), \
-             patch.object(agent._extractor, "extract", side_effect=BudgetExceededError("cap")), \
+             patch.object(agent._extractor, "extract_llm", side_effect=BudgetExceededError("cap")), \
              patch.object(agent, "_write_cache") as mock_write:
             record = agent._process_job(job)
 
         # Falls back to rules result — cache write must NOT happen (rules are cheap, no point caching)
         mock_write.assert_not_called()
         self.assertEqual(record.extraction_source, "rules")
+
+
+class TestLlmGuards(unittest.TestCase):
+    """Chat 25: the LLM path must never be the slow, silent default."""
+
+    def test_llm_off_by_default_uses_rules(self):
+        agent = _make_agent(use_llm=False)
+        job = _make_job(5, _sparse_description())
+
+        with patch.object(agent, "_read_cache", return_value=None), \
+             patch.object(agent._extractor, "extract_llm") as mock_llm:
+            record = agent._process_job(job)
+
+        mock_llm.assert_not_called()
+        self.assertEqual(record.extraction_source, "rules")
+
+    def test_empty_description_skips_cache_and_llm(self):
+        agent = _make_agent()
+        job = _make_job(6, "")
+
+        with patch.object(agent, "_read_cache") as mock_cache, \
+             patch.object(agent._extractor, "extract_llm") as mock_llm:
+            record = agent._process_job(job)
+
+        mock_cache.assert_not_called()
+        mock_llm.assert_not_called()
+        self.assertEqual(record.extraction_source, "rules")
+
+    def test_breaker_opens_after_consecutive_failures(self):
+        from genai.jd_enrichment_agent import LLM_BREAKER_THRESHOLD
+
+        agent = _make_agent()
+        jobs = [_make_job(i, _sparse_description() + f" #{i}") for i in range(20)]
+
+        with patch.object(agent, "_read_cache", return_value=None), \
+             patch.object(agent._extractor, "extract_llm", side_effect=RuntimeError("401 bad key")) as mock_llm:
+            records = [agent._process_job(job) for job in jobs]
+
+        self.assertEqual(mock_llm.call_count, LLM_BREAKER_THRESHOLD)
+        self.assertTrue(agent._breaker_open)
+        self.assertEqual(agent._llm_errors, LLM_BREAKER_THRESHOLD)
+        self.assertTrue(all(r.extraction_source == "rules" for r in records))
+
+    def test_success_resets_failure_streak(self):
+        agent = _make_agent()
+        ok = ExtractionResult(skills=["python"], seniority="mid", yoe_required=2)
+        outcomes = [RuntimeError("x")] * 4 + [ok] + [RuntimeError("x")] * 4
+
+        with patch.object(agent, "_read_cache", return_value=None), \
+             patch.object(agent, "_write_cache"), \
+             patch.object(agent._extractor, "extract_llm", side_effect=outcomes):
+            for i in range(len(outcomes)):
+                agent._process_job(_make_job(i, _sparse_description()))
+
+        self.assertFalse(agent._breaker_open)
+        self.assertEqual(agent._llm_errors, 8)
 
 
 class TestParallelRun(unittest.TestCase):

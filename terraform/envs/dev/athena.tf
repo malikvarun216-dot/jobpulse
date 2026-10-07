@@ -6,8 +6,12 @@ resource "aws_athena_workgroup" "main" {
     result_configuration {
       output_location = "s3://${aws_s3_bucket.layers["gold"].bucket}/athena-results/"
     }
-    bytes_scanned_cutoff_per_query = 1073741824 # 1 GB cap — cost guard
-    enforce_workgroup_configuration = true
+    bytes_scanned_cutoff_per_query = 1073741824 # 1 GB cap — cost guard (applies with or without enforcement)
+    # false since Chat 25: when true, Athena forces every CTAS table into
+    # athena-results/tables/<uuid>/ and dbt's s3_data_dir is ignored — so the gold tables lived
+    # next to throwaway query CSVs and no expiry rule could be added. Clients that set no
+    # location (dashboard, runners) still get output_location above.
+    enforce_workgroup_configuration = false
   }
 
   tags = {

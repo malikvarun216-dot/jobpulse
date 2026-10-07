@@ -2,6 +2,22 @@
 
 Newest first. Chat 23 entries were reconstructed from AWS history (Step Functions, Glue job runs, CloudWatch alarm history).
 
+## [2026-04-26 → found 2026-10-08] — `dim_company` had 3 rows per key; every company join inflated rows by 75%
+- What happened: Chat 25 ran the 21 dbt tests against live gold before switching the runner to `dbt build`. `unique_dim_company_company_key` failed (368 duplicate keys) and `not_null_fact_job_posting_source_count` failed (24 rows). `fact_job_posting` joined to `dim_company` turned **1,147,783 rows into 2,011,211 (+75%)**.
+- What I thought: dbt tests had been passing all along — they're in `schema.yml`.
+- Root cause: (1) the runner called `dbt run`, which never executes tests — they had not run in production since they were written. (2) `dim_company` was `DISTINCT company_name` but keyed on `md5(lower(trim(name)))`, so "GitLab / Gitlab / gitlab" were 3 rows with one key; the fact join multiplied each posting. (3) Apr 18–20 silver partitions predate the dedup step, so `source_count` is null there.
+- Fix: `dim_company` groups by the normalized name and keeps the most common spelling (`max_by`) — verified 28,260 rows = 28,260 keys; staging coalesces `source_count` → 1 and `source_apis` → `[source]`. Runner now calls `dbt build`.
+- Prevention: tests only count if they gate the pipeline; before turning a gate on, run it once against current data (a gate that fails on day 1 just gets switched off again).
+- Lesson: a test that never runs is documentation, not a test. Grain bugs hide in dimension keys — `unique` on every surrogate key.
+
+## [2026-04 → found 2026-10-08] — 9 of 14 PySpark tests had been failing unseen; 2 contradicted the code
+- What happened: Chat 25 installed Spark locally for the first time. 9 of the 14 tests in `spark/tests/test_bronze_to_silver.py` failed.
+- What I thought: "14 skipped" in CI meant "fine, just not run here".
+- Root cause: CI has no Spark, so `skipif(not pyspark)` skipped them every run. 7 failed because single-source fixtures make Spark infer a schema without the other sources' fields (`No such struct field job_id`) — the same fragility that broke production in August. 2 asserted behaviour the code never had (dedup collapsing rows to 1; a `dedup_key` column the function drops). One fixture used Adzuna's raw `redirect_url`, which the ingestor had already mapped away.
+- Fix: explicit bronze schema fixed the 7; the 2 tests now assert what the code does (rows kept, annotated with `source_apis`/`source_count`); fixture matches the ingestor; worker `PYTHONPATH` set for UDFs. New CI job `spark-tests` (PySpark 3.3.2 = Glue 4.0, Java 11) gates the deploy.
+- Prevention: a skipped test is a red flag in CI, not a neutral one — give it an environment where it runs.
+- Lesson: "skipped" hides failures as well as "passed" does.
+
 ## [2026-10-06] — `terraform apply` wrote the literal text `<new key>` into the Adzuna Lambda
 - What happened: after the Chat 24 apply, the Lambda's `ADZUNA_APP_KEY` was 9 characters and not hex. It equalled `"<new key>"` (and the id `"<new id>"`) — placeholder text from the step list.
 - What I thought: the User-scope env vars held the real rotated key (id 8 / key 32 chars, checked in another window).
@@ -34,27 +50,32 @@ Newest first. Chat 23 entries were reconstructed from AWS history (Step Function
 - Prevention: `.gitattributes` in every repo that is hashed by IaC; one tool owns each artifact.
 - Lesson: a noisy plan trains you to stop reading plans — remove the noise so a real change stands out.
 
-## [2026-08-15 → 2026-09-19] — Enrichment crept up to its timeout, then failed every night
-- What happened: `jobpulse-enrichment-dev` ended in `TIMEOUT` at exactly 60 min — first on Jul 25–26, then every night from ~Aug 15 (29 TIMEOUTs total). Whole pipeline FAILED nightly until the schedule was disabled on Sep 19.
-- What I thought: (Chat 23 recon) a Claude API outage or the budget cap.
-- Root cause: no single bug — **slow creep**. Enrichment took 15–20 min in late April, then **48–56 min every night from Apr 29** (4th source added, ~6.6K jobs/run) on a 60-min timeout. It kept succeeding, so nobody looked. Volume grew to 7,855 jobs (Aug 14) and runs tipped past 60 min. Every job is re-processed every night (not incremental) on a 1/16-DPU Python Shell job.
-- Fix: pending (Chat 25) — per-stage timing logs, incremental enrichment (skip already-scored content hashes), right-size DPU.
-- Prevention: CloudWatch alarm on Glue duration > 70% of timeout; track duration as a trend, not just success/fail.
-- Lesson: a job that succeeds at 90% of its limit is already failing — it just hasn't told you yet.
+## [2026-04-21 → 2026-09-19, root cause found 2026-10-08] — Enrichment timed out: every Claude call failed, slowly and silently
+- What happened: `jobpulse-enrichment-dev` ended in `TIMEOUT` at exactly 60 min — first on Jul 25–26, then every night from ~Aug 15 (29 TIMEOUTs total). Whole pipeline FAILED nightly until the schedule was disabled on Sep 19. Runs had taken 48–56 min since Apr 29.
+- What I thought: (Chat 23) slow creep from volume growth — fix with incremental processing and more DPU.
+- Root cause (Chat 25, from the exported logs + backed-up data): **not volume — a failure path.**
+  1. No Claude call has succeeded since **2026-04-21**: the LLM cache has writes only on Apr 20–21, and every enrichment snapshot since shows `llm=0`, `spend=$0`.
+  2. Each failure was retried 3× with 1+2+4 s sleeps (our own loop, on top of the SDK's retries — including errors that can never succeed), then silently labelled `"rules"`. ≈7 s per job.
+  3. Greenhouse (added Apr 26) sends **no description** — 4,035 of 5,729 jobs on Aug 14. Empty JDs fail the regex fast path (only 17 of 5,729 jobs passed it), so almost every job took the LLM path. 5.7K × 7 s ÷ 16 threads ≈ 40–60 min.
+  4. The logs couldn't show any of this: Glue Python Shell stdout is block-buffered, so prints only appear when the script exits. The one run that finished (Aug 13, 59.3 min) flushed `llm=0 rules=7180 cache=675`; the timed-out ones logged nothing.
+  - Measured: the regex rules for all 5,729 JDs take **4 s** on a laptop. The work was never the problem.
+- Fix: line-buffered stdout + `[timing]`/`[progress]` lines; no own retry loop (SDK retries transient errors only); empty JDs never go to the LLM; circuit breaker (5 failures in a row → rules only, first error logged); LLM off by default (`--use_llm false`) until Chat 31 measures it; timeout 60 → 20 min. Re-measured on the same 5,729 JDs: **4.4 s** (LLM off), **14 s** (LLM on, every call failing). Why the calls fail (key / credits) is still to check in the Anthropic console.
+- Prevention: duration alarm at 70% of timeout (runner publishes `JobPulse/JobDurationSeconds`); `llm_errors` + `breaker_open` in every run summary; absence-of-success alarm.
+- Lesson: a fallback that hides its own failure turns an outage into a slowdown nobody investigates. Count fallbacks, log the first error, and stop retrying what can't succeed. Measure before you optimize: "incremental" would have fixed the wrong thing.
 
 ## [2026-08-01 → 2026-08-09] — Source changed `tags` from a list to text; silver failed 6 nights
 - What happened: `jobpulse-bronze-to-silver-dev` FAILED in ~1 min with `AnalysisException: cannot resolve 'job.tags' due to data type mismatch: cannot cast string to array<string>`. Recovered by itself on Aug 10.
 - What I thought: (Chat 23 recon) a code change — but nothing was deployed in August.
 - Root cause: one source started sending `tags` as a string. The Spark job **infers** the JSON schema across all sources (`source=*/`); the conflict made the inferred type string, and the explicit `cast(ArrayType(StringType()))` failed. Which source: **unknown** — bronze files expire after 7 days, so the evidence was gone before anyone looked.
-- Fix: pending (Chat 25) — normalize `tags` type in every ingestor; accept string-or-array in Spark; explicit schema.
-- Prevention: explicit schema instead of inference; GE expectation on column types; unit test with both shapes; bronze retention ≥ debugging window.
+- Fix (Chat 25): explicit bronze schema — every job field read as `string`, so a list arrives as its JSON text and nothing fails at read time; `parse_tags()` turns either shape (or null) into `array<string>`. Tests with a string, an array, and both in one read. The exported Glue logs (Aug 1, 2, 3, 6, 8) show only the Spark plan, not the source — still unknown.
+- Prevention: explicit schema instead of inference; GE expectation 6 (`tags` is a list) on silver; bronze retention ≥ debugging window (open).
 - Lesson: schema inference turns one source's change into everyone's failure — and short retention deletes the evidence.
 
 ## [2026-08 → 2026-09-19] — Failure alarm reset itself every night; ~5 weeks of failures went unhandled
 - What happened: `jobpulse-sfn-failures-dev` went to ALARM at ~2 AM and back to OK ~15 min later, every night. SNS emails were delivered (subscription confirmed). The pipeline failed nightly from early August until the schedule was disabled on Sep 19 — still billing Glue for a 60-min timeout each night.
 - What I thought: the ALARM → OK pairs looked like transient blips.
 - Root cause: alarm design. `ExecutionsFailed ≥ 1` over a short period is only true for the period containing the failure; with no new failure the next period it returns to OK automatically. A failed night looks the same as a hiccup.
-- Fix: pending (Chat 25) — alarm on **absence of success** (`ExecutionsSucceeded < 1` per 24 h, missing data = breaching), which stays red until a run succeeds.
+- Fix (Chat 25): `jobpulse-sfn-no-success-26h-dev` — `ExecutionsSucceeded` summed per hour, 26 of 26 hours must be below 1, missing data = breaching. Stays red until a run succeeds; also fires when nothing runs at all. Old alarm removed.
 - Prevention: one alarm per failure *state*, not per failure *event*; plus a duration-vs-timeout alarm (see above).
 - Lesson: an alarm that fixes itself teaches you to ignore it.
 
@@ -62,7 +83,7 @@ Newest first. Chat 23 entries were reconstructed from AWS history (Step Function
 - What happened: the dashboard's "Why these match?" produced fluent explanations for the top-3 semantic search results.
 - What I thought: (Chat 23 code review) it was working — the explanations read well.
 - Root cause: `app.py` only adds a description excerpt if `description` is a column of the loaded DataFrame, but `FLAT_JOIN_SQL` never selects `description`. The check always failed; the prompt had an empty excerpt. Claude explained matches from titles alone.
-- Fix: pending (Chat 25) — select/pass the description into the prompt.
+- Fix (Chat 25): `load_descriptions()` reads the top-3 descriptions from silver (partition-filtered), strips HTML, passes up to 1,500 chars. Greenhouse jobs still have none (source sends none) — the UI now says so instead of pretending.
 - Prevention: log the full prompt + retrieved context for every LLM call; a test that asserts the prompt contains JD text.
 - Lesson: in RAG, when the answer looks wrong — or suspiciously fine — inspect the retrieved context first. An empty augment step still produces confident output.
 

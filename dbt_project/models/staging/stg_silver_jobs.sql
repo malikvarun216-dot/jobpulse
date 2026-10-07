@@ -21,8 +21,9 @@ cleaned as (
         publication_date,
         description,
         ingested_at,
-        source_apis,
-        source_count
+        -- Apr 18–20 partitions predate the dedup step: no cross-source info → it was 1 source
+        coalesce(source_apis, array[source]) as source_apis,
+        coalesce(source_count, 1)            as source_count
     from source
     where job_id is not null
       and trim(job_id) != ''

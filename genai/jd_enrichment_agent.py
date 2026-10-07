@@ -4,6 +4,9 @@ import hashlib
 import io
 import json
 import os
+import threading
+import time
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any
@@ -24,6 +27,12 @@ from genai.skill_extractor import SkillExtractor, _rule_based_extract, RULES_MIN
 from genai.match_scorer import MatchScorer
 
 
+# Circuit breaker: after this many LLM failures in a row, stop calling the LLM for the
+# rest of the run. One bad key or an empty credit balance then costs 5 calls, not 7,855.
+LLM_BREAKER_THRESHOLD = 5
+PROGRESS_EVERY = 1000
+
+
 def _md5(text: str) -> str:
     return hashlib.md5(text.encode("utf-8")).hexdigest()
 
@@ -33,15 +42,22 @@ class JDEnrichmentAgent:
     Orchestrates the full enrichment flow for one snapshot.
 
     Pre-hooks  : validate_inputs, budget_preflight
-    Per-job    : S3 cache -> SkillExtractor -> MatchScorer -> EnrichmentRecord
+    Per-job    : rules -> S3 cache -> LLM (only if use_llm) -> MatchScorer -> EnrichmentRecord
     Post-hooks : log_cost_summary, validate_output, write_parquet_to_s3
     """
 
-    def __init__(self, gold_bucket: str, region: str, profile_path: str, dry_run: bool = False, force_rescore: bool = False):
+    def __init__(self, gold_bucket: str, region: str, profile_path: str, dry_run: bool = False,
+                 force_rescore: bool = False, use_llm: bool = False):
         self._gold_bucket = gold_bucket
         self._region = region
         self._dry_run = dry_run
         self._force_rescore = force_rescore
+        self._use_llm = use_llm
+        self._lock = threading.Lock()
+        self._llm_failures_in_row = 0
+        self._llm_errors = 0
+        self._breaker_open = False
+        self._seconds: dict[str, float] = defaultdict(float)  # time spent per extraction_source
         self._s3 = boto3.client("s3", region_name=region)
         with open(profile_path) as f:
             raw = yaml.safe_load(f)
@@ -99,81 +115,69 @@ class JDEnrichmentAgent:
     # Per-job processing
     # ------------------------------------------------------------------
 
-    def _process_job(self, job: dict[str, Any]) -> EnrichmentRecord:
-        description = job.get("description") or ""
-        now_iso = datetime.now(timezone.utc).isoformat()
-        job_id = str(job["job_id"])
-        snapshot_date = str(job["snapshot_date"])[:10]
+    def _record_llm_failure(self, exc: Exception) -> None:
+        with self._lock:
+            self._llm_errors += 1
+            self._llm_failures_in_row += 1
+            if self._llm_errors == 1:
+                print(f"[llm] first failure: {type(exc).__name__}: {str(exc)[:300]}")
+            if not self._breaker_open and self._llm_failures_in_row >= LLM_BREAKER_THRESHOLD:
+                self._breaker_open = True
+                print(f"[llm] {LLM_BREAKER_THRESHOLD} failures in a row -- circuit OPEN, "
+                      "rules only for the rest of this run")
 
-        # Fast path: pure regex, zero I/O. Covers ~70% of well-written JDs.
+    def _extract(self, description: str) -> tuple[ExtractionResult, str]:
+        """Cheapest source first: rules -> S3 cache -> LLM. Returns (extraction, source)."""
+        # Fast path: pure regex, zero I/O.
         rules_result = _rule_based_extract(description)
         if len(rules_result.skills) >= RULES_MIN_SKILLS and rules_result.seniority != "unknown":
-            score, detail = self._scorer.score(rules_result, job)
-            return EnrichmentRecord(
-                job_id=job_id,
-                snapshot_date=snapshot_date,
-                skills=rules_result.skills,
-                seniority=rules_result.seniority,
-                yoe_required=rules_result.yoe_required,
-                match_score=score,
-                score_detail=detail,
-                extraction_source="rules",
-                enriched_at=now_iso,
-            )
+            return rules_result, "rules"
 
-        # Slow path: check S3 cache (rules were insufficient)
+        # Empty JD (all Greenhouse rows until Chat 25): nothing to cache or send to the LLM.
+        if not description.strip():
+            return rules_result, "rules"
+
         cached = self._read_cache(description)
         if cached:
-            score, detail = self._scorer.score(cached, job)
-            return EnrichmentRecord(
-                job_id=job_id,
-                snapshot_date=snapshot_date,
-                skills=cached.skills,
-                seniority=cached.seniority,
-                yoe_required=cached.yoe_required,
-                match_score=score,
-                score_detail=detail,
-                extraction_source="cache",
-                enriched_at=now_iso,
-            )
+            return cached, "cache"
 
-        # force_rescore: skip LLM entirely — re-score using rules fallback
-        if self._force_rescore:
-            score, detail = self._scorer.score(rules_result, job)
-            return EnrichmentRecord(
-                job_id=job_id,
-                snapshot_date=snapshot_date,
-                skills=rules_result.skills,
-                seniority=rules_result.seniority,
-                yoe_required=rules_result.yoe_required,
-                match_score=score,
-                score_detail=detail,
-                extraction_source="rules",
-                enriched_at=now_iso,
-            )
+        # LLM off (default until Chat 31 measures it), force_rescore, or breaker open → rules.
+        if not self._use_llm or self._force_rescore or self._breaker_open:
+            return rules_result, "rules"
 
-        # LLM path: reuse rules_result as fallback if budget exceeded
         try:
-            extraction, source = self._extractor.extract(description)
+            extraction = self._extractor.extract_llm(description)
         except BudgetExceededError as e:
             print(f"[budget] {e} -- using rules")
-            extraction = rules_result
-            source = "rules"
+            return rules_result, "rules"
+        except Exception as e:
+            self._record_llm_failure(e)
+            return rules_result, "rules"
 
+        with self._lock:
+            self._llm_failures_in_row = 0
+        self._write_cache(description, extraction)
+        return extraction, "llm"
+
+    def _process_job(self, job: dict[str, Any]) -> EnrichmentRecord:
+        started = time.perf_counter()
+        description = job.get("description") or ""
+        extraction, source = self._extract(description)
         score, detail = self._scorer.score(extraction, job)
-        if source == "llm":
-            self._write_cache(description, extraction)
-        return EnrichmentRecord(
-            job_id=job_id,
-            snapshot_date=snapshot_date,
+        record = EnrichmentRecord(
+            job_id=str(job["job_id"]),
+            snapshot_date=str(job["snapshot_date"])[:10],
             skills=extraction.skills,
             seniority=extraction.seniority,
             yoe_required=extraction.yoe_required,
             match_score=score,
             score_detail=detail,
             extraction_source=source,
-            enriched_at=now_iso,
+            enriched_at=datetime.now(timezone.utc).isoformat(),
         )
+        with self._lock:
+            self._seconds[source] += time.perf_counter() - started
+        return record
 
     # ------------------------------------------------------------------
     # Post-hooks
@@ -186,8 +190,12 @@ class JDEnrichmentAgent:
         cache = sum(1 for r in records if r.extraction_source == "cache")
         print(
             f"[post-hook] {len(records)} jobs enriched -- "
-            f"llm={llm} rules={rules} cache={cache} | spend=${spend:.4f}"
+            f"llm={llm} rules={rules} cache={cache} | llm_errors={self._llm_errors} "
+            f"breaker_open={self._breaker_open} | spend=${spend:.4f}"
         )
+        # Summed across the 16 threads, so this is work time, not wall-clock time
+        per_source = " ".join(f"{k}={v:.1f}s" for k, v in sorted(self._seconds.items()))
+        print(f"[timing] per-job time by source: {per_source}")
 
     def _validate_output(self, records: list[EnrichmentRecord]) -> None:
         if not records:
@@ -252,14 +260,18 @@ class JDEnrichmentAgent:
         snapshot_date = str(jobs[0]["snapshot_date"])[:10]
         records: list[EnrichmentRecord] = []
 
+        print(f"[run] {len(jobs)} jobs | use_llm={self._use_llm} | force_rescore={self._force_rescore}")
+        started = time.perf_counter()
         with ThreadPoolExecutor(max_workers=16) as executor:
             futures = {executor.submit(self._process_job, job): job for job in jobs}
-            for future in as_completed(futures):
+            for done, future in enumerate(as_completed(futures), start=1):
                 job = futures[future]
                 try:
                     records.append(future.result())
                 except Exception as e:
                     print(f"[warn] Skipped job {job.get('job_id')}: {e}")
+                if done % PROGRESS_EVERY == 0:
+                    print(f"[progress] {done}/{len(jobs)} jobs | {time.perf_counter() - started:.0f}s")
 
         self._log_cost_summary(records)
         self._validate_output(records)
@@ -270,6 +282,8 @@ class JDEnrichmentAgent:
             "snapshot_date":    snapshot_date,
             "s3_uri":           s3_uri,
             "spend_usd":        round(self._budget.current_spend(), 4),
+            "llm_errors":       self._llm_errors,
+            "breaker_open":     self._breaker_open,
         }
 
     # ------------------------------------------------------------------

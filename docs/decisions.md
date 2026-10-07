@@ -613,3 +613,47 @@
 
 ## `.gitattributes` forces LF (Chat 24)
 - Windows `autocrlf` + Terraform file hashing = phantom diffs. LF everywhere makes hashes identical on Mac, Windows and CI.
+
+## Enrichment: LLM off by default, no own retry loop, circuit breaker (Chat 25)
+- Evidence: no Claude call has succeeded since 2026-04-21 and the pipeline's numbers didn't change — the LLM's value is unmeasured. Paying for it (up to the $0.50/day cap ≈ $15/month) before Chat 31 measures it breaks "measure before adding complexity".
+- `--use_llm false` in the Glue job: rules + the existing LLM cache only. One argument to turn it back on.
+- Removed our 3× retry loop: the Anthropic SDK already retries connection errors, 429 and 5xx with backoff. Ours also retried 400/401, which never succeed, sleeping 7 s each time.
+- Circuit breaker: 5 failures in a row → rules for the rest of the run, first error printed. Bounds a bad key to ~5–20 calls (16 threads in flight), not thousands.
+- Trade-off: while off, sparse JDs (Adzuna 500-char snippets) get weaker extraction — which was already the reality since April.
+
+## Enrichment not made incremental (Chat 25) — measured instead
+- Roadmap said "only re-process JDs not already scored". Measured: rules + scoring for 5,729 real JDs = 4 s. The hour was failed LLM calls sleeping. Incremental processing would add a state store to save 4 seconds.
+- The expensive path (LLM) is already incremental: results cached by description hash across days.
+- Embeddings are the step that re-does real paid work daily → Chat 30.
+
+## Explicit bronze schema, all job fields as strings (Chat 25)
+- Inference let one source's type change break every source (Aug 1–9) and made single-source days fail on missing fields.
+- Every field is `string`: Spark keeps a list/number as its JSON text instead of failing, and `parse_tags()` normalizes. Types are enforced in silver, not at read.
+- Cost: a new ingestor field must be added to `BRONZE_JOB_FIELDS`, or it is dropped silently (runbook §2).
+- Rejected: a strict typed schema with `mode=FAILFAST` — loud, but one bad source would still stop the whole night.
+
+## Real quality gates: `dbt build`, GE freshness from the data (Chat 25)
+- `dbt run` → `dbt build`: the 21 tests now fail the step. Ran them first against live gold: 2 failed → fixed the model and the data, not the tests.
+- GE freshness compared `snapshot_date` with a value the job had just written into the column (it could never fail). Now: IST date of `ingested_at` (from the bronze file) must equal the partition date. New expectation: `tags` values are lists.
+
+## Athena workgroup: stop enforcing client settings, so dbt tables live in `gold/models/` (Chat 25)
+- With enforcement on, Athena puts every CTAS table under the result location — the gold tables shared a prefix with throwaway CSVs, so no expiry was possible.
+- Enforcement off: dbt's `s3_data_dir` (`s3://jobpulse-gold-dev/models/`) takes effect. The 1 GB per-query scan cap is a separate workgroup control and still applies (AWS docs: the override covers results location, encryption, bucket owner and object ownership only).
+- Trade-off: a client *could* now send results elsewhere. Single user, IAM-limited — acceptable.
+- Order: move tables → verify the catalog (runbook §18) → enable the 7-day expiry (rule shipped `Disabled`).
+- Alternative: a second workgroup only for dbt (keeps enforcement for everyone else). More resources for one user; revisit if others query.
+
+## One owner for code deploys: CI (Chat 25)
+- Before: Terraform (`archive_file`, `aws_s3_object` etag, `null_resource` zips) and `deploy.yml` both deployed the same code → a permanent plan diff, and whichever ran last won.
+- Chose CI: it already deployed everything on push (Chat 20: code deploys shouldn't need an infra apply). Terraform creates each resource once and ignores code attributes (`lifecycle { ignore_changes }`); the two `null_resource` uploaders are deleted.
+- Consequence: `terraform apply` never ships code. A brand-new environment needs one CI deploy after the first apply.
+- The CI deploy now also waits for the PySpark tests (new job, Spark 3.3.2 = Glue 4.0).
+
+## Absence-of-success alarm: 26 one-hour buckets (Chat 25)
+- The question: "was there a successful run in the last 26 h?" — not "did something fail in the last 5 min?".
+- A single 24 h period flaps: a run a few minutes later than yesterday leaves a gap. 26 × 1 h with 26/26 breaching = "no success anywhere in 26 h", 2 h of slack. Missing data = breaching, so "nothing ran" alarms too.
+- Duration warning: runners publish their own `JobDurationSeconds` (Glue has no duration metric for Python Shell); alarm at 70% of each job's timeout, threshold computed from the Terraform timeout so the two can't drift apart.
+
+## Greenhouse descriptions: not fetched yet (Chat 25, open)
+- Greenhouse is ~70% of jobs and sends no JD text (list endpoint). `?content=true` returns it (checked: GitLab 217 jobs, ~12.5 KB each, 3.4 MB, 0.9 s; also a real `company_name`).
+- Not switched on in Chat 25: it grows silver, the nightly full rebuild of `fact_job_posting`, the embedding scan and Voyage spend. Decision needed — before Chat 27 freezes the eval corpus.

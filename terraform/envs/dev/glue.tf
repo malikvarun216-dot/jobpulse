@@ -88,6 +88,16 @@ resource "aws_iam_policy" "glue_policy" {
         Resource = "arn:aws:logs:*:*:*"
       },
       {
+        # Runners publish their own duration (Glue has no duration metric for Python Shell jobs)
+        Sid      = "PublishRunMetrics"
+        Effect   = "Allow"
+        Action   = ["cloudwatch:PutMetricData"]
+        Resource = "*"
+        Condition = {
+          StringEquals = { "cloudwatch:namespace" = "JobPulse" }
+        }
+      },
+      {
         Sid      = "SecretsManagerAnthropicKey"
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
@@ -114,12 +124,19 @@ resource "aws_iam_role_policy_attachment" "glue_service" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole"
 }
 
+# Code ownership (Chat 25): CI (deploy.yml) uploads every script and package on push to dev.
+# Terraform creates each object once, then ignores its content — two deployers caused a
+# permanent plan diff and a race over which version was live.
 # Upload PySpark script to silver bucket under glue-scripts/ prefix
 resource "aws_s3_object" "glue_script" {
   bucket = aws_s3_bucket.layers["silver"].id
   key    = "glue-scripts/bronze_to_silver.py"
   source = "${path.module}/../../../spark/jobs/bronze_to_silver.py"
   etag   = filemd5("${path.module}/../../../spark/jobs/bronze_to_silver.py")
+
+  lifecycle {
+    ignore_changes = [etag, tags_all] # content owned by CI (deploy.yml)
+  }
 }
 
 resource "aws_glue_job" "bronze_to_silver" {
@@ -159,52 +176,17 @@ resource "aws_glue_job" "bronze_to_silver" {
 # dbt runner — Glue Python Shell job
 # ---------------------------------------------------------------------------
 
-locals {
-  dbt_project_dir = "${path.module}/../../../dbt_project"
-  dbt_source_files = [
-    for f in fileset("${path.module}/../../../dbt_project", "**")
-    : f if !endswith(f, ".gitkeep")
-       && !startswith(f, "target/")
-       && !startswith(f, "dbt_packages/")
-  ]
-}
-
-# Zip and re-upload whenever SQL/YAML files change
-resource "null_resource" "dbt_project_upload" {
-  triggers = {
-    dbt_hash = sha256(join("", [
-      for f in local.dbt_source_files
-      : filesha256("${local.dbt_project_dir}/${f}")
-    ]))
-  }
-
-  provisioner "local-exec" {
-    command = <<-EOT
-      cd ${path.module}/../../../
-      zip -r /tmp/dbt_project.zip dbt_project/ \
-        --exclude "dbt_project/.gitkeep" \
-        --exclude "dbt_project/models/.gitkeep" \
-        --exclude "dbt_project/models/bronze/.gitkeep" \
-        --exclude "dbt_project/models/silver/.gitkeep" \
-        --exclude "dbt_project/models/gold/.gitkeep" \
-        --exclude "dbt_project/macros/.gitkeep" \
-        --exclude "dbt_project/tests/.gitkeep" \
-        --exclude "dbt_project/target/*" \
-        --exclude "dbt_project/dbt_packages/*"
-      aws s3 cp /tmp/dbt_project.zip \
-        s3://${aws_s3_bucket.layers["silver"].bucket}/dbt-project/dbt_project.zip \
-        --region ${var.aws_region}
-    EOT
-  }
-
-  depends_on = [aws_s3_bucket.layers]
-}
+# dbt_project.zip is built and uploaded by CI (deploy.yml) — see "Code ownership" above.
 
 resource "aws_s3_object" "dbt_runner_script" {
   bucket = aws_s3_bucket.layers["silver"].id
   key    = "glue-scripts/dbt_runner.py"
   source = "${path.module}/../../../transform/dbt_runner/dbt_runner.py"
   etag   = filemd5("${path.module}/../../../transform/dbt_runner/dbt_runner.py")
+
+  lifecycle {
+    ignore_changes = [etag, tags_all] # content owned by CI (deploy.yml)
+  }
 }
 
 resource "aws_glue_job" "dbt_runner" {
@@ -240,38 +222,14 @@ resource "aws_glue_job" "dbt_runner" {
     layer   = "gold"
   }
 
-  depends_on = [aws_s3_object.dbt_runner_script, null_resource.dbt_project_upload]
+  depends_on = [aws_s3_object.dbt_runner_script]
 }
 
 # ---------------------------------------------------------------------------
 # Enrichment runner — Glue Python Shell job
 # ---------------------------------------------------------------------------
 
-locals {
-  genai_source_files = fileset("${path.module}/../../../genai", "*.py")
-}
-
-resource "null_resource" "genai_package_upload" {
-  triggers = {
-    genai_hash = sha256(join("", [
-      for f in local.genai_source_files
-      : filesha256("${path.module}/../../../genai/${f}")
-    ]))
-    profile_hash = filesha256("${path.module}/../../../config/user_profile.yml")
-  }
-
-  provisioner "local-exec" {
-    command = <<-EOT
-      cd ${path.module}/../../../
-      zip -r /tmp/genai_package.zip genai/ config/user_profile.yml
-      aws s3 cp /tmp/genai_package.zip \
-        s3://${aws_s3_bucket.layers["silver"].bucket}/glue-scripts/genai_package.zip \
-        --region ${var.aws_region}
-    EOT
-  }
-
-  depends_on = [aws_s3_bucket.layers]
-}
+# genai_package.zip is built and uploaded by CI (deploy.yml) — see "Code ownership" above.
 
 # Upload user_profile.yml separately so it can be updated without re-deploying the zip
 resource "aws_s3_object" "user_profile" {
@@ -279,6 +237,10 @@ resource "aws_s3_object" "user_profile" {
   key    = "config/user_profile.yml"
   source = "${path.module}/../../../config/user_profile.yml"
   etag   = filemd5("${path.module}/../../../config/user_profile.yml")
+
+  lifecycle {
+    ignore_changes = [etag, tags_all] # content owned by CI (deploy.yml)
+  }
 }
 
 resource "aws_s3_object" "enrichment_runner_script" {
@@ -286,6 +248,10 @@ resource "aws_s3_object" "enrichment_runner_script" {
   key    = "glue-scripts/enrichment_runner.py"
   source = "${path.module}/../../../genai/enrichment_runner.py"
   etag   = filemd5("${path.module}/../../../genai/enrichment_runner.py")
+
+  lifecycle {
+    ignore_changes = [etag, tags_all] # content owned by CI (deploy.yml)
+  }
 }
 
 resource "aws_glue_job" "enrichment_runner" {
@@ -308,14 +274,16 @@ resource "aws_glue_job" "enrichment_runner" {
     "--silver_database"                  = aws_glue_catalog_database.silver.name
     "--dry_run"                          = "false"
     "--force_rescore"                    = "false"
+    "--use_llm"                          = "false" # LLM extraction off until Chat 31 measures it
+    "--job_name"                         = "${var.project}-enrichment-${var.env}"
     "--enable-continuous-cloudwatch-log" = "true"
     "--additional-python-modules"        = "anthropic==0.125.0,pydantic==2.13.5,pyyaml,pyarrow==14.0.2"
     "--extra-py-files"                   = "s3://${aws_s3_bucket.layers["silver"].bucket}/glue-scripts/genai_package.zip"
   }
 
   glue_version = "4.0"
-  max_capacity = 0.0625
-  timeout      = 60
+  max_capacity = 0.0625 # measured Chat 25: rules + scoring for 5.7K JDs = 4 s of CPU; 1/16 DPU is plenty
+  timeout      = 20     # was 60 — the 59-min runs were failed LLM calls sleeping, not work (Chat 25)
 
   tags = {
     project = var.project
@@ -323,7 +291,7 @@ resource "aws_glue_job" "enrichment_runner" {
     layer   = "enrichment"
   }
 
-  depends_on = [aws_s3_object.enrichment_runner_script, aws_s3_object.user_profile, null_resource.genai_package_upload]
+  depends_on = [aws_s3_object.enrichment_runner_script, aws_s3_object.user_profile]
 }
 
 # ---------------------------------------------------------------------------
@@ -335,6 +303,10 @@ resource "aws_s3_object" "embedding_runner_script" {
   key    = "glue-scripts/embedding_runner.py"
   source = "${path.module}/../../../genai/embedding_runner.py"
   etag   = filemd5("${path.module}/../../../genai/embedding_runner.py")
+
+  lifecycle {
+    ignore_changes = [etag, tags_all] # content owned by CI (deploy.yml)
+  }
 }
 
 resource "aws_glue_job" "embedding_runner" {
@@ -355,6 +327,7 @@ resource "aws_glue_job" "embedding_runner" {
     "--workgroup"                        = aws_athena_workgroup.main.name
     "--gold_database"                    = aws_glue_catalog_database.gold.name
     "--dry_run"                          = "false"
+    "--job_name"                         = "${var.project}-embedding-${var.env}"
     "--enable-continuous-cloudwatch-log" = "true"
     "--additional-python-modules"        = "voyageai==0.5.0,pyarrow==14.0.2,pandas==2.3.3,numpy==1.26.4"
     "--extra-py-files"                   = "s3://${aws_s3_bucket.layers["silver"].bucket}/glue-scripts/genai_package.zip"
@@ -370,7 +343,7 @@ resource "aws_glue_job" "embedding_runner" {
     layer   = "embedding"
   }
 
-  depends_on = [aws_s3_object.embedding_runner_script, null_resource.genai_package_upload]
+  depends_on = [aws_s3_object.embedding_runner_script]
 }
 
 # ---------------------------------------------------------------------------
@@ -382,6 +355,10 @@ resource "aws_s3_object" "ge_runner_script" {
   key    = "glue-scripts/ge_runner.py"
   source = "${path.module}/../../../transform/ge_runner/ge_runner.py"
   etag   = filemd5("${path.module}/../../../transform/ge_runner/ge_runner.py")
+
+  lifecycle {
+    ignore_changes = [etag, tags_all] # content owned by CI (deploy.yml)
+  }
 }
 
 resource "aws_glue_job" "ge_runner" {
@@ -401,7 +378,7 @@ resource "aws_glue_job" "ge_runner" {
     "--enable-continuous-cloudwatch-log" = "true"
     # GE 1.x works on Python 3.9–3.12; pyarrow + pandas read the silver Parquet partition
     # Pinned (Chat 24) to the versions the last green runs installed — unpinned ">=" drifted night to night
-    "--additional-python-modules"        = "great-expectations==1.8.1,pandas==2.3.3,pyarrow==14.0.2"
+    "--additional-python-modules" = "great-expectations==1.8.1,pandas==2.3.3,pyarrow==14.0.2"
   }
 
   glue_version = "4.0"

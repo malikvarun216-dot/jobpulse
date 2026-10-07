@@ -1,7 +1,7 @@
 # JobPulse Runbook
 
 What to do when something breaks. Each entry: **symptom → where to look → likely cause → fix → prevention.**
-Region: `ap-south-1`. Environment: `dev`. Last updated: Chat 23 (2026-10-06).
+Region: `ap-south-1`. Environment: `dev`. Last updated: Chat 25 (2026-10-08).
 
 > Windows / Git Bash tip: log-group names start with `/`, and Git Bash rewrites them into Windows paths.
 > Prefix AWS CLI commands that take a log-group name with `MSYS_NO_PATHCONV=1`.
@@ -31,34 +31,40 @@ Region: `ap-south-1`. Environment: `dev`. Last updated: Chat 23 (2026-10-06).
 
 ---
 
-## 1. Enrichment `JobRunState: TIMEOUT` (RunEnrichment)
+## 1. Enrichment `JobRunState: TIMEOUT` (RunEnrichment) — or the duration alarm fires
 
-- **Symptom:** `jobpulse-enrichment-dev` ends after exactly 60 min with `TIMEOUT`.
-- **Look:** Glue → job runs → duration trend. In Aug 2026 it had been running 48–56 min for months before it tipped over.
-  ```bash
-  aws glue get-job-runs --job-name jobpulse-enrichment-dev --max-results 30 --region ap-south-1 \
-    --query 'JobRuns[].[StartedOn,JobRunState,ExecutionTime]' --output table
-  ```
-- **Likely cause:** volume grew (6.6K → 7.9K jobs/day) and every job is processed every night.
-- **Quick fix:** raise `timeout` in `terraform/envs/dev/glue.tf` (`aws_glue_job.enrichment_runner`) or DPU; re-run.
-- **Real fix (Chat 25):** incremental enrichment (only jobs not already scored), per-stage timing logs.
-- **Prevention:** alarm when duration > 70% of timeout.
-
+- **Symptom:** `jobpulse-enrichment-dev` ends at its timeout (20 min since Chat 25; was 60) with `TIMEOUT`, or the
+  alarm `jobpulse-enrichment-duration-70pct-dev` fires (run took > 14 min).
+- **Look:** the run's log in `/aws-glue/python-jobs/output` (stream = job run id). Since Chat 25 every line is flushed
+  live, so even a killed run shows how far it got:
+  - `[timing] fetch_jobs=…s`, `enrich_and_write=…s`, `repair_partition=…s`, `total=…s` — which stage is slow
+  - `[progress] N/M jobs | Xs` every 1,000 jobs
+  - `[post-hook] … llm=… rules=… cache=… | llm_errors=… breaker_open=…` and `[timing] per-job time by source`
+  - `[llm] first failure: <error>` and `circuit OPEN` — the LLM is failing (key, credits, model id)
+- **Aug–Sep 2026 root cause (Chat 25):** every Claude call failed (none succeeded after Apr 21); the code retried each
+  failure 3× with 1+2+4 s sleeps and labelled the job "rules". ~5.7K jobs × ~7 s ÷ 16 threads ≈ the full hour.
+  Greenhouse JDs are empty, so ~70% of jobs skipped the regex fast path and went to the LLM path.
+  Fixed: no own retry loop (SDK retries only transient errors), empty JDs never go to the LLM, circuit breaker after 5
+  failures in a row, LLM off by default (`--use_llm false`). Measured on 5,729 real JDs: 4 s (LLM off), 14 s (LLM on, all failing).
+- **If logs show `[llm] first failure`:** check the key / credit balance at console.anthropic.com. The run still
+  succeeds on rules — this is a warning, not an outage.
+- **Fix if it is real volume:** check `[progress]` rate; raise `timeout` in `glue.tf` only after reading the timings.
 ## 2. `bronze_to_silver` fails with `AnalysisException … cannot cast string to array<string>`
 
-- **Symptom:** RunGlueJob fails in ~1 min. Seen Aug 1–9 2026 on `job.tags`.
-- **Cause:** one source changed a field's type (list → text). Spark infers JSON types across all sources; the
-  inferred type changes and the explicit cast fails.
-- **Find the source:** list today's bronze files and inspect the field in each:
+- **Symptom:** RunGlueJob fails in ~1 min. Seen Aug 1–9 2026 on `job.tags` (traceback in the Chat 24 log export).
+- **Cause:** one source sent `tags` as text instead of a list. Spark *inferred* the JSON schema across all sources,
+  the column became `string`, and `cast(tags as array<string>)` failed. Which source: unknown — the error doesn't say
+  and bronze had expired (7-day lifecycle). Suspects: remotive (passes raw API jobs through) or arbeitnow (passes `tags` through).
+- **Fixed (Chat 25):** `bronze_schema()` — explicit schema, every job field read as `string` (a list arrives as its
+  JSON text); `parse_tags()` turns `'["a","b"]'`, `"a, b"` or null into `array<string>`. Missing fields come back null
+  instead of `No such struct field`. Tests: `TestParseTags`, `test_tags_as_plain_string`, `test_tags_string_and_array_same_day`.
+  GE expectation 6 checks every silver `tags` value is a list.
+- **A new field in an ingestor** must be added to `BRONZE_JOB_FIELDS` in `spark/jobs/bronze_to_silver.py`, or Spark
+  silently drops it (that's the price of an explicit schema).
+- **Find a drifting source:** within 7 days, inspect each bronze file:
   ```bash
-  aws s3 ls s3://jobpulse-bronze-dev/snapshot_date=YYYY-MM-DD/ --recursive
   aws s3 cp s3://jobpulse-bronze-dev/snapshot_date=YYYY-MM-DD/source=<src>/data.json.gz - | gunzip | head -c 2000
   ```
-  Do this **within 7 days** — bronze expires after 7 days.
-- **Fix:** normalize the field's type in that source's ingestor (`normalize_jobs`) and/or handle both shapes in
-  `spark/jobs/bronze_to_silver.py`. Re-run the Glue job for the failed date (`--snapshot_date`).
-- **Prevention (Chat 25):** explicit schema in Spark; a GE type expectation; a unit test with both shapes.
-
 ## 3. Lambda returns HTTP 403 / `server: cloudflare`
 
 - **Cause:** the API blocks AWS datacenter IPs (Himalayas, RemoteOK, Jooble, TokyoDev, DoraHacks are known).
@@ -102,18 +108,29 @@ Region: `ap-south-1`. Environment: `dev`. Last updated: Chat 23 (2026-10-06).
 - `COLUMN_NOT_FOUND` after a Spark change → the staging model has an explicit column list; add the new column.
 - `FUNCTION_NOT_FOUND md5(varchar)` → Athena needs `to_hex(md5(to_utf8(col)))`.
 - `Unsupported Hive type: timestamp with time zone` → use `localtimestamp`.
-- **Note:** the runner calls `dbt run` (tests not executed) until Chat 25 switches it to `dbt build`.
+- **Since Chat 25 the runner calls `dbt build`:** a failing test fails the step. Find it: filter the log for `FAIL`.
+  Run a test locally (read-only): `dbt test --select <test_name> --profiles-dir .` from `dbt_project/`.
+  Never delete a test to make the night green — fix the model or the data.
+- `unique_dim_company_company_key` failed in Chat 25 (368 keys): casing variants of one company. Fixed by grouping on
+  the normalized name (`dim_company.sql`). If it fails again, a new spelling slipped past `lower(trim())`.
 
 ## 9. Great Expectations step fails (RunDataQuality)
 
 - **Row count < 100:** usually a source outage or an ingestor returning `EMPTY` — check Lambda logs for the night.
 - **Null `job_id` / `title`:** a source changed its field names — compare with the ingestor's `normalize_jobs`.
+- **`ingested_date_ist` not in {snapshot_date}** (Chat 25): rows in today's partition were ingested on another IST
+  day — a stale or mis-dated bronze file, or a backfill re-run of an old date with new data. Check `ingested_at` per source.
+- **`tags` not a list:** schema drift reached silver (see §2).
 - **Fix the cause, then re-run from RunGlueJob** for that date. Never lower the threshold to make it pass.
 
 ## 10. LLM / embedding API errors
 
 - `AuthenticationError` → check the secret value (`jobpulse/anthropic_key_dev`, `jobpulse/voyage_key_dev`);
   secrets are JSON like `{"KEY_NAME": "value"}`; Voyage keys start with `pa-`.
+- Enrichment calls the LLM **only with `--use_llm true`** (default false since Chat 25 — no Claude call has succeeded
+  since 2026-04-21 and nobody noticed; Chat 31 decides if it is worth paying for). Turn on for one run:
+  `--arguments '{"--use_llm":"true"}'`.
+- Circuit breaker: 5 LLM failures in a row → no more LLM calls this run (`[llm] … circuit OPEN`).
 - Daily budget reached (`BudgetExceededError` in logs) → **not a failure**: remaining jobs use the rules result.
   Ledger: `s3://jobpulse-gold-dev/enrichment-cache/budget-YYYY-MM-DD.json`.
 - Re-score after a profile change without LLM spend:
@@ -130,12 +147,20 @@ Region: `ap-south-1`. Environment: `dev`. Last updated: Chat 23 (2026-10-06).
 - Re-run one step: `aws glue start-job-run --job-name <job> --arguments '{"--snapshot_date":"YYYY-MM-DD"}'`.
 - Re-run the whole night: start a new Step Functions execution (all steps are idempotent per `snapshot_date`).
 
-## 12. Alarm emails every night
+## 12. Alarms
 
-- `jobpulse-sfn-failures-dev` fires on `ExecutionsFailed ≥ 1` and **returns to OK ~15 min later** on its own.
-  An OK email does **not** mean it's fixed — check the latest execution status.
-- Planned (Chat 25): alarm on "no successful execution in 24 h", which stays red until a run succeeds.
+| Alarm | Fires when | Clears when |
+|---|---|---|
+| `jobpulse-sfn-no-success-26h-dev` | no successful Step Functions execution in 26 h (incl. "nothing ran") | the next successful run (sends an OK email) |
+| `jobpulse-enrichment-duration-70pct-dev` | enrichment took > 14 min (70% of 20) | on its own after an hour — it's a warning |
+| `jobpulse-embedding-duration-70pct-dev` | embeddings took > 42 min (70% of 60) | same |
 
+- The no-success alarm replaced `jobpulse-sfn-failures-dev` (Chat 25), which returned to OK ~15 min after every
+  failure — a month of red nights looked green in the console.
+- **Expected:** it is in ALARM whenever the pipeline is paused (nothing succeeds). That is correct, not noise.
+- Test the email path without breaking anything:
+  `aws cloudwatch set-alarm-state --alarm-name jobpulse-sfn-no-success-26h-dev --state-value ALARM --state-reason "test" --region ap-south-1`
+  (it re-evaluates to the real state within minutes).
 ## 13. Pause / resume the pipeline
 
 - **Pause:** set `state = "DISABLED"` on `aws_cloudwatch_event_rule.daily_ingest` (`terraform/envs/dev/eventbridge.tf`)
@@ -175,9 +200,10 @@ Region: `ap-south-1`. Environment: `dev`. Last updated: Chat 23 (2026-10-06).
      only after committing — the guard refuses if anything is uncommitted (PowerShell):
      `if (git status --porcelain) { "STOP: uncommitted changes - commit first" } else { git rm -rq --cached .; git reset --hard HEAD }`
      Without the guard, `reset --hard` silently deletes uncommitted work (incidents, 2026-10-06).
-  2. *Two deployers.* `deploy.yml` (CI) also uploads the Lambda code and Glue scripts. CI's `zip` gives different bytes than
-     Terraform's `archive_file` (`source_code_hash` differs, same code) and `aws s3 cp` drops the object tags (`tags_all` diff).
-     Harmless to apply — same code goes back. Known drift until one tool owns code deploys.
+  2. *Two deployers* (fixed Chat 25). CI (`deploy.yml`) now owns all code: Lambda zips, Glue scripts, `genai_package.zip`,
+     `dbt_project.zip`, `user_profile.yml`. Terraform creates those resources and then ignores their content
+     (`lifecycle { ignore_changes }`). **So `terraform apply` no longer deploys code — push to `dev` does.**
+     A brand-new environment needs one CI deploy after the first apply.
 - **Plan wants to import log groups:** expected once (Chat 24 `import` blocks in `monitoring.tf`). After the first apply they are
   no-ops.
 
@@ -188,11 +214,9 @@ Region: `ap-south-1`. Environment: `dev`. Last updated: Chat 23 (2026-10-06).
   ```bash
   aws s3 ls s3://jobpulse-gold-dev/athena-results/ --recursive --summarize | tail -2
   ```
-- ⚠️ **Do not put an expiry rule on `athena-results/`** (or delete files there by hand) while the gold tables live in
-  `athena-results/tables/<uuid>/`. Check first:
-  `aws glue get-tables --database-name jobpulse_gold_dev --query 'TableList[].StorageDescriptor.Location'`.
-  Why they live there: the workgroup has `enforce_workgroup_configuration = true`, so dbt-athena drops the models'
-  `s3_data_dir` and Athena writes CTAS output under the workgroup result location. Chat 25 moves them out.
+- ⚠️ **`athena-results/` expiry (`aws_s3_bucket_lifecycle_configuration.gold`) stays `Disabled` until §18 passes.**
+  Chat 25 turned off workgroup enforcement so dbt writes tables to `gold/models/`; the old tables lived in
+  `athena-results/tables/<uuid>/` and an expiry would have deleted the gold layer.
 - **Python package drift in Glue:** `--additional-python-modules` are pinned with `==` since Chat 24. Check what a run
   actually installed: CloudWatch `/aws-glue/python-jobs/output`, filter `"Successfully installed"`.
 - Glue Python Shell at 1/16 DPU ≈ $0.03 per hour of runtime; Glue Spark G.1X × 2 ≈ $0.03 per 2-min run (approx.).
@@ -217,3 +241,15 @@ Never `terraform apply` from a checkout that is behind `origin/dev`.
 - Git Bash gotcha: with `MSYS_NO_PATHCONV=1` (needed for log-group names like `/aws-glue/...`), pass Windows paths
   (`C:/Users/...`) to `aws.exe` — `/c/Users/...` is taken literally and lands in `C:\c\Users\...`.
 - Restore: `aws s3 sync <local> s3://<bucket>/<prefix>`, then `MSCK REPAIR TABLE` for partitioned tables.
+
+## 18. Gold tables location (before enabling the `athena-results/` expiry)
+
+All 4 dbt tables must point under `s3://jobpulse-gold-dev/models/`, none under `athena-results/`:
+```bash
+aws glue get-tables --database-name jobpulse_gold_dev --region ap-south-1 \
+  --query 'TableList[].[Name,StorageDescriptor.Location]' --output table
+```
+Expected: `dim_company`, `dim_country`, `dim_role`, `fact_job_posting` → `.../models/jobpulse_gold_dev/<table>/<uuid>`;
+`enrichment_scores` → `.../enrichment-scores/`; `job_embeddings` → `.../embeddings`; `stg_silver_jobs` (a view) has none.
+Only then set `status = "Enabled"` in `s3.tf` and apply. The rule also cleans the orphaned `athena-results/tables/*`.
+If a table still points at `athena-results/`: the workgroup is enforcing again (`aws athena get-work-group --work-group jobpulse-dev`).

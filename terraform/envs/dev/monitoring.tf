@@ -8,24 +8,63 @@ resource "aws_sns_topic_subscription" "email" {
   endpoint  = var.alert_email
 }
 
-# Alarm fires when any Step Functions execution fails
-resource "aws_cloudwatch_metric_alarm" "sfn_failures" {
-  alarm_name          = "${var.project}-sfn-failures-${var.env}"
+# Absence-of-success alarm (Chat 25) — replaces the old "ExecutionsFailed >= 1" alarm.
+# The old one went back to OK 5 minutes after each failure (missing data = not breaching),
+# so a pipeline that failed every night for a month looked green in the console; and a run
+# that never started (rule disabled, timeout) never fired it at all.
+# This one asks the question that matters: "was there a successful run in the last 26 hours?"
+# 26 one-hour buckets; it fires only if ALL of them have no success. Hours with no data count
+# as breaching, so "nothing ran" alarms too. It stays in ALARM until a run succeeds.
+# 26 h, not 24 h: leaves 2 h of slack for a slow night.
+resource "aws_cloudwatch_metric_alarm" "sfn_no_success" {
+  alarm_name          = "${var.project}-sfn-no-success-26h-${var.env}"
   namespace           = "AWS/States"
-  metric_name         = "ExecutionsFailed"
+  metric_name         = "ExecutionsSucceeded"
   statistic           = "Sum"
-  period              = 300
-  evaluation_periods  = 1
+  period              = 3600
+  evaluation_periods  = 26
+  datapoints_to_alarm = 26
   threshold           = 1
-  comparison_operator = "GreaterThanOrEqualToThreshold"
-  treat_missing_data  = "notBreaching"
+  comparison_operator = "LessThanThreshold"
+  treat_missing_data  = "breaching"
 
   dimensions = {
     StateMachineArn = aws_sfn_state_machine.ingest_pipeline.arn
   }
 
   alarm_actions     = [aws_sns_topic.alerts.arn]
-  alarm_description = "JobPulse ingestion pipeline failed — check Step Functions console"
+  ok_actions        = [aws_sns_topic.alerts.arn] # one "recovered" email when a run succeeds again
+  alarm_description = "No successful JobPulse pipeline run in 26 h — check Step Functions executions (runbook §1)"
+}
+
+# Duration warnings (Chat 25): fire when a runner uses more than 70% of its Glue timeout,
+# before it starts timing out. The runners publish JobPulse/JobDurationSeconds themselves.
+locals {
+  duration_alarm_jobs = {
+    enrichment = aws_glue_job.enrichment_runner
+    embedding  = aws_glue_job.embedding_runner
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "glue_duration" {
+  for_each = local.duration_alarm_jobs
+
+  alarm_name          = "${var.project}-${each.key}-duration-70pct-${var.env}"
+  namespace           = "JobPulse"
+  metric_name         = "JobDurationSeconds"
+  statistic           = "Maximum"
+  period              = 3600
+  evaluation_periods  = 1
+  threshold           = each.value.timeout * 60 * 0.7
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching" # one datapoint per night; silence in between is normal
+
+  dimensions = {
+    JobName = each.value.name
+  }
+
+  alarm_actions     = [aws_sns_topic.alerts.arn]
+  alarm_description = "${each.value.name} took > 70% of its ${each.value.timeout}-min timeout — see [timing] lines in its log"
 }
 
 # ---------------------------------------------------------------------------

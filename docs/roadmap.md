@@ -1,6 +1,6 @@
 # JobPulse Roadmap — Data + AI track (Chat 24 onward)
 
-Last updated: **Chat 24 (2026-10-07)**. Update this file at the end of every chat: tick the chat, adjust the next one.
+Last updated: **Chat 25 (2026-10-08)**. Update this file at the end of every chat: tick the chat, adjust the next one.
 
 ## Why this roadmap exists
 
@@ -21,7 +21,7 @@ Ground rules for every chat:
 |---|---|---|
 | 23 | Recon, AWS decision, docs overhaul, interview guide | ✅ done (2026-10-06) |
 | 24 | Stabilize the account and repo (must finish before ~Oct 16) | ✅ done (2026-10-07) |
-| 25 | Fix the failures, go live again | ⏭ next |
+| 25 | Fix the failures, go live again | 🟡 code done 2026-10-08 — apply, green run, then phase 2 (enable schedule + expiry) |
 | 26 | AI concepts lab (learning session) | |
 | 27 | Evaluation foundations: freeze a corpus, label it | |
 | 28 | Baseline + better retrieval (hybrid, chunk grain) | |
@@ -79,6 +79,18 @@ cost allocation tags `project` + `layer` active. ❌ Moved to Chat 25: `athena-r
 
 **Done when:** 3 green nights in a row; a deliberate failure fires the new alarm once and does not auto-reset.
 
+**Result (Chat 25, code):** root causes measured, not guessed —
+- Enrichment hour = every Claude call failing since 2026-04-21, each retried with 7 s of sleeps; empty Greenhouse JDs sent
+  ~all jobs down that path; buffered stdout hid it. Rules for 5,729 JDs take 4 s → **incremental enrichment not built**
+  (would save 4 s). Fixed: flushed logs + timings, no own retry loop, circuit breaker, LLM off (`--use_llm false`),
+  timeout 60 → 20. Agent on real data: 4.4 s / 14 s (LLM failing) vs ~60 min.
+- `tags`: explicit bronze schema (strings) + `parse_tags()`; source not identifiable (bronze expired).
+- Gates: `dbt build` (first run vs live gold found 2 failing tests → `dim_company` fan-out +75%, fixed), GE freshness from
+  `ingested_at`, `tags` type check, PySpark tests running in CI for the first time (9 of 14 had been failing).
+- Alarms: absence-of-success (26 × 1 h) + duration > 70% of timeout. Gold tables → `gold/models/`. CI owns code deploys.
+- `terraform plan`: 4 add, 4 change, 3 destroy (intended only). ❌ Not yet: apply, green run, EventBridge + expiry (phase 2),
+  3 green nights. Open: why Claude calls fail (key or credits); Greenhouse descriptions (`?content=true`) — decision.
+
 ## Chat 26 — AI concepts lab (no AWS changes)
 
 Notebook on ~20 real JDs from the exported silver data:
@@ -91,6 +103,10 @@ Notebook on ~20 real JDs from the exported silver data:
 **Done when:** each concept explained aloud in 90 seconds with a JobPulse example.
 
 ## Chat 27 — Evaluation foundations
+
+> Prerequisite from Chat 25: ~70% of jobs (Greenhouse) have **no description** and Adzuna's are 500-char snippets.
+> A corpus frozen from today's data would be mostly titles. Decide on Greenhouse `?content=true` first and let a few
+> weeks of full JDs accumulate (pin those dates).
 
 - Frozen corpus: distinct jobs from pinned dates (e.g. Jul 1–31) → `s3://jobpulse-gold-dev/eval/corpus_v1/` + manifest (dates, row count, content hash). Never changes; new versions = new folders.
 - `eval/queries_v1.yml`: ~50 queries (your real searches, keyword-heavy, paraphrase, filtered, edge cases).
@@ -114,6 +130,7 @@ Notebook on ~20 real JDs from the exported silver data:
 ## Chat 30 — Embeddings as a real pipeline
 
 - Incremental + idempotent: key = `sha256(normalized JD) + model_id`, upsert. Removes the daily re-embed of ~7.8K jobs.
+- The embedding query reads `description` from the **unpartitioned** `fact_job_posting` (full-column scan nightly) — read from silver by `snapshot_date` instead.
 - Model versioning: new model → new index version → backfill → **eval gate** → switch (blue/green). Challenger: **Bedrock Titan Text Embeddings v2** (check ap-south-1 availability).
 - Freshness: `last_seen_date`; a posting unseen for N days = closed; search only open postings.
 - Near-duplicate dedup: cosine threshold chosen by labeling ~200 pairs (precision/recall of the dedup decision).
@@ -121,9 +138,12 @@ Notebook on ~20 real JDs from the exported silver data:
 
 ## Chat 31 — Evaluate the LLM extraction
 
+> From Chat 25: LLM extraction is **off** (`--use_llm false`) — no call had succeeded since 2026-04-21. First check
+> the key / credit balance; the eval decides whether it comes back on. The retry-loop fix is already done.
+
 - Hand-label skills / seniority / yoe for 150 JDs (stratified by source and rules-vs-LLM path).
 - Per-field precision / recall / F1: rules-only vs rules + Haiku; % JDs sent to the LLM; $ per 1K JDs.
-- Fix: budget tracker check-then-reserve race; price constants (Haiku 3.5 numbers in code); `cache_control` on a prompt below the minimum cacheable size; Message Batches API for the nightly run (measure the saving).
+- Fix: budget tracker check-then-reserve race; price constants (Haiku 3.5 numbers in code); `cache_control` on a prompt below the minimum cacheable size; Haiku may wrap JSON in ``` fences (json.loads fails); Message Batches API for the nightly run (measure the saving).
 - CI regression with recorded LLM responses (no API calls in CI).
 
 ## Chat 32 — Weekly AI brief (grounded generation)

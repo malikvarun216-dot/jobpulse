@@ -45,6 +45,10 @@ resource "aws_lambda_function" "remotive" {
       BRONZE_BUCKET = aws_s3_bucket.layers["bronze"].bucket
     }
   }
+
+  lifecycle {
+    ignore_changes = [filename, source_code_hash] # code deployed by CI (deploy.yml), Chat 25
+  }
 }
 
 # Adzuna — paid free-tier API (app_id + app_key from developer.adzuna.com)
@@ -62,7 +66,7 @@ resource "aws_lambda_function" "adzuna" {
   handler          = "ingest_adzuna.lambda_handler"
   runtime          = "python3.12"
   role             = aws_iam_role.lambda_exec.arn
-  timeout          = 300  # 12 countries × 6 pages × ~0.5s/req ≈ 36s; 300s is safe headroom
+  timeout          = 300 # 12 countries × 6 pages × ~0.5s/req ≈ 36s; 300s is safe headroom
   memory_size      = 256
 
   environment {
@@ -71,6 +75,10 @@ resource "aws_lambda_function" "adzuna" {
       ADZUNA_APP_ID  = var.adzuna_app_id
       ADZUNA_APP_KEY = var.adzuna_app_key
     }
+  }
+
+  lifecycle {
+    ignore_changes = [filename, source_code_hash] # code deployed by CI (deploy.yml), Chat 25
   }
 }
 
@@ -97,6 +105,10 @@ resource "aws_lambda_function" "arbeitnow" {
       BRONZE_BUCKET = aws_s3_bucket.layers["bronze"].bucket
     }
   }
+
+  lifecycle {
+    ignore_changes = [filename, source_code_hash] # code deployed by CI (deploy.yml), Chat 25
+  }
 }
 
 # Greenhouse — ATS board API, no auth, no Cloudflare (verified 2026-04-26 from EC2 datacenter IP)
@@ -115,13 +127,17 @@ resource "aws_lambda_function" "greenhouse" {
   handler          = "ingest_greenhouse.lambda_handler"
   runtime          = "python3.12"
   role             = aws_iam_role.lambda_exec.arn
-  timeout          = 120  # 30 slugs × ~0.5s/req ≈ 15s; 120s is safe headroom
+  timeout          = 120 # 30 slugs × ~0.5s/req ≈ 15s; 120s is safe headroom
   memory_size      = 256
 
   environment {
     variables = {
       BRONZE_BUCKET = aws_s3_bucket.layers["bronze"].bucket
     }
+  }
+
+  lifecycle {
+    ignore_changes = [filename, source_code_hash] # code deployed by CI (deploy.yml), Chat 25
   }
 }
 

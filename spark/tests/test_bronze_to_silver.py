@@ -10,7 +10,8 @@ import sys
 import os
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "jobs"))
+JOBS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "jobs"))
+sys.path.insert(0, JOBS_DIR)
 
 from bronze_to_silver import (
     extract_country,
@@ -18,6 +19,8 @@ from bronze_to_silver import (
     extract_role_family_from_tags,
     resolve_role_family,
     extract_state,
+    parse_tags,
+    bronze_schema,
     build_silver_df,
     deduplicate_silver_df,
 )
@@ -208,6 +211,29 @@ class TestExtractRoleFamilyFromTags:
         assert extract_role_family_from_tags(None) == "Other"
 
 
+class TestParseTags:
+    """Bronze tags arrive as a JSON array or a plain string (Aug 2026 drift) — both → list."""
+
+    def test_json_array(self):
+        assert parse_tags('["python", "aws"]') == ["python", "aws"]
+
+    def test_plain_string(self):
+        assert parse_tags("python, aws") == ["python", "aws"]
+
+    def test_single_word_string(self):
+        assert parse_tags("python") == ["python"]
+
+    def test_empty_array(self):
+        assert parse_tags("[]") == []
+
+    def test_none_and_blank(self):
+        assert parse_tags(None) == []
+        assert parse_tags("   ") == []
+
+    def test_non_string_elements(self):
+        assert parse_tags('["python", 3, null]') == ["python", "3"]
+
+
 class TestResolveRoleFamily:
     def test_uses_category_when_available(self):
         assert resolve_role_family("Data", ["sales"]) == "DATA"
@@ -236,6 +262,8 @@ pytestmark_pyspark = pytest.mark.skipif(not _HAS_PYSPARK, reason="pyspark not in
 def spark():
     from pyspark.sql import SparkSession
 
+    # UDFs run in separate Python worker processes; they inherit PYTHONPATH, not sys.path
+    os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, [JOBS_DIR, os.environ.get("PYTHONPATH")]))
     session = (
         SparkSession.builder.master("local[1]")
         .appName("test_bronze_to_silver")
@@ -245,6 +273,13 @@ def spark():
     session.sparkContext.setLogLevel("ERROR")
     yield session
     session.stop()
+
+
+def _read_bronze(spark, *docs):
+    """Same read path as the Glue job: explicit schema, never inferred."""
+    return spark.read.schema(bronze_schema()).option("multiline", "true").json(
+        spark.sparkContext.parallelize([json.dumps(d) for d in docs])
+    )
 
 
 # --- Remotive fixture ---
@@ -296,9 +331,7 @@ REMOTEOK_BRONZE = {
 
 @pytestmark_pyspark
 def test_remotive_silver_schema(spark):
-    raw_df = spark.read.option("multiline", "true").json(
-        spark.sparkContext.parallelize([json.dumps(REMOTIVE_BRONZE)])
-    )
+    raw_df = _read_bronze(spark, REMOTIVE_BRONZE)
     silver = build_silver_df(raw_df)
 
     expected_cols = {
@@ -312,9 +345,7 @@ def test_remotive_silver_schema(spark):
 
 @pytestmark_pyspark
 def test_remotive_silver_values(spark):
-    raw_df = spark.read.option("multiline", "true").json(
-        spark.sparkContext.parallelize([json.dumps(REMOTIVE_BRONZE)])
-    )
+    raw_df = _read_bronze(spark, REMOTIVE_BRONZE)
     silver = build_silver_df(raw_df)
     row = silver.collect()[0]
 
@@ -331,9 +362,7 @@ def test_remotive_silver_values(spark):
 
 @pytestmark_pyspark
 def test_remoteok_silver_values(spark):
-    raw_df = spark.read.option("multiline", "true").json(
-        spark.sparkContext.parallelize([json.dumps(REMOTEOK_BRONZE)])
-    )
+    raw_df = _read_bronze(spark, REMOTEOK_BRONZE)
     silver = build_silver_df(raw_df)
     row = silver.collect()[0]
 
@@ -348,12 +377,7 @@ def test_remoteok_silver_values(spark):
 @pytestmark_pyspark
 def test_multi_source_bronze(spark):
     """Both sources in one Spark read — schema merge, both rows present."""
-    raw_df = spark.read.option("multiline", "true").json(
-        spark.sparkContext.parallelize([
-            json.dumps(REMOTIVE_BRONZE),
-            json.dumps(REMOTEOK_BRONZE),
-        ])
-    )
+    raw_df = _read_bronze(spark, REMOTIVE_BRONZE, REMOTEOK_BRONZE)
     silver = build_silver_df(raw_df)
     rows = silver.collect()
     sources = {r["source"] for r in rows}
@@ -365,9 +389,7 @@ def test_multi_source_bronze(spark):
 def test_india_state(spark):
     job = {**REMOTIVE_JOB, "candidate_required_location": "Bangalore, India"}
     bronze = {**REMOTIVE_BRONZE, "jobs": [job]}
-    raw_df = spark.read.option("multiline", "true").json(
-        spark.sparkContext.parallelize([json.dumps(bronze)])
-    )
+    raw_df = _read_bronze(spark, bronze)
     silver = build_silver_df(raw_df)
     row = silver.collect()[0]
     assert row["country"] == "IN"
@@ -376,9 +398,7 @@ def test_india_state(spark):
 
 @pytestmark_pyspark
 def test_no_logo_columns(spark):
-    raw_df = spark.read.option("multiline", "true").json(
-        spark.sparkContext.parallelize([json.dumps(REMOTIVE_BRONZE)])
-    )
+    raw_df = _read_bronze(spark, REMOTIVE_BRONZE)
     silver = build_silver_df(raw_df)
     assert "company_logo" not in silver.columns
     assert "company_logo_url" not in silver.columns
@@ -409,7 +429,11 @@ def _make_dedup_df(spark, rows):
 
 @pytestmark_pyspark
 def test_cross_source_dedup(spark):
-    """Same job from two sources → deduplicated to 1 row; source_apis contains both."""
+    """Same job from two sources → both rows kept, each annotated with both sources.
+
+    Silver keeps one row per source+job_id (each source has its own apply_url);
+    cross-source matches are marked with source_apis/source_count, not collapsed.
+    """
     from datetime import date, datetime
 
     rows = [
@@ -421,12 +445,12 @@ def test_cross_source_dedup(spark):
     df = _make_dedup_df(spark, rows)
     result = deduplicate_silver_df(df)
 
-    assert result.count() == 1
-    row = result.collect()[0]
-    assert set(row["source_apis"]) == {"remotive", "arbeitnow"}
-    assert row["source_count"] == 2
-    # canonical row should be remotive (earlier ingested_at, same pub date)
-    assert row["source"] == "remotive"
+    rows = result.collect()
+    assert len(rows) == 2
+    assert {r["source"] for r in rows} == {"remotive", "arbeitnow"}
+    for row in rows:
+        assert set(row["source_apis"]) == {"remotive", "arbeitnow"}
+        assert row["source_count"] == 2
 
 
 @pytestmark_pyspark
@@ -449,7 +473,7 @@ def test_different_country_not_deduped(spark):
 
 @pytestmark_pyspark
 def test_null_company_name_handled(spark):
-    """Null company_name is coalesced to '' in the hash — does not crash, key is non-null."""
+    """Null company_name is coalesced in the cross-source key — no crash, row kept, helper keys dropped."""
     from datetime import date, datetime
 
     rows = [
@@ -461,17 +485,18 @@ def test_null_company_name_handled(spark):
 
     assert result.count() == 1
     row = result.collect()[0]
-    assert row["dedup_key"] is not None
     assert row["source_count"] == 1
+    assert "dedup_key" not in result.columns
+    assert "cross_source_key" not in result.columns
 
 
 # --- Adzuna fixture ---
 
 ADZUNA_JOB = {
-    "id": "adzuna-gb-99001",
+    "job_id": "99001",
     "title": "Data Engineer",
     "company_name": "Gamma Ltd",
-    "redirect_url": "https://www.adzuna.co.uk/land/vacancy/99001",
+    "apply_url": "https://www.adzuna.co.uk/land/vacancy/99001",
     "description": "<p>Adzuna job description...</p>",
     "tags": [],
     "location_raw": "London, UK",
@@ -491,11 +516,9 @@ ADZUNA_BRONZE = {
 
 
 @pytestmark_pyspark
-def test_adzuna_redirect_url_coalesced(spark):
-    """Adzuna jobs use redirect_url; COALESCE must resolve it to apply_url in silver."""
-    raw_df = spark.read.option("multiline", "true").json(
-        spark.sparkContext.parallelize([json.dumps(ADZUNA_BRONZE)])
-    )
+def test_adzuna_silver_values(spark):
+    """Adzuna bronze as ingest_adzuna writes it (redirect_url already mapped to apply_url)."""
+    raw_df = _read_bronze(spark, ADZUNA_BRONZE)
     silver = build_silver_df(raw_df)
     row = silver.collect()[0]
 
@@ -503,3 +526,32 @@ def test_adzuna_redirect_url_coalesced(spark):
     assert row["source"] == "adzuna"
     assert row["country"] == "UK"
     assert row["salary_raw"] == "$70000-$90000"
+    assert row["tags"] == []
+
+
+@pytestmark_pyspark
+def test_tags_as_plain_string(spark):
+    """Aug 2026 drift: a source sent tags as a string. Must not fail the read."""
+    job = {**REMOTIVE_JOB, "tags": "python, spark"}
+    raw_df = _read_bronze(spark, {**REMOTIVE_BRONZE, "jobs": [job]})
+    row = build_silver_df(raw_df).collect()[0]
+    assert row["tags"] == ["python", "spark"]
+    assert row["role_family"] == "SDE"
+
+
+@pytestmark_pyspark
+def test_tags_string_and_array_same_day(spark):
+    """One source sends a string, another an array, in the same read → both parse."""
+    string_job = {**REMOTIVE_JOB, "tags": "python, spark"}
+    raw_df = _read_bronze(spark, {**REMOTIVE_BRONZE, "jobs": [string_job]}, REMOTEOK_BRONZE)
+    silver = build_silver_df(raw_df)
+    assert dict(silver.dtypes)["tags"] == "array<string>"
+    tags = {r["source"]: r["tags"] for r in silver.collect()}
+    assert tags == {"remotive": ["python", "spark"], "remoteok": ["python", "data", "aws"]}
+
+
+@pytestmark_pyspark
+def test_numeric_id_read_as_string(spark):
+    """Remotive's numeric id is kept as text by the string schema."""
+    raw_df = _read_bronze(spark, REMOTIVE_BRONZE)
+    assert build_silver_df(raw_df).collect()[0]["job_id"] == "1234567"

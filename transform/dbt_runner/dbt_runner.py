@@ -1,6 +1,6 @@
 """
 Glue Python Shell job — downloads the dbt project from S3, repairs
-the silver Athena table partitions, then runs `dbt run`.
+the silver Athena table partitions, then runs `dbt build` (models + their tests).
 
 Invoked by Step Functions after the bronze→silver Glue ETL job.
 """
@@ -10,7 +10,12 @@ import os
 import time
 import zipfile
 
+import sys
+
 import boto3
+
+# Flush every print to CloudWatch now, not at exit — a timed-out run otherwise logs nothing.
+sys.stdout.reconfigure(line_buffering=True)
 
 # ---------------------------------------------------------------------------
 # Argument parsing (Glue passes job params as --key value)
@@ -37,7 +42,8 @@ DBT_ZIP_KEY    = "dbt-project/dbt_project.zip"
 DBT_LOCAL_DIR  = "/tmp/dbt_project"
 DBT_PROJECT_DIR = os.path.join(DBT_LOCAL_DIR, "dbt_project")
 PROFILES_DIR  = "/tmp/dbt_profiles"
-S3_STAGING    = f"s3://{GOLD_BUCKET}/athena-results/"
+S3_STAGING    = f"s3://{GOLD_BUCKET}/athena-results/"  # query result CSVs — expire after 7 days
+S3_DATA_DIR   = f"s3://{GOLD_BUCKET}/models/"          # the gold tables themselves — never expire
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +72,7 @@ def write_glue_profiles():
                     "type": "athena",
                     "region_name": REGION,
                     "s3_staging_dir": S3_STAGING,
+                    "s3_data_dir": S3_DATA_DIR,
                     "schema": GOLD_DB,
                     "database": "awsdatacatalog",
                     "work_group": WORKGROUP,
@@ -131,12 +138,15 @@ def run_dbt():
     if result.returncode != 0:
         raise RuntimeError(f"dbt deps failed with code {result.returncode}")
 
-    print("\n=== Running: dbt run ===")
-    result = subprocess.run(["dbt", "run"] + base_args, env=os.environ.copy())
+    # build = run each model, then test it, in DAG order. A failing test skips the models
+    # downstream of it and fails this job → Step Functions → PipelineFailure. Before Chat 25
+    # this was `dbt run`: the 21 tests in schema.yml existed but never ran in production.
+    print("\n=== Running: dbt build ===")
+    result = subprocess.run(["dbt", "build"] + base_args, env=os.environ.copy())
     if result.returncode != 0:
-        raise RuntimeError(f"dbt run failed with code {result.returncode}")
+        raise RuntimeError(f"dbt build failed with code {result.returncode} (a model or a test failed)")
 
-    print("\n=== dbt run complete ===")
+    print("\n=== dbt build complete ===")
 
 
 # ---------------------------------------------------------------------------

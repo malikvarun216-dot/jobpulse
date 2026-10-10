@@ -21,8 +21,8 @@ Ground rules for every chat:
 |---|---|---|
 | 23 | Recon, AWS decision, docs overhaul, interview guide | ✅ done (2026-10-06) |
 | 24 | Stabilize the account and repo (must finish before ~Oct 16) | ✅ done (2026-10-07) |
-| 25 | Fix the failures, go live again | ✅ live 2026-10-08 — night 1 (Oct 9) green; closes after Oct 10–11 + alarm test |
-| 26 | AI concepts lab (learning session) | ✅ built 2026-10-09 — notebook run on live data; 90-s drill is Varun's |
+| 25 | Fix the failures, go live again | ✅ live 2026-10-08 — nights 1–2 (Oct 9, 10) green; closes after Oct 11 + alarm test |
+| 26 | AI concepts lab (learning session) | ✅ built + committed `79aa6ba` (2026-10-10); 90-s drill parked (Varun) |
 | 27 | Evaluation foundations: freeze a corpus, label it | ⏭ next |
 | 28 | Baseline + better retrieval (hybrid, chunk grain) | |
 | 29 | Vector stores on AWS: pgvector (RDS) vs S3 Vectors, by eval | |

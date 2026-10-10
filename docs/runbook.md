@@ -268,6 +268,12 @@ If a table still points at `athena-results/`: the workgroup is enforcing again (
 - Notebook: `notebooks/chat26_ai_concepts_lab.ipynb`. Data: `C:\Users\malik\jobpulse_lab_data\` (outside the repo;
   the first cell downloads it from S3 if missing — read-only GETs, ~9 MB). Writes nothing to AWS.
 - Environment: `.venv` in the repo root (gitignored) with the kernel **"JobPulse lab (.venv)"** registered inside it.
+- VS Code: kernel name (top right) → **Select Another Kernel… → Python Environments…** → pick the `.venv` /
+  "JobPulse lab (.venv)" entry. If it isn't listed: Ctrl+Shift+P → *Python: Select Interpreter* → *Enter interpreter path…*
+  → the **full** path `C:\Users\malik\my_proj\jobpulse\.venv\Scripts\python.exe`. Never "Create Python Environment"
+  (a relative path there fails with `spawn .venv\Scripts\python.exe ENOENT`), and don't tick `requirements.txt` in its
+  install prompt. The label "Python 3.11.5" alone is ambiguous — system Python and `.venv` are both 3.11.5. Check: the
+  first cell prints `silver rows: 6,006 | rows with a vector: 1,544 | vector matrix: (1544, 1024)`.
   Rebuild from scratch:
   ```powershell
   python -m venv .venv; .\.venv\Scripts\python.exe -m pip install "pyarrow==14.0.2" "numpy==1.26.4" pandas boto3 voyageai anthropic rank_bm25 pyyaml ipykernel nbclient; .\.venv\Scripts\python.exe -m ipykernel install --sys-prefix --name jobpulse-lab --display-name "JobPulse lab (.venv)"

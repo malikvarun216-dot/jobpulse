@@ -1256,8 +1256,12 @@ Find the real causes of the Aug–Sep failures, fix them, turn the quality check
 - RAG: title only → "not stated" everywhere; pipeline's 4,000 chars → no tools named; retrieved sections → Python,
   SQL, Snowflake, dbt, Airflow, Terraform, AWS — with fewer input tokens (1,046 vs 1,288).
 
+### Committed
+- `79aa6ba` (2026-10-10): CI #21 + Deploy #19 green; deployed `genai_package.zip` checked — contains `parse_api_key`.
+- Soak night 2 (Oct 10, 02:00 IST) **SUCCEEDED** in 10 min 40 s; no-success alarm OK.
+
 ### Not done
-- Done-criterion "each concept explained aloud in 90 s" — Varun's drill (script at the end of the notebook).
+- Done-criterion "each concept explained aloud in 90 s" — Varun's drill (script at the end of the notebook), parked.
 - Step 5 labels are Claude's drafts from titles — Varun to check against the snippets.
 
 ### Next

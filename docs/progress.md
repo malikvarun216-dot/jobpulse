@@ -1267,3 +1267,36 @@ Find the real causes of the Aug–Sep failures, fix them, turn the quality check
 ### Next
 - Night check Oct 10 + 11, then the alarm test → Chat 25 closes.
 - Chat 27 (corpus + labels) — Greenhouse `?content=true` decision still first.
+
+
+## Chat 27 — Evaluation foundations, part 1 (2026-10-11)
+
+### Night check
+- Oct 11 02:00 IST **SUCCEEDED** (10 min 23 s) — soak night 3 of 3. Embeddings 71 s, enrichment 44 s. All 3 alarms OK.
+- Chat 25 is left with the deliberate-failure alarm test only.
+
+### Decided + built
+- Greenhouse `?content=true` → **on** (decisions.md). `ingest_greenhouse.py` fetches the full JD and stores it as decoded
+  HTML; 3 new tests (19 pass). `lambda.tf`: Greenhouse memory 256 → 1024 MB.
+- `eval/freeze_corpus.py` — pinned silver dates → one row per job_id (latest wins) → `corpus.parquet` + `manifest.json`
+  in `s3://jobpulse-gold-dev/eval/corpus_v1/`, never overwritten. 4 tests. Dry run on Oct 9: 5,998 jobs, 1,536 with a JD,
+  Greenhouse 0 / 4,462.
+- `eval/queries_v1.yml` — 50 **draft** queries (12 keyword, 12 descriptive, 10 role, 7 filtered, 9 edge), each with a
+  `relevant_if` rubric line. Drafts from `user_profile.yml`; Varun replaces them with real searches before labeling.
+
+### Measured
+- Greenhouse with content (30 slugs, 2026-10-11): 4,466 jobs, all with a JD; 53 MB vs 4.3 MB; 26 s vs 14 s; clean JD
+  median 5,751 chars, p90 8,343; 89% longer than 4,000 chars; 366 MB Python peak (Lambda had 256 MB).
+- **11 of 30 Greenhouse slugs return 404**: doordash, notion, plaid, snowflake, confluent, hashicorp, cockroachdb, hubspot,
+  zendesk, canva, palantir (likely moved ATS).
+- Silver Oct 9: `role_family = Other` for **5,610 / 6,006 rows (93%)**, `DATA` only 46; `country = other` for 1,923 (32%).
+- Silver Oct 9 has 8 exact duplicate rows (Adzuna, same job_id twice in one snapshot — likely pagination overlap).
+
+### Not done
+- Corpus not frozen: it needs the Oct 12–14 nights with Greenhouse JDs (→ Chat 27 part 2).
+- Pooling, labeling page, Claude judge, Cohen's κ → Chat 27 part 2.
+- Local `pytest tests/`: 7 `test_ge_runner` failures = known local GE shadowing (runbook §19), not this change.
+
+### Next
+- Varun: `terraform apply` (memory only), **then** push. Night Oct 12 = first Greenhouse JDs; check bronze size and Lambda memory.
+- Chat 27 part 2 (on/after Oct 14): freeze corpus_v1, finalize queries, pool, label, judge, κ.

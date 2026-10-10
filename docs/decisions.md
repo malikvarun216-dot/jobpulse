@@ -654,9 +654,19 @@
 - A single 24 h period flaps: a run a few minutes later than yesterday leaves a gap. 26 × 1 h with 26/26 breaching = "no success anywhere in 26 h", 2 h of slack. Missing data = breaching, so "nothing ran" alarms too.
 - Duration warning: runners publish their own `JobDurationSeconds` (Glue has no duration metric for Python Shell); alarm at 70% of each job's timeout, threshold computed from the Terraform timeout so the two can't drift apart.
 
-## Greenhouse descriptions: not fetched yet (Chat 25, open)
-- Greenhouse is ~70% of jobs and sends no JD text (list endpoint). `?content=true` returns it (checked: GitLab 217 jobs, ~12.5 KB each, 3.4 MB, 0.9 s; also a real `company_name`).
-- Not switched on in Chat 25: it grows silver, the nightly full rebuild of `fact_job_posting`, the embedding scan and Voyage spend. Decision needed — before Chat 27 freezes the eval corpus.
+## Greenhouse descriptions: fetch the full JD with `?content=true` (Chat 25 open → decided Chat 27)
+- Greenhouse is ~74% of jobs (4,462 / 6,006 on Oct 9) and the list endpoint sends no JD text, so the eval corpus would be mostly titles.
+- Measured 2026-10-11, all 30 slugs: 4,466 jobs, **every one** with a JD; response 4.3 MB → 53 MB (4.4 MB gzipped in bronze);
+  fetch 14 s → 26 s; clean JD median 5,751 chars (89% longer than the 4,000-char embed cut); **366 MB Python peak** locally.
+- Options: (1) turn it on; (2) turn it on but keep Greenhouse out of the nightly embedding until Chat 30; (3) keep it off and
+  freeze the corpus from the other sources (~1.5K described jobs, 1.2K of them 500-char Adzuna snippets).
+- Chose (1). Cost: ~+4.4M Voyage tokens/night while every night re-embeds everything (~130M/month ≈ $2.6 at $0.02/M once the
+  free tokens are gone) — until Chat 30 makes embeddings incremental. (2) saves that but adds code Chat 30 deletes.
+- Stored as **decoded HTML** (`html.unescape`, same form as Arbeitnow), not stripped text: the `<h3>` headings mark JD sections
+  for the Chat 28 chunking experiment; stripping is one measured decision in Chat 28 for both sources.
+- Lambda memory 256 → **1024 MB** (Terraform). At 256 MB the run would OOM, and the Parallel state has no per-branch catch:
+  one failed source fails the whole night. Order: `terraform apply` first, push the code second.
+- `company_name` stays the slug (`stripe`), so `dim_company` keys don't change; the API's real name is a later, separate change.
 
 ## Anthropic secret: fix the reader, not the secret (Chat 26)
 - The secret is JSON since 2026-04-24; the enrichment agent read it as a raw string → 401 on every call.
@@ -671,3 +681,13 @@
 - The data (`jobpulse_lab_data/`, ~9 MB parquet) stays outside the repo; the first cell re-downloads it.
 - Separate `.venv` (gitignored) instead of the system Python: the lab needs `pyarrow==14.0.2` / `numpy==1.26.4` to match
   Glue, without touching the global install.
+
+## Eval corpus: frozen, versioned, latest-snapshot-wins (Chat 27)
+- Labels (qrels) point at exact job_ids and texts, so the corpus must not move: `eval/freeze_corpus.py` writes
+  `s3://jobpulse-gold-dev/eval/corpus_v1/` once and refuses to overwrite; a new corpus = `corpus_v2/`.
+- One row per `job_id` across the pinned dates; the latest snapshot's text wins (a JD edited on day 2 keeps the day-2 text).
+- Manifest = dates, row count, per-source counts, `content_sha256` over (job_id, title, description) in job_id order, git sha.
+  Same rows → same hash on any machine, so "did the corpus change?" is a string compare.
+- Pinned dates: the first three nights with Greenhouse JDs (Oct 12–14), not "a few weeks": Greenhouse returns every open
+  job each night, so one night already holds ~4.5K full JDs.
+- Queries carry a `relevant_if` line — the rubric both the human labeler and the LLM judge read, so they judge the same thing.

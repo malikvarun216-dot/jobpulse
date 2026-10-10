@@ -293,3 +293,25 @@ If a table still points at `athena-results/`: the workgroup is enforcing again (
   then in Python: `len(s)`, `s.startswith("{")`, `list(json.loads(s))` — never print `s`.
 - Cause seen (Chat 26): JSON secret sent raw as the key. Fixed by `parse_api_key()` (accepts JSON or raw).
   Other causes: key revoked in console.anthropic.com (rotate: put a new **JSON** value), or a 400 "credit balance is too low".
+
+## 21. Greenhouse ingestor runs out of memory / times out
+
+- Since Chat 27 it fetches `?content=true` (full JDs): ~53 MB of JSON per run, 366 MB Python peak measured locally.
+- Symptom: Step Functions fails in the ingest Parallel state (one failed branch fails the whole night); Lambda log shows
+  `Runtime exited ... signal: killed` or `Task timed out`; `REPORT ... Max Memory Used` close to `Memory Size`.
+- Look (Git Bash, last 24 h of REPORT lines):
+  ```bash
+  MSYS_NO_PATHCONV=1 AWS_DEFAULT_REGION=ap-south-1 aws logs filter-log-events --log-group-name /aws/lambda/jobpulse-ingest-greenhouse-dev --filter-pattern REPORT --start-time $(( ($(date +%s) - 86400) * 1000 )) --query "events[].message" --output text
+  ```
+- Fix: raise `memory_size` (or `timeout`) in `terraform/envs/dev/lambda.tf` → `terraform apply`. A code change that grows
+  the payload must ship **after** the memory change, never before (CI deploys within minutes of a push).
+- No safe quick relief: dropping `?content=true` re-empties ~74% of the descriptions.
+
+## 22. Freeze the eval corpus
+
+- `eval/freeze_corpus.py --dates <d1> <d2> ... [--version v1] --dry-run` prints the manifest only; without `--dry-run`
+  it writes `s3://jobpulse-gold-dev/eval/corpus_<version>/` + a local copy in `C:\Users\malik\jobpulse_lab_data\corpus_<version>\`.
+- Run it with `.venv\Scripts\python.exe` (needs pyarrow 14 / pandas). Read-only on silver; downloads are cached per date.
+- "already exists" = by design: a frozen corpus is never overwritten. New data → new `--version`.
+- Before freezing: the manifest's `by_source.greenhouse.with_description` must be > 0 — if it is 0, the dates predate the
+  Chat 27 deploy.

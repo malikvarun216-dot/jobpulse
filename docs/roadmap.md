@@ -1,6 +1,6 @@
 # JobPulse Roadmap — Data + AI track (Chat 24 onward)
 
-Last updated: **Chat 26 (2026-10-09)**. Update this file at the end of every chat: tick the chat, adjust the next one.
+Last updated: **Chat 27 (2026-10-11)**. Update this file at the end of every chat: tick the chat, adjust the next one.
 
 ## Why this roadmap exists
 
@@ -21,9 +21,9 @@ Ground rules for every chat:
 |---|---|---|
 | 23 | Recon, AWS decision, docs overhaul, interview guide | ✅ done (2026-10-06) |
 | 24 | Stabilize the account and repo (must finish before ~Oct 16) | ✅ done (2026-10-07) |
-| 25 | Fix the failures, go live again | ✅ live 2026-10-08 — nights 1–2 (Oct 9, 10) green; closes after Oct 11 + alarm test |
+| 25 | Fix the failures, go live again | ✅ live 2026-10-08 — nights 1–3 (Oct 9–11) green; closes after the alarm test |
 | 26 | AI concepts lab (learning session) | ✅ built + committed `79aa6ba` (2026-10-10); 90-s drill parked (Varun) |
-| 27 | Evaluation foundations: freeze a corpus, label it | ⏭ next |
+| 27 | Evaluation foundations: freeze a corpus, label it | 🟡 part 1 done (2026-10-11): Greenhouse JDs on, freeze script, draft queries · part 2 ⏭ on/after Oct 14 |
 | 28 | Baseline + better retrieval (hybrid, chunk grain) | |
 | 29 | Vector stores on AWS: pgvector (RDS) vs S3 Vectors, by eval | |
 | 30 | Embeddings as a real pipeline (incremental, versioned, freshness) | |
@@ -121,6 +121,15 @@ Notebook on ~20 real JDs from the exported silver data:
 - `eval/queries_v1.yml`: ~50 queries (your real searches, keyword-heavy, paraphrase, filtered, edge cases).
 - Pooling: union of top-20 from BM25, NumPy vector, current hybrid → ~2,500 query–job pairs.
 - Labels 0/1/2: hand-label ~300 pairs in a tiny local Streamlit page; Claude judge with a written rubric labels all; Cohen's κ between judge and you (≥ ~0.6 → trust the judge). Output `eval/qrels_v1.parquet`.
+
+> ✅ Part 1 (2026-10-11): `?content=true` **on** (4,466 full JDs/night; Lambda 1024 MB). `eval/freeze_corpus.py` (immutable
+> corpus + manifest with content hash) and `eval/queries_v1.yml` (50 drafts with `relevant_if`). Pinned dates:
+> **Oct 12–14** (Greenhouse returns every open job nightly — no need to wait weeks).
+>
+> Part 2 (on/after Oct 14): check the Oct 12–14 silver has Greenhouse JDs → `freeze_corpus.py --dates 2026-10-12 2026-10-13 2026-10-14`
+> → Varun swaps draft queries for real ones → pooling (BM25 + NumPy vector + current hybrid, top-20 each) → labeling page → judge → κ.
+> Found in part 1, for later chats: `role_family = Other` on 93% of silver rows (the role filter is useless — fix before
+> the dashboard/brief rely on it); 11 / 30 Greenhouse slugs 404; 8 Adzuna duplicate rows within one snapshot.
 
 ## Chat 28 — Baseline + better retrieval
 

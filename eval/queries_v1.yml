@@ -1,0 +1,78 @@
+# Retrieval eval queries, version 1 (Chat 27). Frozen together with corpus_v1: once labels exist, never edit a
+# query in place — add a new id, or start queries_v2.yml.
+#
+# Each query:
+#   id           stable key used in qrels (labels) — never reuse
+#   text         exactly what you would type in the dashboard search box
+#   type         keyword | descriptive | role | filtered | edge   (a mix, so no method wins by construction:
+#                vector search loses bare tool names, keyword search loses paraphrases — Chat 26)
+#   relevant_if  one sentence: what a "2 = clearly relevant" job looks like. This is the rubric line both the
+#                human labeler and the LLM judge read, so they judge the same thing.
+#   filters      optional metadata filter applied before ranking. Silver values: country = ISO-ish code
+#                (US, UK, IN, DE ...) or 'remote' or 'other'; role_family is 'Other' for 93% of rows (Oct 9),
+#                so role_family filters stay out of v1 until classification is fixed.
+#   origin       draft = written by Claude from config/user_profile.yml; varun = a real search of yours.
+#                Goal before labeling: replace or confirm drafts until most are origin: varun.
+#
+# Labels (Chat 27b): 0 = not relevant, 1 = partly (right field, wrong level/stack), 2 = clearly relevant.
+
+queries:
+  # --- keyword: bare tool names (BM25's home ground) ---
+  - {id: q01, type: keyword, origin: draft, text: "snowflake", relevant_if: "Snowflake is part of the job's actual work, not only the company's customer list."}
+  - {id: q02, type: keyword, origin: draft, text: "airflow", relevant_if: "Builds or operates Apache Airflow DAGs."}
+  - {id: q03, type: keyword, origin: draft, text: "dbt", relevant_if: "Uses dbt for transformations (dbt-core or dbt Cloud)."}
+  - {id: q04, type: keyword, origin: draft, text: "kafka", relevant_if: "Works with Apache Kafka (or Confluent) as a producer, consumer or operator."}
+  - {id: q05, type: keyword, origin: draft, text: "pyspark", relevant_if: "Writes Spark jobs in Python."}
+  - {id: q06, type: keyword, origin: draft, text: "databricks delta lake", relevant_if: "Builds on Databricks and/or Delta Lake tables."}
+  - {id: q07, type: keyword, origin: draft, text: "bigquery", relevant_if: "BigQuery is a working tool in the role."}
+  - {id: q08, type: keyword, origin: draft, text: "terraform aws", relevant_if: "Provisions AWS infrastructure with Terraform."}
+  - {id: q09, type: keyword, origin: draft, text: "flink", relevant_if: "Builds stream processing with Apache Flink."}
+  - {id: q10, type: keyword, origin: draft, text: "iceberg", relevant_if: "Works with Apache Iceberg tables."}
+  - {id: q11, type: keyword, origin: draft, text: "redshift", relevant_if: "Amazon Redshift is a working tool in the role."}
+  - {id: q12, type: keyword, origin: draft, text: "kinesis", relevant_if: "Uses Amazon Kinesis for streaming."}
+
+  # --- descriptive: paraphrases with few exact tool names (vector search's home ground) ---
+  - {id: q13, type: descriptive, origin: draft, text: "build and maintain batch data pipelines that feed a warehouse", relevant_if: "Core of the role is building/owning ETL or ELT pipelines into a warehouse or lakehouse."}
+  - {id: q14, type: descriptive, origin: draft, text: "real-time event streaming platform for millions of users", relevant_if: "Builds or runs a streaming/event platform (Kafka, Kinesis, Flink, Pub/Sub or similar)."}
+  - {id: q15, type: descriptive, origin: draft, text: "own the data model and metrics layer for analytics", relevant_if: "Designs data models / semantic layer / metrics definitions used by analysts."}
+  - {id: q16, type: descriptive, origin: draft, text: "make data reliable: tests, monitoring and data quality checks", relevant_if: "Data quality, observability or data reliability is a main responsibility."}
+  - {id: q17, type: descriptive, origin: draft, text: "build the infrastructure that trains and serves machine learning models", relevant_if: "ML platform / MLOps / feature pipelines — infrastructure, not model research."}
+  - {id: q18, type: descriptive, origin: draft, text: "use large language models to extract structured data from documents", relevant_if: "Role applies LLMs to data/extraction/RAG work in production."}
+  - {id: q19, type: descriptive, origin: draft, text: "migrate on-prem Hadoop workloads to the cloud", relevant_if: "Mentions migration of Hadoop/legacy data platform to cloud."}
+  - {id: q20, type: descriptive, origin: draft, text: "reduce cloud data warehouse costs and speed up slow queries", relevant_if: "Performance tuning or cost optimization of data platforms is a stated responsibility."}
+  - {id: q21, type: descriptive, origin: draft, text: "first data hire at a startup, set up the whole data stack", relevant_if: "Small/early team where the hire builds the data platform from scratch."}
+  - {id: q22, type: descriptive, origin: draft, text: "payments data, fraud and risk analytics pipelines", relevant_if: "Data engineering in payments, fraud or risk domain."}
+  - {id: q23, type: descriptive, origin: draft, text: "vector search and embeddings for recommendations", relevant_if: "Builds embedding, vector search or retrieval systems."}
+  - {id: q24, type: descriptive, origin: draft, text: "change data capture from production databases into the lake", relevant_if: "CDC / replication from OLTP databases (Debezium, DMS, Fivetran or similar)."}
+
+  # --- role: how job titles are searched ---
+  - {id: q25, type: role, origin: draft, text: "data engineer", relevant_if: "The job is a data engineering role at any level."}
+  - {id: q26, type: role, origin: draft, text: "senior data engineer", relevant_if: "Data engineering role at senior level (or mid with senior scope)."}
+  - {id: q27, type: role, origin: draft, text: "analytics engineer", relevant_if: "Analytics engineering (dbt/SQL modeling for analysts)."}
+  - {id: q28, type: role, origin: draft, text: "machine learning engineer", relevant_if: "ML engineering role (building/deploying models), not pure research."}
+  - {id: q29, type: role, origin: draft, text: "data platform engineer", relevant_if: "Builds the internal data platform/tooling used by other data teams."}
+  - {id: q30, type: role, origin: draft, text: "backend engineer python", relevant_if: "Backend/software engineering role where Python is a main language."}
+  - {id: q31, type: role, origin: draft, text: "big data engineer spark hadoop", relevant_if: "Data engineering on Spark/Hadoop-style distributed systems."}
+  - {id: q32, type: role, origin: draft, text: "data engineer intern", relevant_if: "Internship or new-grad data engineering role."}
+  - {id: q33, type: role, origin: draft, text: "staff data engineer", relevant_if: "Staff/principal-level data engineering role."}
+  - {id: q34, type: role, origin: draft, text: "AI engineer", relevant_if: "Builds applications or systems on top of LLMs/ML models."}
+
+  # --- filtered: query + metadata filter (tests filtering, which Chat 29 vector stores must support) ---
+  - {id: q35, type: filtered, origin: draft, text: "data engineer", filters: {country: IN}, relevant_if: "Data engineering role located in India."}
+  - {id: q36, type: filtered, origin: draft, text: "spark kafka", filters: {country: IN}, relevant_if: "India-located role using Spark and/or Kafka."}
+  - {id: q37, type: filtered, origin: draft, text: "data engineer", filters: {country: remote}, relevant_if: "Remote data engineering role."}
+  - {id: q38, type: filtered, origin: draft, text: "data engineer", filters: {country: UK}, relevant_if: "Data engineering role located in the UK."}
+  - {id: q39, type: filtered, origin: draft, text: "data engineer", filters: {country: DE}, relevant_if: "Data engineering role located in Germany."}
+  - {id: q40, type: filtered, origin: draft, text: "streaming pipelines", filters: {country: remote}, relevant_if: "Remote role whose work includes streaming pipelines."}
+  - {id: q41, type: filtered, origin: draft, text: "python sql", filters: {country: US}, relevant_if: "US-located role where Python and SQL are core skills."}
+
+  # --- edge: things that break naive search ---
+  - {id: q42, type: edge, origin: draft, text: "dataengineer", relevant_if: "Data engineering role (no-space spelling)."}
+  - {id: q43, type: edge, origin: draft, text: "data enginer", relevant_if: "Data engineering role (typo)."}
+  - {id: q44, type: edge, origin: draft, text: "Dateningenieur", relevant_if: "Data engineering role; tests German JDs (Arbeitnow)."}
+  - {id: q45, type: edge, origin: draft, text: "ETL", relevant_if: "Role builds ETL/ELT pipelines (acronym-only query)."}
+  - {id: q46, type: edge, origin: draft, text: "GCP", relevant_if: "Google Cloud is a working platform in the role (acronym)."}
+  - {id: q47, type: edge, origin: draft, text: "spark", relevant_if: "Apache Spark work — NOT jobs where 'spark' means 'spark joy' or a company name."}
+  - {id: q48, type: edge, origin: draft, text: "data engineer without java", relevant_if: "Data engineering role that does not require Java (tests negation; most methods ignore it)."}
+  - {id: q49, type: edge, origin: draft, text: "jobs for someone with 2 years experience in pyspark and airflow", relevant_if: "Junior/mid role (≤ ~4 years asked) using PySpark and/or Airflow."}
+  - {id: q50, type: edge, origin: draft, text: "rag", relevant_if: "Retrieval-augmented generation work — NOT 'rag' as in cloth/press."}

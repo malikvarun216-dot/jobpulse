@@ -4,8 +4,10 @@ ingest_greenhouse.py
 Lambda function: fetches jobs from Greenhouse ATS boards (no auth needed),
 writes raw JSON to S3 bronze layer, partitioned by snapshot_date and source.
 
-API pattern: GET https://boards-api.greenhouse.io/v1/boards/{slug}/jobs
-One request per company slug. Returns all open jobs for that company.
+API pattern: GET https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true
+One request per company slug. Returns all open jobs for that company, each with its
+full JD in `content` (HTML-escaped: "&lt;p&gt;"). Without ?content=true the JD is absent —
+that left ~70% of all jobs title-only until Chat 27. ~53 MB per run → Lambda needs 1024 MB.
 404 on unknown/inactive slug → silently skipped (company no longer uses Greenhouse).
 
 Company slugs are hardcoded in SLUGS list (no external dependencies).
@@ -17,6 +19,7 @@ Idempotent: YES — same run date always writes to same S3 key (safe to retry)
 """
 
 import gzip
+import html
 import json
 import logging
 import os
@@ -47,7 +50,7 @@ def load_slugs() -> list[str]:
 
 def fetch_company_jobs(slug: str) -> list[dict]:
     """Fetch all open jobs for one Greenhouse board. Returns [] on 404 (inactive board)."""
-    url = f"{API_BASE}/{slug}/jobs"
+    url = f"{API_BASE}/{slug}/jobs?content=true"
     req = urllib.request.Request(
         url,
         headers={"Accept": "application/json", "User-Agent": "JobPipeline/1.0"},
@@ -84,7 +87,9 @@ def normalize_jobs(raw_jobs: list[dict], slug: str) -> list[dict]:
             # Greenhouse board API doesn't return company name; slug is the identifier
             "company_name": slug,
             "apply_url": job.get("absolute_url"),
-            "description": None,  # list endpoint omits description; enrichment fills this
+            # Decode "&lt;p&gt;" → "<p>": real HTML, same form as Arbeitnow. Not stripped here —
+            # the <h3> headings mark JD sections (Chat 28 chunking); stripping is measured there.
+            "description": html.unescape(job.get("content") or "") or None,
             "tags": tags,
             "location_raw": location,
             "salary": None,  # Greenhouse does not expose salary in the public board API

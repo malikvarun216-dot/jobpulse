@@ -1230,3 +1230,36 @@ Find the real causes of the Aug–Sep failures, fix them, turn the quality check
 - Why the Claude calls fail (key vs credits) — check console.anthropic.com.
 - Done-criteria (3 green nights; a deliberate failure fires the alarm once and does not auto-reset) — after go-live.
 
+
+## Chat 26 — AI concepts lab (2026-10-09)
+
+### Night check
+- Oct 9 02:00 IST scheduled run **SUCCEEDED** (11 min 6 s) — soak night 1 of 3. Enrichment 48 s, embeddings 79 s (Glue run time).
+- `jobpulse-sfn-no-success-26h-dev` now **OK** (was "Unchecked" after creation) → the metric-math rebuild is not needed.
+
+### Built
+- `notebooks/chat26_ai_concepts_lab.ipynb` — 5 experiments on the live Oct 9 output (6,006 silver rows, 1,544 vectors),
+  executed with outputs saved. Local `.venv` + kernel (runbook §19). Cost of one run: < $0.01 Claude + free-tier Voyage.
+- `genai/jd_enrichment_agent.py`: `parse_api_key()` — **root cause of "every Claude call fails since April"**: the secret
+  became JSON on 2026-04-24 and the code sent the JSON text as the key (401). Proved with one call each way. 2 tests.
+- Comments/docs corrected: vectors are **1024-d**, not 512 (`embedding_agent.py`, `semantic_search.py`, roadmap, decisions).
+
+### Measured (Oct 9 data)
+- Vector coverage: 1,544 / 6,006 jobs (26%). Greenhouse 4,462 rows = empty description. Of the 1,544: 1,200 are Adzuna 500-char snippets.
+- Arbeitnow/Remotive descriptions are **raw HTML**: the median Arbeitnow job keeps 2,988 visible chars of its 4,000-char
+  window (~25% markup); 79% of Arbeitnow and 63% of Remotive jobs are cut at 4,000.
+- Aqemia "Senior Data Engineer": Responsibilities start at raw char 4,379 → requirements are not in its vector. Skills
+  query: 0.71 on the Qualifications chunk vs 0.46 on the pipeline vector.
+- Keyword vs vector: vector wins paraphrases ("keeps servers running" → BM25 finds housekeeping); BM25 wins tool names
+  ("Snowflake" → vector finds Christmas casual staff, "Airflow" → mechanical engineers, "dbt" → legal secretary).
+- precision@10 (2 queries, draft title-only labels): vector 0.9 / 1.0, BM25 0.3 / 0.5.
+- RAG: title only → "not stated" everywhere; pipeline's 4,000 chars → no tools named; retrieved sections → Python,
+  SQL, Snowflake, dbt, Airflow, Terraform, AWS — with fewer input tokens (1,046 vs 1,288).
+
+### Not done
+- Done-criterion "each concept explained aloud in 90 s" — Varun's drill (script at the end of the notebook).
+- Step 5 labels are Claude's drafts from titles — Varun to check against the snippets.
+
+### Next
+- Night check Oct 10 + 11, then the alarm test → Chat 25 closes.
+- Chat 27 (corpus + labels) — Greenhouse `?content=true` decision still first.

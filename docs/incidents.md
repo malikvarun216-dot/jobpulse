@@ -2,6 +2,22 @@
 
 Newest first. Chat 23 entries were reconstructed from AWS history (Step Functions, Glue job runs, CloudWatch alarm history).
 
+## [2026-04-24 → found 2026-10-09] — Every Claude call got 401: the secret was JSON, the code sent it raw
+- What happened: no Claude call succeeded for 5½ months (the "why do the calls fail?" left open in Chat 25). The breaker
+  and `--use_llm false` (Chat 25) had already stopped the damage; the cause was still unknown.
+- What I thought: expired key or no credits (Chat 25 note: "check the Anthropic console").
+- Root cause: `jobpulse/anthropic_key_dev` has two versions. **AWSPREVIOUS (2026-04-19)** = raw `sk-ant-…` string — calls
+  worked Apr 20–21. **AWSCURRENT (2026-04-24)** = JSON `{"ANTHROPIC_API_KEY": "sk-ant-…"}`. `JDEnrichmentAgent._get_api_key()`
+  returns `SecretString` as-is, so the SDK got the whole JSON text as the key → `401 authentication_error: invalid x-api-key`.
+  The Voyage reader parsed JSON correctly (`embedding_agent._get_voyage_key`) — two readers, two assumptions.
+- How found (Chat 26): read both versions' *shape* without printing values (length, starts with `{`, JSON keys), then one
+  20-token call each way: raw JSON text → 401; unwrapped key → `ok`. Key and credits were fine all along.
+- Fix: `parse_api_key()` in `genai/jd_enrichment_agent.py` accepts both shapes; 2 unit tests. No AWS change.
+- Prevention: the Chat 25 breaker logs the first error (a 401 now shows up in one line). Chat 31: one startup "ping" call
+  before the batch — fail fast on 401 instead of discovering it per job.
+- Lesson: when one secret has several readers, make the format part of the contract (one helper, one test). Check the
+  secret's version history first: "it worked until date X" usually means "something changed on date X".
+
 ## [2026-08-05 → found 2026-10-08] — Arbeitnow Lambda crashed in <1 s on 5 nights (`KeyError: 0`)
 - What happened: Aug 5, 8, 12, 13, 18 the whole pipeline failed in under one second. These looked like the other August failures in the alarm emails.
 - What I thought: (Chat 23) all August failures were the `tags` drift or the enrichment timeout.
@@ -75,7 +91,7 @@ Newest first. Chat 23 entries were reconstructed from AWS history (Step Function
   3. Greenhouse (added Apr 26) sends **no description** — 4,035 of 5,729 jobs on Aug 14. Empty JDs fail the regex fast path (only 17 of 5,729 jobs passed it), so almost every job took the LLM path. 5.7K × 7 s ÷ 16 threads ≈ 40–60 min.
   4. The logs couldn't show any of this: Glue Python Shell stdout is block-buffered, so prints only appear when the script exits. The one run that finished (Aug 13, 59.3 min) flushed `llm=0 rules=7180 cache=675`; the timed-out ones logged nothing.
   - Measured: the regex rules for all 5,729 JDs take **4 s** on a laptop. The work was never the problem.
-- Fix: line-buffered stdout + `[timing]`/`[progress]` lines; no own retry loop (SDK retries transient errors only); empty JDs never go to the LLM; circuit breaker (5 failures in a row → rules only, first error logged); LLM off by default (`--use_llm false`) until Chat 31 measures it; timeout 60 → 20 min. Re-measured on the same 5,729 JDs: **4.4 s** (LLM off), **14 s** (LLM on, every call failing). Why the calls fail (key / credits) is still to check in the Anthropic console.
+- Fix: line-buffered stdout + `[timing]`/`[progress]` lines; no own retry loop (SDK retries transient errors only); empty JDs never go to the LLM; circuit breaker (5 failures in a row → rules only, first error logged); LLM off by default (`--use_llm false`) until Chat 31 measures it; timeout 60 → 20 min. Re-measured on the same 5,729 JDs: **4.4 s** (LLM off), **14 s** (LLM on, every call failing). Why the calls fail: found in Chat 26 — the secret became JSON on Apr 24 and was sent raw (entry above). (The cache also has no writes on Apr 22–23, before that change — not explained; it doesn't affect the fix.)
 - Prevention: duration alarm at 70% of timeout (runner publishes `JobPulse/JobDurationSeconds`); `llm_errors` + `breaker_open` in every run summary; absence-of-success alarm.
 - Lesson: a fallback that hides its own failure turns an outage into a slowdown nobody investigates. Count fallbacks, log the first error, and stop retrying what can't succeed. Measure before you optimize: "incremental" would have fixed the wrong thing.
 

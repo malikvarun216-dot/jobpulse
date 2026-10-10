@@ -262,3 +262,28 @@ Expected: `dim_company`, `dim_country`, `dim_role`, `fact_job_posting` → `.../
 `enrichment_scores` → `.../enrichment-scores/`; `job_embeddings` → `.../embeddings`; `stg_silver_jobs` (a view) has none.
 Only then set `status = "Enabled"` in `s3.tf` and apply. The rule also cleans the orphaned `athena-results/tables/*`.
 If a table still points at `athena-results/`: the workgroup is enforcing again (`aws athena get-work-group --work-group jobpulse-dev`).
+
+## 19. Local AI lab (notebooks)
+
+- Notebook: `notebooks/chat26_ai_concepts_lab.ipynb`. Data: `C:\Users\malik\jobpulse_lab_data\` (outside the repo;
+  the first cell downloads it from S3 if missing — read-only GETs, ~9 MB). Writes nothing to AWS.
+- Environment: `.venv` in the repo root (gitignored) with the kernel **"JobPulse lab (.venv)"** registered inside it.
+  Rebuild from scratch:
+  ```powershell
+  python -m venv .venv; .\.venv\Scripts\python.exe -m pip install "pyarrow==14.0.2" "numpy==1.26.4" pandas boto3 voyageai anthropic rank_bm25 pyyaml ipykernel nbclient; .\.venv\Scripts\python.exe -m ipykernel install --sys-prefix --name jobpulse-lab --display-name "JobPulse lab (.venv)"
+  ```
+- Keys come from Secrets Manager (`jobpulse/voyage_key_dev`, `jobpulse/anthropic_key_dev`, both JSON) — never set them as env vars.
+- `pytest tests` in this venv: `test_ge_runner.py` fails (7) because Great Expectations isn't installed there — the
+  repo's `great_expectations/` folder is imported instead. Not a code bug; CI installs GE 1.8.1.
+- Git Bash: `python -I` ignores `PYTHONIOENCODING` — print non-ASCII with `sys.stdout.reconfigure(encoding="utf-8")`.
+
+## 20. Claude calls fail with `401 invalid x-api-key`
+
+- Symptom: enrichment summary shows `llm_errors > 0` / `breaker_open = true`; the first logged error is `AuthenticationError 401`.
+- Look: the secret's **shape**, not its value —
+  ```bash
+  aws secretsmanager list-secret-version-ids --secret-id jobpulse/anthropic_key_dev --region ap-south-1
+  ```
+  then in Python: `len(s)`, `s.startswith("{")`, `list(json.loads(s))` — never print `s`.
+- Cause seen (Chat 26): JSON secret sent raw as the key. Fixed by `parse_api_key()` (accepts JSON or raw).
+  Other causes: key revoked in console.anthropic.com (rotate: put a new **JSON** value), or a 400 "credit balance is too low".

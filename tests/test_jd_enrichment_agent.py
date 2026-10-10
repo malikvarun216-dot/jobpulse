@@ -271,5 +271,19 @@ class TestBudgetTrackerThreadSafety(unittest.TestCase):
         self.assertIsInstance(tracker._lock, type(threading.Lock()))
 
 
+class TestParseApiKey(unittest.TestCase):
+    """The Anthropic secret is JSON since 2026-04-24; the raw JSON text must never reach the SDK."""
+
+    def test_json_secret_is_unwrapped(self):
+        from genai.jd_enrichment_agent import parse_api_key
+
+        self.assertEqual(parse_api_key('{"ANTHROPIC_API_KEY": "sk-ant-abc"}'), "sk-ant-abc")
+
+    def test_raw_secret_is_kept(self):
+        from genai.jd_enrichment_agent import parse_api_key
+
+        self.assertEqual(parse_api_key("sk-ant-abc\n"), "sk-ant-abc")
+
+
 if __name__ == "__main__":
     unittest.main()

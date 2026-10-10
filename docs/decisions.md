@@ -565,7 +565,7 @@
 - EC2 + CI deploy stays in git history as proof it was built (Chat 21). Instance + EIP already removed in AWS; Terraform cleanup in Chat 24.
 
 ## Vector store chosen by evaluation, not by brand (Chat 23)
-- Today: NumPy brute-force cosine over Parquet — exact and <1 s at ~8K × 512, which is correct at this size.
+- Today: NumPy brute-force cosine over Parquet — exact and <1 s at ~8K × 1024 (1024-d, measured Chat 26 — earlier docs said 512), which is correct at this size.
 - Candidates on AWS: **pgvector on RDS Postgres** (SQL filters + `tsvector` hybrid in one query, ~$13–18/month while running) and **Amazon S3 Vectors** (serverless, cents/month, vector + metadata filters only).
 - Not considered: OpenSearch Serverless (minimum capacity bills 24/7, well over $100/month), Pinecone (external vendor, adds nothing pgvector can't show), Redshift (no ANN index).
 - Method (Chat 29): same vectors in both, measured vs exact NumPy as ground truth — recall@10, nDCG@10 on labelled queries, p95 latency, $/month.
@@ -657,3 +657,17 @@
 ## Greenhouse descriptions: not fetched yet (Chat 25, open)
 - Greenhouse is ~70% of jobs and sends no JD text (list endpoint). `?content=true` returns it (checked: GitLab 217 jobs, ~12.5 KB each, 3.4 MB, 0.9 s; also a real `company_name`).
 - Not switched on in Chat 25: it grows silver, the nightly full rebuild of `fact_job_posting`, the embedding scan and Voyage spend. Decision needed — before Chat 27 freezes the eval corpus.
+
+## Anthropic secret: fix the reader, not the secret (Chat 26)
+- The secret is JSON since 2026-04-24; the enrichment agent read it as a raw string → 401 on every call.
+- Options: (1) put the raw key back in Secrets Manager; (2) make the code accept both shapes.
+- Chose (2): the Voyage secret is JSON too, so JSON is the house format; a code fix is reviewed in a diff, unit-tested and
+  shipped by CI, while a console edit leaves no trace. Accepting the raw shape too means a rotation in either format can't
+  break it again.
+
+## Lab notebooks: in the repo, data outside it (Chat 26)
+- `notebooks/` is committed **with outputs**, so the results read on GitHub without re-running (JD text is public job ads;
+  no keys — they come from Secrets Manager at run time).
+- The data (`jobpulse_lab_data/`, ~9 MB parquet) stays outside the repo; the first cell re-downloads it.
+- Separate `.venv` (gitignored) instead of the system Python: the lab needs `pyarrow==14.0.2` / `numpy==1.26.4` to match
+  Glue, without touching the global install.

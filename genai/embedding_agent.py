@@ -1,5 +1,5 @@
 """
-Batch-embed job descriptions via Voyage AI (voyage-3-lite, 512 dims).
+Batch-embed job descriptions via Voyage AI (voyage-4-lite, 1024 dims — the model default since 2026-04-24).
 Stores embeddings as Parquet in:
   s3://{gold_bucket}/embeddings/snapshot_date={date}/data.parquet
 
@@ -20,7 +20,7 @@ import pyarrow.parquet as pq
 import voyageai
 
 
-EMBEDDING_MODEL = "voyage-4-lite"  # 512 dimensions, 200M free tokens/month
+EMBEDDING_MODEL = "voyage-4-lite"  # 1024 dimensions (default), 200M free tokens/month
 BATCH_SIZE = 128                   # Voyage API limit per call
 MAX_CHARS_PER_JD = 4000            # Voyage context limit
 

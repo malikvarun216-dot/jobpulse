@@ -1,6 +1,6 @@
 # JobPulse Roadmap — Data + AI track (Chat 24 onward)
 
-Last updated: **Chat 25 (2026-10-08)**. Update this file at the end of every chat: tick the chat, adjust the next one.
+Last updated: **Chat 26 (2026-10-09)**. Update this file at the end of every chat: tick the chat, adjust the next one.
 
 ## Why this roadmap exists
 
@@ -21,9 +21,9 @@ Ground rules for every chat:
 |---|---|---|
 | 23 | Recon, AWS decision, docs overhaul, interview guide | ✅ done (2026-10-06) |
 | 24 | Stabilize the account and repo (must finish before ~Oct 16) | ✅ done (2026-10-07) |
-| 25 | Fix the failures, go live again | ✅ live 2026-10-08 — closes after 3 green scheduled nights (Oct 9–11) + alarm test |
-| 26 | AI concepts lab (learning session) | ⏭ next — can start now, runs in parallel with Chat 25's 3 nights |
-| 27 | Evaluation foundations: freeze a corpus, label it | |
+| 25 | Fix the failures, go live again | ✅ live 2026-10-08 — night 1 (Oct 9) green; closes after Oct 10–11 + alarm test |
+| 26 | AI concepts lab (learning session) | ✅ built 2026-10-09 — notebook run on live data; 90-s drill is Varun's |
+| 27 | Evaluation foundations: freeze a corpus, label it | ⏭ next |
 | 28 | Baseline + better retrieval (hybrid, chunk grain) | |
 | 29 | Vector stores on AWS: pgvector (RDS) vs S3 Vectors, by eval | |
 | 30 | Embeddings as a real pipeline (incremental, versioned, freshness) | |
@@ -108,6 +108,9 @@ Notebook on ~20 real JDs from the exported silver data:
 
 **Done when:** each concept explained aloud in 90 seconds with a JobPulse example.
 
+> ✅ Result (Chat 26): `notebooks/chat26_ai_concepts_lab.ipynb`, run on Oct 9 live data (1,544 vectors over the full
+> embedded set, not 20 JDs). Side findings: vectors are 1024-d; Arbeitnow JDs are raw HTML; the Claude 401 root cause.
+
 ## Chat 27 — Evaluation foundations
 
 > Prerequisite from Chat 25: ~70% of jobs (Greenhouse) have **no description** and Adzuna's are 500-char snippets.
@@ -124,12 +127,14 @@ Notebook on ~20 real JDs from the exported silver data:
 - `eval/run_eval.py`: one interface `search(query, k) -> [job_id]`; writes metrics + latency p50/p95 + cost per run to `eval/results.parquet`.
 - Compare: BM25, NumPy vector (exact), **today's 0.5/0.5 hybrid (baseline)**, RRF hybrid, optional reranker on top-50, optional query rewriting.
 - Chunk grain experiment: one vector per JD (4,000-char cut) vs section chunks (responsibilities / requirements / benefits, max-score roll-up). Report truncation rate.
+- From Chat 26: strip HTML before embedding (Arbeitnow window is ~25% markup; 79% of Arbeitnow JDs cut at 4,000) — a cheap
+  candidate to measure first. Query set must mix descriptive queries *and* bare tool names (vector loses those: Snowflake, Airflow, dbt).
 - Pick fusion, k and grain **by the numbers**.
 
 ## Chat 29 — Vector stores on AWS, compared by eval
 
 - **pgvector on RDS Postgres** (db.t4g.micro, Terraform). Loader Lambda inside the VPC + **S3 gateway endpoint** (free) + **IAM DB auth** → no NAT gateway (~$30+/mo trap). Laptop access: SG allows only your IP /32, SSL required. HNSW index + `tsvector` hybrid in one SQL query.
-- **Amazon S3 Vectors** (GA in ap-south-1): vector bucket + index (512-d, cosine) with metadata (country, seniority, role_family, snapshot_date). No VPC.
+- **Amazon S3 Vectors** (GA in ap-south-1): vector bucket + index (**1024-d** — measured Chat 26; 512 only if Chat 30 re-embeds with `output_dimension=512`, cosine) with metadata (country, seniority, role_family, snapshot_date). No VPC.
 - Measure both vs **exact NumPy as ground truth**: recall@10, nDCG@10 on qrels, p95 latency, $/month, HNSW `ef_search` sweep.
 - Decision with numbers in `decisions.md`; wire winner into dashboard; stop/tear down the other (RDS can be stopped between sessions).
 
@@ -144,8 +149,10 @@ Notebook on ~20 real JDs from the exported silver data:
 
 ## Chat 31 — Evaluate the LLM extraction
 
-> From Chat 25: LLM extraction is **off** (`--use_llm false`) — no call had succeeded since 2026-04-21. First check
-> the key / credit balance; the eval decides whether it comes back on. The retry-loop fix is already done.
+> From Chat 25: LLM extraction is **off** (`--use_llm false`). Chat 26 found why no call succeeded: the JSON secret was
+> sent raw (401) — fixed with `parse_api_key()`. Turning the LLM back on now **really spends** (cap $0.50/day). The code
+> still pins `claude-haiku-4-5-20251001` ($1/$5 per M tokens); `claude-haiku-5-5` is $0.10/$0.50 — compare both in the eval.
+> Add a startup ping call so a 401 fails the run once, not per job.
 
 - Hand-label skills / seniority / yoe for 150 JDs (stratified by source and rules-vs-LLM path).
 - Per-field precision / recall / F1: rules-only vs rules + Haiku; % JDs sent to the LLM; $ per 1K JDs.

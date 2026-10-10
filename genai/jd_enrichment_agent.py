@@ -295,4 +295,15 @@ class JDEnrichmentAgent:
         if env_key:
             return env_key
         sm = boto3.client("secretsmanager", region_name=self._region)
-        return sm.get_secret_value(SecretId="jobpulse/anthropic_key_dev")["SecretString"]
+        return parse_api_key(sm.get_secret_value(SecretId="jobpulse/anthropic_key_dev")["SecretString"])
+
+
+def parse_api_key(secret_string: str) -> str:
+    """
+    The secret has been JSON {"ANTHROPIC_API_KEY": "sk-ant-..."} since 2026-04-24 (raw key before).
+    Passing the JSON text as the key gave a 401 on every call for months — accept both shapes.
+    """
+    secret_string = secret_string.strip()
+    if secret_string.startswith("{"):
+        return json.loads(secret_string)["ANTHROPIC_API_KEY"]
+    return secret_string

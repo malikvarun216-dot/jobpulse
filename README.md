@@ -45,6 +45,13 @@ It has also been through real failures. One nightly step slowly grew to an hour 
 looked like a volume problem, but every AI call had been failing quietly and waiting in retries. Fixing the root
 cause took that step from **56 minutes to 4 seconds**. That story and others are in [docs/incidents.md](docs/incidents.md).
 
+## Architecture
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/architecture-dark.svg">
+  <img alt="Architecture: EventBridge and Step Functions run Lambda ingestors, S3 bronze, Glue PySpark, S3 silver, Great Expectations, dbt and Athena, S3 gold, enrichment, Voyage AI embeddings and a Streamlit dashboard with Claude, on a platform of Terraform, GitHub Actions, CloudWatch and SNS, and Secrets Manager" src="docs/images/architecture-light.svg">
+</picture>
+
 ## What's next
 
 Measuring search quality with a labelled evaluation set, then improving it with hybrid keyword and vector search

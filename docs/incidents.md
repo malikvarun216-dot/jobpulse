@@ -1,5 +1,140 @@
 # Incidents
 
+Newest first. Chat 23 entries were reconstructed from AWS history (Step Functions, Glue job runs, CloudWatch alarm history).
+
+## [2026-04-24 → found 2026-10-09] — Every Claude call got 401: the secret was JSON, the code sent it raw
+- What happened: no Claude call succeeded for 5½ months (the "why do the calls fail?" left open in Chat 25). The breaker
+  and `--use_llm false` (Chat 25) had already stopped the damage; the cause was still unknown.
+- What I thought: expired key or no credits (Chat 25 note: "check the Anthropic console").
+- Root cause: `jobpulse/anthropic_key_dev` has two versions. **AWSPREVIOUS (2026-04-19)** = raw `sk-ant-…` string — calls
+  worked Apr 20–21. **AWSCURRENT (2026-04-24)** = JSON `{"ANTHROPIC_API_KEY": "sk-ant-…"}`. `JDEnrichmentAgent._get_api_key()`
+  returns `SecretString` as-is, so the SDK got the whole JSON text as the key → `401 authentication_error: invalid x-api-key`.
+  The Voyage reader parsed JSON correctly (`embedding_agent._get_voyage_key`) — two readers, two assumptions.
+- How found (Chat 26): read both versions' *shape* without printing values (length, starts with `{`, JSON keys), then one
+  20-token call each way: raw JSON text → 401; unwrapped key → `ok`. Key and credits were fine all along.
+- Fix: `parse_api_key()` in `genai/jd_enrichment_agent.py` accepts both shapes; 2 unit tests. No AWS change.
+- Prevention: the Chat 25 breaker logs the first error (a 401 now shows up in one line). Chat 31: one startup "ping" call
+  before the batch — fail fast on 401 instead of discovering it per job.
+- Lesson: when one secret has several readers, make the format part of the contract (one helper, one test). Check the
+  secret's version history first: "it worked until date X" usually means "something changed on date X".
+
+## [2026-08-05 → found 2026-10-08] — Arbeitnow Lambda crashed in <1 s on 5 nights (`KeyError: 0`)
+- What happened: Aug 5, 8, 12, 13, 18 the whole pipeline failed in under one second. These looked like the other August failures in the alarm emails.
+- What I thought: (Chat 23) all August failures were the `tags` drift or the enrichment timeout.
+- Root cause: `ingest_arbeitnow.normalize_jobs` did `job_types[0]`; on those nights `job_types` arrived as a JSON **object**, not a list. Arbeitnow is a PHP API, and PHP's `json_encode` turns an array into an object when its keys aren't 0..n-1 (e.g. after a filter removed item 0). The same quirk on `tags` is the most likely cause of the Aug 1–9 Spark failures (object where Spark expected a list) — circumstantial, not proven. Today the API sends lists again (325 jobs checked).
+- Fix: `as_list()` accepts list / object / string / null for `job_types` and `tags`; 3 tests.
+- Prevention: group failures by **duration** first — sub-second, minutes and ~1 h runs were three different bugs hiding under one alarm. Normalize container types at the ingestor, not only in Spark.
+- Lesson: one red alarm can hide several bugs; the run duration is the cheapest classifier.
+
+## [2026-10-08] — GitGuardian: old Adzuna key exposed in a public repo
+- What happened: right after the Chat 25 push, GitGuardian emailed "Generic High Entropy Secret exposed on GitHub" for `malikvarun216-dot/jobpulse`. The flagged hunk was `terraform/envs/dev/terraform.tfvars` `@@ -1,3 +0,0` — the Chat 24 commit that **deleted** the file still shows the removed lines (`adzuna_app_id`, `adzuna_app_key`).
+- What I thought: today's commit leaked something; and (Chat 23 notes) the repo was private.
+- Root cause: the repo is **public** (GitHub API: `"visibility": "public"`). A deleted file's content stays in every old commit and in the deletion diff — removing a file never removes a secret.
+- Fix: none needed in code. The key had already been rotated (Chat 24). Verified without printing values: the Lambda's key and the `TF_VAR` key are identical and do not start with the leaked prefix. Varun confirmed the old key is revoked in the Adzuna portal and marked the GitGuardian alert "revoked" (2026-10-08). History not rewritten (key is dead; GitGuardian's own "amend + force push" snippet only applies to a secret in the *last* commit — here it would have rewritten the Chat 25 commit and removed nothing).
+- Prevention: `*.tfplan` gitignored (saved plans hold secrets in plain text); keep secrets out of files entirely; external scanners (GitGuardian / GitHub secret scanning) as a second net.
+- Lesson: rotation is the fix, deletion is cosmetic — and check repo visibility instead of trusting the notes.
+
+## [2026-04-26 → found 2026-10-08] — `dim_company` had 3 rows per key; every company join inflated rows by 75%
+- What happened: Chat 25 ran the 21 dbt tests against live gold before switching the runner to `dbt build`. `unique_dim_company_company_key` failed (368 duplicate keys) and `not_null_fact_job_posting_source_count` failed (24 rows). The dashboard-style join `fact_job_posting ⋈ dim_company` returned 2,011,211 rows. After the fix the fact table has **770,151 rows = silver's 770,151**: the fact model itself joins `dim_company`, so the **fact table was already inflated ~55%** (1,147,783 company rows vs ~742K real), and the dashboard's second join took it to ~2.7×.
+- What I thought: dbt tests had been passing all along — they're in `schema.yml`.
+- Root cause: (1) the runner called `dbt run`, which never executes tests — they had not run in production since they were written. (2) `dim_company` was `DISTINCT company_name` but keyed on `md5(lower(trim(name)))`, so "GitLab / Gitlab / gitlab" were 3 rows with one key; the fact join multiplied each posting. (3) Apr 18–20 silver partitions predate the dedup step, so `source_count` is null there.
+- Fix: `dim_company` groups by the normalized name and keeps the most common spelling (`max_by`); staging coalesces `source_count` → 1 and `source_apis` → `[source]`. Runner now calls `dbt build`. First production `dbt build` (2026-10-08): **26/26 PASS**; dim 28,539 rows = 28,539 keys; fact = silver row for row. Leftover: 999 silver rows (0.13%) share source + job_id + day — a dedup question, not a fan-out.
+- Prevention: tests only count if they gate the pipeline; before turning a gate on, run it once against current data (a gate that fails on day 1 just gets switched off again).
+- Lesson: a test that never runs is documentation, not a test. Grain bugs hide in dimension keys — `unique` on every surrogate key.
+
+## [2026-04 → found 2026-10-08] — 9 of 14 PySpark tests had been failing unseen; 2 contradicted the code
+- What happened: Chat 25 installed Spark locally for the first time. 9 of the 14 tests in `spark/tests/test_bronze_to_silver.py` failed.
+- What I thought: "14 skipped" in CI meant "fine, just not run here".
+- Root cause: CI has no Spark, so `skipif(not pyspark)` skipped them every run. 7 failed because single-source fixtures make Spark infer a schema without the other sources' fields (`No such struct field job_id`) — the same fragility that broke production in August. 2 asserted behaviour the code never had (dedup collapsing rows to 1; a `dedup_key` column the function drops). One fixture used Adzuna's raw `redirect_url`, which the ingestor had already mapped away.
+- Fix: explicit bronze schema fixed the 7; the 2 tests now assert what the code does (rows kept, annotated with `source_apis`/`source_count`); fixture matches the ingestor; worker `PYTHONPATH` set for UDFs. New CI job `spark-tests` (PySpark 3.3.2 = Glue 4.0, Java 11) gates the deploy.
+- Prevention: a skipped test is a red flag in CI, not a neutral one — give it an environment where it runs.
+- Lesson: "skipped" hides failures as well as "passed" does.
+
+## [2026-10-06] — `terraform apply` wrote the literal text `<new key>` into the Adzuna Lambda
+- What happened: after the Chat 24 apply, the Lambda's `ADZUNA_APP_KEY` was 9 characters and not hex. It equalled `"<new key>"` (and the id `"<new id>"`) — placeholder text from the step list.
+- What I thought: the User-scope env vars held the real rotated key (id 8 / key 32 chars, checked in another window).
+- Root cause: earlier, in the window later used for apply, the placeholders had been run verbatim (`$env:TF_VAR_adzuna_app_key = "<new key>"`). Process-scope vars beat User-scope ones, so that window kept the placeholder. The plan showed `ADZUNA_APP_KEY = (sensitive value)` — Terraform hides the value, so nothing looked wrong.
+- Fix: a retry from an older tab still had the placeholder ("No changes" — Terraform's value already equalled the Lambda's). Final fix: shell that loaded the User-scope values explicitly → saved plan (`-out`) showing exactly 1 change → apply that plan file → verified at the destination: key 32 chars, hex, equals the User value. Pipeline was paused, so no failed runs.
+- Prevention: never give a runnable command containing placeholders for secrets; apply from a **saved plan file** so what you reviewed is what runs; check the **length in the same window** right before plan/apply; after apply, compare the deployed value's length/format (`aws lambda get-function-configuration … length(...)`).
+- Lesson: `sensitive` hides mistakes as well as secrets — verify secrets by length/format at the destination.
+
+## [2026-10-06] — `git reset --hard` wiped the uncommitted Chat 24 changes in the main checkout
+- What happened: the step list said commit → push → renormalize (`git rm -rq --cached .` then `git reset --hard HEAD`). The commit was skipped; `git push` printed "Everything up-to-date"; the reset rolled the checkout back to `a6de5ea`. All 15 Chat 24 edits, 3 `git rm`s and the Chat 24 interview guide were gone from the main checkout.
+- What I thought: "Everything up-to-date" looked like success.
+- Root cause: a destructive command was described as "safe after a commit" but had **no check that the commit happened**. "Everything up-to-date" means there was nothing new to push — a warning sign, not success.
+- Fix: recovered in minutes — the Chat 24 worktree still held every file; the interview guide came from `jobpulse_private_docs/`; `.gitattributes` and `learning.md` survived (`reset --hard` only touches tracked files).
+- Prevention: destructive commands for the human now carry a **built-in guard** (`if (git status --porcelain) { STOP } else { ... }`) — rule in CLAUDE.md; runbook §14 updated. Worktree kept until the commit is confirmed on GitHub.
+- Lesson: "safe if X" must be enforced by the command, not by the reader. Delete the backup only after the copy is verified.
+
+## [2026-10-06] — Near miss: a "cost cleanup" lifecycle rule would have deleted the gold layer
+- What happened: Chat 24 planned a 7-day expiry on `s3://jobpulse-gold-dev/athena-results/` to clear 1.5 GB of old query CSVs. The rule was written before checking where the gold tables live.
+- What I thought: `athena-results/` holds only throwaway query output; the star schema lives elsewhere in gold.
+- Root cause: all four dbt tables (`fact_job_posting`, `dim_company`, `dim_country`, `dim_role`) physically live in `athena-results/tables/<uuid>/`. The Athena workgroup has `enforce_workgroup_configuration = true`, so dbt-athena ignores the models' `s3_data_dir='.../models/'` and Athena writes CTAS output under the workgroup result location. With the pipeline paused (no nightly rebuild), the rule would have emptied the gold tables 7 days after apply.
+- Fix: rule removed before any apply; warning comment in `s3.tf` + runbook §15. Chat 25: move table data out of the results prefix, then add the expiry.
+- Prevention: before any delete/expire rule, list what the Glue Catalog points at under that prefix (`aws glue get-tables … StorageDescriptor.Location`).
+- Lesson: a prefix name says what the data was meant to be, not what it is — check the catalog before you expire anything.
+
+## [2026-10-06] — `terraform plan` showed every Lambda and Glue script as changed (CRLF + two deployers)
+- What happened: first plan from the Windows checkout wanted to update 5 Lambdas, 6 S3 script objects and replace both `null_resource` uploads — none of them edited.
+- What I thought: someone changed code in AWS by hand.
+- Root cause: (1) `core.autocrlf=true` checks files out with CRLF; Terraform's `filemd5` / `archive_file` hash the CRLF bytes, while CI deployed LF copies. (2) After fixing that, Lambdas + S3 objects still differed: `deploy.yml` also deploys the same code — its `zip` makes different bytes than `archive_file`, and `aws s3 cp` drops object tags.
+- Fix: `.gitattributes` with `* text=auto eol=lf` → `null_resource` noise gone. The two-deployer diff is harmless (same code) and documented in runbook §14; picking one owner is open.
+- Prevention: `.gitattributes` in every repo that is hashed by IaC; one tool owns each artifact.
+- Lesson: a noisy plan trains you to stop reading plans — remove the noise so a real change stands out.
+
+## [2026-04-21 → 2026-09-19, root cause found 2026-10-08] — Enrichment timed out: every Claude call failed, slowly and silently
+- What happened: `jobpulse-enrichment-dev` ended in `TIMEOUT` at exactly 60 min — first on Jul 25–26, then every night from ~Aug 15 (29 TIMEOUTs total). Whole pipeline FAILED nightly until the schedule was disabled on Sep 19. Runs had taken 48–56 min since Apr 29.
+- What I thought: (Chat 23) slow creep from volume growth — fix with incremental processing and more DPU.
+- Root cause (Chat 25, from the exported logs + backed-up data): **not volume — a failure path.**
+  1. No Claude call has succeeded since **2026-04-21**: the LLM cache has writes only on Apr 20–21, and every enrichment snapshot since shows `llm=0`, `spend=$0`.
+  2. Each failure was retried 3× with 1+2+4 s sleeps (our own loop, on top of the SDK's retries — including errors that can never succeed), then silently labelled `"rules"`. ≈7 s per job.
+  3. Greenhouse (added Apr 26) sends **no description** — 4,035 of 5,729 jobs on Aug 14. Empty JDs fail the regex fast path (only 17 of 5,729 jobs passed it), so almost every job took the LLM path. 5.7K × 7 s ÷ 16 threads ≈ 40–60 min.
+  4. The logs couldn't show any of this: Glue Python Shell stdout is block-buffered, so prints only appear when the script exits. The one run that finished (Aug 13, 59.3 min) flushed `llm=0 rules=7180 cache=675`; the timed-out ones logged nothing.
+  - Measured: the regex rules for all 5,729 JDs take **4 s** on a laptop. The work was never the problem.
+- Fix: line-buffered stdout + `[timing]`/`[progress]` lines; no own retry loop (SDK retries transient errors only); empty JDs never go to the LLM; circuit breaker (5 failures in a row → rules only, first error logged); LLM off by default (`--use_llm false`) until Chat 31 measures it; timeout 60 → 20 min. Re-measured on the same 5,729 JDs: **4.4 s** (LLM off), **14 s** (LLM on, every call failing). Why the calls fail: found in Chat 26 — the secret became JSON on Apr 24 and was sent raw (entry above). (The cache also has no writes on Apr 22–23, before that change — not explained; it doesn't affect the fix.)
+- Prevention: duration alarm at 70% of timeout (runner publishes `JobPulse/JobDurationSeconds`); `llm_errors` + `breaker_open` in every run summary; absence-of-success alarm.
+- Lesson: a fallback that hides its own failure turns an outage into a slowdown nobody investigates. Count fallbacks, log the first error, and stop retrying what can't succeed. Measure before you optimize: "incremental" would have fixed the wrong thing.
+
+## [2026-08-01 → 2026-08-09] — Source changed `tags` from a list to text; silver failed 6 nights
+- What happened: `jobpulse-bronze-to-silver-dev` FAILED in ~1 min with `AnalysisException: cannot resolve 'job.tags' due to data type mismatch: cannot cast string to array<string>`. Recovered by itself on Aug 10.
+- What I thought: (Chat 23 recon) a code change — but nothing was deployed in August.
+- Root cause: one source started sending `tags` as a string. The Spark job **infers** the JSON schema across all sources (`source=*/`); the conflict made the inferred type string, and the explicit `cast(ArrayType(StringType()))` failed. Which source: **unknown** — bronze files expire after 7 days, so the evidence was gone before anyone looked.
+- Fix (Chat 25): explicit bronze schema — every job field read as `string`, so a list arrives as its JSON text and nothing fails at read time; `parse_tags()` turns either shape (or null) into `array<string>`. Tests with a string, an array, and both in one read. The exported Glue logs (Aug 1, 2, 3, 6, 8) show only the Spark plan, not the source — still unknown.
+- Prevention: explicit schema instead of inference; GE expectation 6 (`tags` is a list) on silver; bronze retention ≥ debugging window (open).
+- Lesson: schema inference turns one source's change into everyone's failure — and short retention deletes the evidence.
+
+## [2026-08 → 2026-09-19] — Failure alarm reset itself every night; ~5 weeks of failures went unhandled
+- What happened: `jobpulse-sfn-failures-dev` went to ALARM at ~2 AM and back to OK ~15 min later, every night. SNS emails were delivered (subscription confirmed). The pipeline failed nightly from early August until the schedule was disabled on Sep 19 — still billing Glue for a 60-min timeout each night.
+- What I thought: the ALARM → OK pairs looked like transient blips.
+- Root cause: alarm design. `ExecutionsFailed ≥ 1` over a short period is only true for the period containing the failure; with no new failure the next period it returns to OK automatically. A failed night looks the same as a hiccup.
+- Fix (Chat 25): `jobpulse-sfn-no-success-26h-dev` — `ExecutionsSucceeded` summed per hour, 26 of 26 hours must be below 1, missing data = breaching. Stays red until a run succeeds; also fires when nothing runs at all. Old alarm removed.
+- Prevention: one alarm per failure *state*, not per failure *event*; plus a duration-vs-timeout alarm (see above).
+- Lesson: an alarm that fixes itself teaches you to ignore it.
+
+## [2026-04-24 → found 2026-10-06] — "Why these match?" sent Claude no job descriptions
+- What happened: the dashboard's "Why these match?" produced fluent explanations for the top-3 semantic search results.
+- What I thought: (Chat 23 code review) it was working — the explanations read well.
+- Root cause: `app.py` only adds a description excerpt if `description` is a column of the loaded DataFrame, but `FLAT_JOIN_SQL` never selects `description`. The check always failed; the prompt had an empty excerpt. Claude explained matches from titles alone.
+- Fix (Chat 25): `load_descriptions()` reads the top-3 descriptions from silver (partition-filtered), strips HTML, passes up to 1,500 chars. Greenhouse jobs still have none (source sends none) — the UI now says so instead of pretending.
+- Prevention: log the full prompt + retrieved context for every LLM call; a test that asserts the prompt contains JD text.
+- Lesson: in RAG, when the answer looks wrong — or suspiciously fine — inspect the retrieved context first. An empty augment step still produces confident output.
+
+## [2026-10-06] — Local checkout 30 commits behind GitHub; `terraform apply` would have deleted production
+- What happened: at the start of Chat 23 the main checkout was on `dev` at `ccf0cc4` (Chat 9). `git status` said "up to date with origin/dev" — because `origin/dev` hadn't been fetched since Apr 19. GitHub `dev` was at `98b1e4c` (Chat 22). There was also an uncommitted Terraform edit on the old tree.
+- What I thought: the docs on disk (Chat 9) were the latest state of the project.
+- Root cause: no `git fetch` for 5 months; "up to date" only compares with the *last fetched* remote ref. Terraform state lives in S3 and reflects Chat 22, so a plan from the Chat 9 code would destroy EC2, 3 Lambdas, 2 Glue jobs, the `enrichment_scores` table and more.
+- Fix: `git fetch origin`; work in a fresh worktree from `origin/dev`; Varun fast-forwards the main checkout (`git pull --ff-only origin dev`). No apply was run.
+- Prevention: start every session with `git fetch origin && git status`; runbook §14 and §16.
+- Lesson: remote state + stale code = a destroy plan. "Up to date" means "up to date with what I last fetched".
+
+## [2026-04-21 → found 2026-10-06] — Adzuna API key committed to git
+- What happened: `terraform/envs/dev/terraform.tfvars` with a real-looking Adzuna `app_id` (8 chars) / `app_key` (32 chars) is tracked in the repo (private, but in history). `progress.md` (Chat 5) said tfvars was gitignored.
+- What I thought: the docs said it was ignored, so it was.
+- Root cause: `.gitignore` never had a tfvars rule — the file has been tracked since Chat 5 (`9283575`, alert email only); the Adzuna keys were added in Chat 13 (`c1aa4d7`).
+- Fix: pending (Chat 24) — rotate the key; move it to `TF_VAR_` env vars / GitHub secret; gitignore tfvars.
+- Prevention: `git check-ignore -v <file>` before putting secrets in a file; secret scanning in CI.
+- Lesson: verify ignore rules with git, not with the docs.
+
 ## [2026-04-25] — GE runner: wrong S3 prefix path
 - What happened: RunDataQuality Glue job failed with `FileNotFoundError: No Parquet files found at s3://jobpulse-silver-dev/silver_jobs/snapshot_date=2026-04-25/`
 - What I thought: data wasn't written yet for today's partition; checked Spark job logs

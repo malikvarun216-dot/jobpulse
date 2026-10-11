@@ -25,6 +25,12 @@ from typing import Optional
 import boto3
 import pandas as pd
 
+# Glue sends stdout to CloudWatch, but Python block-buffers it when it is not a terminal:
+# every print sat in memory until the script ended. A run killed by the 60-min timeout
+# never got there, so Aug–Sep runs left no log lines at all (Chat 25). Flush every line.
+sys.stdout.reconfigure(line_buffering=True)
+_STARTED = time.perf_counter()
+
 # ---------------------------------------------------------------------------
 # Bootstrap: make genai package importable in both local dev and Glue 4.0.
 # Glue Python Shell 4.0 downloads --extra-py-files but does NOT add them to
@@ -74,6 +80,7 @@ else:
     _DEFAULT_PROFILE_PATH = _s3_profile or os.path.join(_GENAI_EXTRACT_DIR, "config", "user_profile.yml")
 
 from genai.jd_enrichment_agent import JDEnrichmentAgent
+from genai.run_metrics import publish_duration
 
 # ---------------------------------------------------------------------------
 # Argument parsing
@@ -89,6 +96,8 @@ parser.add_argument("--silver_database", default="jobpulse_silver_dev")
 parser.add_argument("--snapshot_date",   default="")
 parser.add_argument("--dry_run",         default="false")
 parser.add_argument("--force_rescore",   default="false")
+parser.add_argument("--use_llm",         default="false")  # off until Chat 31 measures it
+parser.add_argument("--job_name",        default="jobpulse-enrichment-dev")
 parser.add_argument("--profile_path",    default=_DEFAULT_PROFILE_PATH)
 args, _ = parser.parse_known_args()
 
@@ -100,6 +109,7 @@ GOLD_DB       = args.gold_database
 SILVER_DB     = args.silver_database
 DRY_RUN          = args.dry_run.lower() == "true"
 FORCE_RESCORE    = args.force_rescore.lower() == "true"
+USE_LLM          = args.use_llm.lower() == "true"
 PROFILE_PATH  = args.profile_path
 S3_STAGING    = f"s3://{GOLD_BUCKET}/athena-results/"
 
@@ -187,10 +197,16 @@ def repair_enrichment_partition() -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    print(f"[enrichment_runner] START | dry_run={DRY_RUN} | force_rescore={FORCE_RESCORE}")
+def _stage(name: str, started: float) -> None:
+    print(f"[timing] {name}={time.perf_counter() - started:.1f}s")
 
+
+if __name__ == "__main__":
+    print(f"[enrichment_runner] START | dry_run={DRY_RUN} | force_rescore={FORCE_RESCORE} | use_llm={USE_LLM}")
+
+    t = time.perf_counter()
     jobs = fetch_jobs(args.snapshot_date)
+    _stage("fetch_jobs", t)
 
     if not jobs:
         summary = {"status": "EMPTY", "records_enriched": 0}
@@ -203,11 +219,18 @@ if __name__ == "__main__":
         profile_path=PROFILE_PATH,
         dry_run=DRY_RUN,
         force_rescore=FORCE_RESCORE,
+        use_llm=USE_LLM,
     )
 
+    t = time.perf_counter()
     summary = agent.run(jobs)
+    _stage("enrich_and_write", t)
 
     if not DRY_RUN:
+        t = time.perf_counter()
         repair_enrichment_partition()
+        _stage("repair_partition", t)
+        publish_duration(args.job_name, time.perf_counter() - _STARTED, REGION)
 
+    _stage("total", _STARTED)
     print(json.dumps(summary))

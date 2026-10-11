@@ -12,13 +12,15 @@ source-native schema — COALESCE logic in build_silver_df() handles both.
 
 Partitioning: snapshot_date / country / role_family
 Idempotent:   dynamic partition overwrite — reruns only replace affected partitions.
+Schema:       explicit (bronze_schema), never inferred — see parse_tags() for why.
 """
 
+import json
 import sys
 
 try:
     from pyspark.sql import functions as F
-    from pyspark.sql.types import ArrayType, IntegerType, StringType
+    from pyspark.sql.types import ArrayType, IntegerType, StringType, StructField, StructType
 except ImportError:
     pass  # not needed for pure-function unit tests
 
@@ -131,6 +133,28 @@ def extract_role_family_from_tags(tags: list) -> str:
     return "Other"
 
 
+def parse_tags(raw: str) -> list:
+    """Bronze `tags` arrives as a JSON array ('["python", "aws"]'), a plain string
+    ("python, aws") or null, depending on the source. Always return a list of strings.
+
+    Aug 1–9 2026 one source sent a string; schema inference then typed the whole column
+    as string and the job died on cast(tags as array<string>). The explicit schema reads
+    tags as raw text, and this function turns either shape into a list.
+    """
+    if raw is None or not raw.strip():
+        return []
+    raw = raw.strip()
+    values = None
+    if raw.startswith("["):
+        try:
+            values = json.loads(raw)
+        except ValueError:
+            values = raw.strip("[]").split(",")
+    if not isinstance(values, list):
+        values = raw.split(",")
+    return [str(v).strip().strip('"') for v in values if v is not None and str(v).strip()]
+
+
 def resolve_role_family(category: str, tags: list) -> str:
     """Use category if available, fall back to tags (for sources like RemoteOK)."""
     family = extract_role_family(category)
@@ -142,6 +166,27 @@ def resolve_role_family(category: str, tags: list) -> str:
 # ---------------------------------------------------------------------------
 # PySpark transformation (no Glue imports — testable with local SparkSession)
 # ---------------------------------------------------------------------------
+
+# Every job field any ingestor writes (canonical + Remotive's native names).
+# All are strings: when a source sends a number or a list where text is declared,
+# Spark keeps the raw JSON text instead of failing the read. Fields missing from a
+# day's data come back null instead of "No such struct field".
+BRONZE_JOB_FIELDS = [
+    "job_id", "id", "title", "company_name", "category", "job_type",
+    "apply_url", "url", "salary", "location_raw", "candidate_required_location",
+    "tags", "publication_date", "description",
+]
+
+
+def bronze_schema():
+    job = StructType([StructField(name, StringType()) for name in BRONZE_JOB_FIELDS])
+    return StructType([
+        StructField("snapshot_date", StringType()),
+        StructField("source", StringType()),
+        StructField("ingested_at", StringType()),
+        StructField("jobs", ArrayType(job)),
+    ])
+
 
 
 def build_silver_df(raw_df):
@@ -156,6 +201,7 @@ def build_silver_df(raw_df):
     country_udf = F.udf(extract_country, StringType())
     state_udf = F.udf(extract_state, StringType())
     role_family_udf = F.udf(resolve_role_family, StringType())
+    tags_udf = F.udf(parse_tags, ArrayType(StringType()))
 
     jobs_df = raw_df.select(
         F.col("source").alias("_source"),
@@ -182,6 +228,8 @@ def build_silver_df(raw_df):
         F.col("job.id"),
     ).cast(StringType())
 
+    tags_col = tags_udf(F.col("job.tags"))
+
     return jobs_df.select(
         job_id_col.alias("job_id"),
         F.col("_source").alias("source"),
@@ -189,17 +237,14 @@ def build_silver_df(raw_df):
         F.col("job.title").alias("title"),
         F.col("job.company_name").alias("company_name"),
         F.col("job.category").alias("category"),
-        role_family_udf(
-            F.col("job.category"),
-            F.col("job.tags").cast(ArrayType(StringType())),
-        ).alias("role_family"),
+        role_family_udf(F.col("job.category"), tags_col).alias("role_family"),
         F.coalesce(F.col("job.job_type"), F.lit("full-time")).alias("job_type"),
         apply_url_col.alias("apply_url"),
         F.col("job.salary").cast(StringType()).alias("salary_raw"),
         location_col.alias("location_raw"),
         country_udf(location_col).alias("country"),
         state_udf(location_col).alias("state"),
-        F.col("job.tags").cast(ArrayType(StringType())).alias("tags"),
+        tags_col.alias("tags"),
         F.to_date(F.col("job.publication_date")).alias("publication_date"),
         F.col("job.description").alias("description"),
         F.to_timestamp(F.col("_ingested_at")).alias("ingested_at"),
@@ -292,7 +337,7 @@ def main():
     else:
         input_path = f"s3://{bronze_bucket}/snapshot_date=*/source=*/data.json.gz"
 
-    raw_df = spark.read.option("multiline", "true").json(input_path)
+    raw_df = spark.read.schema(bronze_schema()).option("multiline", "true").json(input_path)
 
     silver_df = build_silver_df(raw_df)
     silver_df = deduplicate_silver_df(silver_df)

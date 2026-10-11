@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 440" width="980" height="440" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif">
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#656D76"/></marker></defs>
+<rect x="0.5" y="0.5" width="979" height="439" rx="12" fill="#FFFFFF" stroke="#D0D7DE"/>
+<text x="20" y="362" font-size="11" font-weight="600" letter-spacing="1.2" fill="#656D76">PLATFORM</text>
+<circle cx="600" cy="64" r="5" fill="#9A6700"/>
+<text x="611" y="68" font-size="12" fill="#656D76">Orchestration</text>
+<circle cx="713" cy="64" r="5" fill="#0969DA"/>
+<text x="724" y="68" font-size="12" fill="#656D76">Compute</text>
+<circle cx="784" cy="64" r="5" fill="#1A7F37"/>
+<text x="795" y="68" font-size="12" fill="#656D76">Storage</text>
+<circle cx="855" cy="64" r="5" fill="#8250DF"/>
+<text x="866" y="68" font-size="12" fill="#656D76">AI</text>
+<rect x="20" y="40" width="200" height="56" rx="8" fill="#F6F8FA" stroke="#D0D7DE"/>
+<rect x="21" y="48" width="3" height="40" rx="1.5" fill="#9A6700"/>
+<text x="122.0" y="65.0" text-anchor="middle" font-size="14" font-weight="600" fill="#1F2328">Amazon EventBridge</text>
+<text x="122.0" y="83.0" text-anchor="middle" font-size="12" fill="#656D76">nightly at 2:00 AM IST</text>
+<rect x="260" y="40" width="200" height="56" rx="8" fill="#F6F8FA" stroke="#D0D7DE"/>
+<rect x="261" y="48" width="3" height="40" rx="1.5" fill="#9A6700"/>
+<text x="362.0" y="65.0" text-anchor="middle" font-size="14" font-weight="600" fill="#1F2328">AWS Step Functions</text>
+<text x="362.0" y="83.0" text-anchor="middle" font-size="12" fill="#656D76">runs every step in order</text>
+<rect x="20" y="140" width="164" height="64" rx="8" fill="#F6F8FA" stroke="#D0D7DE"/>
+<rect x="21" y="148" width="3" height="48" rx="1.5" fill="#0969DA"/>
+<text x="104.0" y="169.0" text-anchor="middle" font-size="14" font-weight="600" fill="#1F2328">AWS Lambda x4</text>
+<text x="104.0" y="187.0" text-anchor="middle" font-size="12" fill="#656D76">job API ingestors</text>
+<rect x="214" y="140" width="164" height="64" rx="8" fill="#F6F8FA" stroke="#D0D7DE"/>
+<rect x="215" y="148" width="3" height="48" rx="1.5" fill="#1A7F37"/>
+<text x="298.0" y="169.0" text-anchor="middle" font-size="14" font-weight="600" fill="#1F2328">S3 bronze</text>
+<text x="298.0" y="187.0" text-anchor="middle" font-size="12" fill="#656D76">raw JSON</text>
+<rect x="408" y="140" width="164" height="64" rx="8" fill="#F6F8FA" stroke="#D0D7DE"/>
+<rect x="409" y="148" width="3" height="48" rx="1.5" fill="#0969DA"/>
+<text x="492.0" y="169.0" text-anchor="middle" font-size="14" font-weight="600" fill="#1F2328">AWS Glue (PySpark)</text>
+<text x="492.0" y="187.0" text-anchor="middle" font-size="12" fill="#656D76">clean, one schema</text>
+<rect x="602" y="140" width="164" height="64" rx="8" fill="#F6F8FA" stroke="#D0D7DE"/>
+<rect x="603" y="148" width="3" height="48" rx="1.5" fill="#1A7F37"/>
+<text x="686.0" y="169.0" text-anchor="middle" font-size="14" font-weight="600" fill="#1F2328">S3 silver</text>
+<text x="686.0" y="187.0" text-anchor="middle" font-size="12" fill="#656D76">partitioned Parquet</text>
+<rect x="796" y="140" width="164" height="64" rx="8" fill="#F6F8FA" stroke="#D0D7DE"/>
+<rect x="797" y="148" width="3" height="48" rx="1.5" fill="#0969DA"/>
+<text x="880.0" y="169.0" text-anchor="middle" font-size="14" font-weight="600" fill="#1F2328">Great Expectations</text>
+<text x="880.0" y="187.0" text-anchor="middle" font-size="12" fill="#656D76">quality gate</text>
+<rect x="20" y="262" width="164" height="64" rx="8" fill="#F6F8FA" stroke="#D0D7DE"/>
+<rect x="21" y="270" width="3" height="48" rx="1.5" fill="#0969DA"/>
+<text x="104.0" y="291.0" text-anchor="middle" font-size="14" font-weight="600" fill="#1F2328">dbt + Athena</text>
+<text x="104.0" y="309.0" text-anchor="middle" font-size="12" fill="#656D76">star schema, tests</text>
+<rect x="214" y="262" width="164" height="64" rx="8" fill="#F6F8FA" stroke="#D0D7DE"/>
+<rect x="215" y="270" width="3" height="48" rx="1.5" fill="#1A7F37"/>
+<text x="298.0" y="291.0" text-anchor="middle" font-size="14" font-weight="600" fill="#1F2328">S3 gold</text>
+<text x="298.0" y="309.0" text-anchor="middle" font-size="12" fill="#656D76">facts and dimensions</text>
+<rect x="408" y="262" width="164" height="64" rx="8" fill="#F6F8FA" stroke="#D0D7DE"/>
+<rect x="409" y="270" width="3" height="48" rx="1.5" fill="#8250DF"/>
+<text x="492.0" y="291.0" text-anchor="middle" font-size="14" font-weight="600" fill="#1F2328">Enrichment</text>
+<text x="492.0" y="309.0" text-anchor="middle" font-size="12" fill="#656D76">skills + match score</text>
+<rect x="602" y="262" width="164" height="64" rx="8" fill="#F6F8FA" stroke="#D0D7DE"/>
+<rect x="603" y="270" width="3" height="48" rx="1.5" fill="#8250DF"/>
+<text x="686.0" y="291.0" text-anchor="middle" font-size="14" font-weight="600" fill="#1F2328">Voyage AI</text>
+<text x="686.0" y="309.0" text-anchor="middle" font-size="12" fill="#656D76">embeddings</text>
+<rect x="796" y="262" width="164" height="64" rx="8" fill="#F6F8FA" stroke="#D0D7DE"/>
+<rect x="797" y="270" width="3" height="48" rx="1.5" fill="#8250DF"/>
+<text x="880.0" y="291.0" text-anchor="middle" font-size="14" font-weight="600" fill="#1F2328">Streamlit + Claude</text>
+<text x="880.0" y="309.0" text-anchor="middle" font-size="12" fill="#656D76">ranked search</text>
+<rect x="20" y="372" width="220" height="48" rx="8" fill="#F6F8FA" stroke="#D0D7DE"/>
+<rect x="21" y="380" width="3" height="32" rx="1.5" fill="#8C959F"/>
+<text x="132.0" y="393.0" text-anchor="middle" font-size="14" font-weight="600" fill="#1F2328">Terraform</text>
+<text x="132.0" y="411.0" text-anchor="middle" font-size="12" fill="#656D76">all infrastructure</text>
+<rect x="260" y="372" width="220" height="48" rx="8" fill="#F6F8FA" stroke="#D0D7DE"/>
+<rect x="261" y="380" width="3" height="32" rx="1.5" fill="#8C959F"/>
+<text x="372.0" y="393.0" text-anchor="middle" font-size="14" font-weight="600" fill="#1F2328">GitHub Actions</text>
+<text x="372.0" y="411.0" text-anchor="middle" font-size="12" fill="#656D76">tests, then deploy</text>
+<rect x="500" y="372" width="220" height="48" rx="8" fill="#F6F8FA" stroke="#D0D7DE"/>
+<rect x="501" y="380" width="3" height="32" rx="1.5" fill="#8C959F"/>
+<text x="612.0" y="393.0" text-anchor="middle" font-size="14" font-weight="600" fill="#1F2328">CloudWatch + SNS</text>
+<text x="612.0" y="411.0" text-anchor="middle" font-size="12" fill="#656D76">alarm if a night is missed</text>
+<rect x="740" y="372" width="220" height="48" rx="8" fill="#F6F8FA" stroke="#D0D7DE"/>
+<rect x="741" y="380" width="3" height="32" rx="1.5" fill="#8C959F"/>
+<text x="852.0" y="393.0" text-anchor="middle" font-size="14" font-weight="600" fill="#1F2328">Secrets Manager</text>
+<text x="852.0" y="411.0" text-anchor="middle" font-size="12" fill="#656D76">API keys</text>
+<g fill="none" stroke="#656D76" stroke-width="1.5" marker-end="url(#a)">
+<path d="M220,68 L257,68"/>
+<path d="M184,172 L211,172"/>
+<path d="M378,172 L405,172"/>
+<path d="M572,172 L599,172"/>
+<path d="M766,172 L793,172"/>
+<path d="M878.0,204 L878.0,233 L102.0,233 L102.0,259"/>
+<path d="M184,294 L211,294"/>
+<path d="M378,294 L405,294"/>
+<path d="M572,294 L599,294"/>
+<path d="M766,294 L793,294"/>
+<path d="M360,96 L360,118 L102,118 L102,137" stroke-dasharray="4 4"/>
+</g></svg>

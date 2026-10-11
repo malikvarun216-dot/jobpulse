@@ -2,16 +2,18 @@
 Glue Python Shell job — validates today's silver partition with Great Expectations.
 
 Runs between RunGlueJob (bronze→silver) and RunDbtGold in Step Functions.
-Reads the silver partition for today's snapshot_date into pandas, runs 5 expectations,
+Reads the silver partition for today's snapshot_date into pandas, runs 6 expectations,
 and raises on failure so Step Functions routes to PipelineFailure → SNS alert.
 """
 import json
 
 import great_expectations as gx
+import numpy as np
 import pandas as pd
 
 
 MIN_ROW_COUNT = 100
+IST = pd.Timedelta(hours=5, minutes=30)  # snapshot_date is the IST calendar day of ingestion
 
 
 def load_silver_df(silver_bucket: str, snapshot_date: str, region: str) -> pd.DataFrame:
@@ -45,9 +47,24 @@ def load_silver_df(silver_bucket: str, snapshot_date: str, region: str) -> pd.Da
         )
 
     df = pa.concat_tables(tables).to_pandas()
-    # snapshot_date is a partition column in S3 path, not stored in Parquet data
-    df["snapshot_date"] = snapshot_date
+    # Arrow list columns arrive as numpy arrays, which GE cannot type-check; make them Python
+    # lists. Anything that is not an array (e.g. a string from schema drift) is left as-is
+    # so the tags expectation catches it.
+    df["tags"] = df["tags"].map(lambda v: v.tolist() if isinstance(v, np.ndarray) else v)
     print(f"[GE] Loaded {len(df):,} rows from {len(tables)} Parquet files")
+    return df
+
+
+def add_ingested_date_ist(df: pd.DataFrame) -> pd.DataFrame:
+    """IST calendar day each row was ingested, computed from the data itself.
+
+    Before Chat 25 the check compared snapshot_date to a value the job had just written into
+    the column — it could never fail. ingested_at comes from the bronze file, so a stale or
+    misplaced partition (yesterday's data under today's date) now fails the gate.
+    """
+    df = df.copy()
+    ingested = pd.to_datetime(df["ingested_at"], utc=True)
+    df["ingested_date_ist"] = (ingested + IST).dt.strftime("%Y-%m-%d")
     return df
 
 
@@ -61,12 +78,12 @@ def validate_silver(df: pd.DataFrame, snapshot_date: str) -> None:
     Expectations:
       1. job_id       — no nulls
       2. title        — no nulls
-      3. snapshot_date — no nulls
+      3. ingested_at  — no nulls
       4. row count    — > MIN_ROW_COUNT (volume sanity check)
-      5. snapshot_date distinct values — must be {snapshot_date} only (freshness check)
+      5. ingested_date_ist — only {snapshot_date} (freshness, read from the data)
+      6. tags         — every value is a list (Aug 2026 drift: a source sent a string)
     """
-    # snapshot_date already set as string in load_silver_df()
-    df = df.copy()
+    df = add_ingested_date_ist(df)
 
     context = gx.get_context(mode="ephemeral")
 
@@ -77,15 +94,16 @@ def validate_silver(df: pd.DataFrame, snapshot_date: str) -> None:
     suite = context.suites.add(gx.ExpectationSuite(name="silver_jobs_suite"))
     suite.add_expectation(gx.expectations.ExpectColumnValuesToNotBeNull(column="job_id"))
     suite.add_expectation(gx.expectations.ExpectColumnValuesToNotBeNull(column="title"))
-    suite.add_expectation(gx.expectations.ExpectColumnValuesToNotBeNull(column="snapshot_date"))
+    suite.add_expectation(gx.expectations.ExpectColumnValuesToNotBeNull(column="ingested_at"))
     suite.add_expectation(gx.expectations.ExpectTableRowCountToBeBetween(min_value=MIN_ROW_COUNT))
-    # Freshness: all distinct snapshot_date values must be exactly {snapshot_date}
+    # Freshness: every row in this partition was ingested on the partition's IST date
     suite.add_expectation(
         gx.expectations.ExpectColumnDistinctValuesToBeInSet(
-            column="snapshot_date",
+            column="ingested_date_ist",
             value_set=[snapshot_date],
         )
     )
+    suite.add_expectation(gx.expectations.ExpectColumnValuesToBeOfType(column="tags", type_="list"))
 
     vd = context.validation_definitions.add(
         gx.ValidationDefinition(
@@ -108,11 +126,15 @@ def validate_silver(df: pd.DataFrame, snapshot_date: str) -> None:
         print(f"[GE] FAILED:\n{json.dumps(details, default=str, indent=2)}")
         raise ValueError("[GE] Silver data quality check failed — see CloudWatch logs for details")
 
-    print(f"[GE] All 5 expectations passed. Rows: {len(df):,}. Proceeding to dbt.")
+    print(f"[GE] All 6 expectations passed. Rows: {len(df):,}. Proceeding to dbt.")
 
 
 if __name__ == "__main__":
     import argparse
+    import sys
+
+    # Flush every print to CloudWatch now, not at exit — a timed-out run otherwise logs nothing.
+    sys.stdout.reconfigure(line_buffering=True)
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--snapshot_date", required=True)

@@ -1,4 +1,6 @@
 terraform {
+  required_version = ">= 1.7" # import blocks with for_each (monitoring.tf)
+
   required_providers {
     aws = {
       source  = "hashicorp/aws"

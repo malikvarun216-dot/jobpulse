@@ -542,3 +542,152 @@
 - Ashby is a growing ATS but all API endpoints return 401 without an API key.
 - Unlike Greenhouse (public boards), Ashby is B2B SaaS — no free public tier.
 - Decision: skip. Revisit only if a customer API key becomes available.
+
+---
+
+## Stay on AWS (paid plan) — not migrate to GCP or a $0 stack (Chat 23)
+- Context: the 6-month AWS free plan ends ~2026-10-16; the account closes unless upgraded.
+- Options: (a) $0 portable stack (DuckDB + dbt-duckdb + Postgres/pgvector + GitHub Actions cron), (b) GCP trial (BigQuery + vector search), (c) upgrade AWS to paid.
+- Choice: (c). JobPulse's purpose is learning AWS + AI in data engineering; a rebuild would spend weeks re-creating what already works instead of building the AI layer.
+- Status: account was already upgraded to PAID (shared with ledgerline, $68.13 credits left on 2026-10-06).
+- Cost guard: existing account-wide budgets ($20/month, $2/day spike) cover both projects; lifecycle + log retention + dashboard off EC2 keep the pipeline at ~$3–6/month (estimate).
+- Trade-off: real monthly cost; the free-tier story ends.
+
+## Athena, not Redshift (Chat 23, revisited)
+- Workload: silver 179 MB total, one dbt run per night, one dashboard user.
+- Athena = pay per data scanned over S3; with Parquet + partitions each query scans MBs → fractions of a cent. 1 GB/query workgroup cap.
+- Redshift = compute that runs (provisioned nodes, or Serverless capacity with a minimum base while active) → dollars per day of use for zero benefit at this size. No ANN vector index either.
+- Revisit only if measured Athena latency/cost blocks the dashboard or many concurrent users appear.
+
+## Dashboard runs locally on demand; EC2 hosting retired (Chat 23)
+- The pipeline must run with the laptop off; the dashboard only needs to exist while it's being looked at.
+- EC2 t3.micro + public IPv4 ≈ $12/month after the free period. Local `streamlit run` against AWS = $0.
+- EC2 + CI deploy stays in git history as proof it was built (Chat 21). Instance + EIP already removed in AWS; Terraform cleanup in Chat 24.
+
+## Vector store chosen by evaluation, not by brand (Chat 23)
+- Today: NumPy brute-force cosine over Parquet — exact and <1 s at ~8K × 1024 (1024-d, measured Chat 26 — earlier docs said 512), which is correct at this size.
+- Candidates on AWS: **pgvector on RDS Postgres** (SQL filters + `tsvector` hybrid in one query, ~$13–18/month while running) and **Amazon S3 Vectors** (serverless, cents/month, vector + metadata filters only).
+- Not considered: OpenSearch Serverless (minimum capacity bills 24/7, well over $100/month), Pinecone (external vendor, adds nothing pgvector can't show), Redshift (no ANN index).
+- Method (Chat 29): same vectors in both, measured vs exact NumPy as ground truth — recall@10, nDCG@10 on labelled queries, p95 latency, $/month.
+
+## Go live first, evaluate on a frozen corpus (Chat 23)
+- Going live on AWS = fix 2 failures + re-enable 1 rule (Chat 25) — cheap.
+- Evaluation must run on a pinned, versioned snapshot (`eval/corpus_v1`): if the corpus changes nightly, metrics move because the data changed, not because retrieval improved.
+
+## Measure before adding AI complexity (Chat 23)
+- Order: eval set → baseline → hybrid / chunking → vector store → incremental embeddings → extraction eval → generation.
+- Every AI change must move a number on the eval set; no number, no resume claim.
+- Agentic RAG / graph RAG out of scope: trend questions are answered by SQL, which is more reliable than retrieval.
+
+## Code is the source of truth over docs (Chat 23)
+- Chat 23 found README / CLAUDE.md describing components that were never built (SalaryParser, SeniorityClassifier, DedupAgent, Batch API, JSON guardrails, MinHash/LSH, SCD2, dim_date).
+- Rule: docs describe what exists; planned items are marked as planned with a chat number. The interview guide uses ✅ built / 🔜 planned / ⚠️ weakness.
+- Do not claim an "orchestrator / sub-agent" pattern: the code is one orchestrator class + helper classes with one LLM call per document.
+
+## Terraform secrets via `TF_VAR_` env vars, not a committed tfvars (Chat 24)
+- Problem: the Adzuna key sat in `terraform.tfvars` on GitHub (Chat 23 finding).
+- Options: (a) `TF_VAR_` env vars / local gitignored tfvars, (b) Secrets Manager, read by the Lambda at runtime, (c) SSM Parameter Store SecureString.
+- Choice: (a) now — smallest change, no code change in the Lambda. `*.tfvars` gitignored; `alert_email` got a default (not a secret).
+- Trade-off: the value still lands in the encrypted S3 state and in the Lambda's env vars (visible in the console). (b) removes both for $0.40/month and one `GetSecretValue` per run — the pattern already used for the Anthropic/Voyage keys. Revisit if more keys appear.
+- Terraform does not run in CI, so no GitHub secret is needed for it.
+- The key is still in git history → rotation is the actual fix; removing the file only stops future leaks.
+
+## Pin Glue Python packages with `==` (Chat 24)
+- `--additional-python-modules` used `>=`: Glue installs at the start of every run, so each night could get a new version. Logs show `anthropic` 0.117 → 0.125 across runs.
+- Pinned to what the last green runs installed: `anthropic==0.125.0`, `pydantic==2.13.5`, `voyageai==0.5.0`, `great-expectations==1.8.1`, `pandas==2.3.3`.
+- Trade-off: no automatic fixes; upgrades become a deliberate change (bump, run once, check).
+
+## Log retention 14 days, adopted with Terraform `import` blocks (Chat 24)
+- Lambda/Glue create their log groups on first run with "never expire". Terraform can't `create` them (already exist).
+- `import` blocks (Terraform ≥1.5, `for_each` ≥1.7) adopt them in the plan — reviewable, no manual `terraform import` commands.
+- 14 days = enough to debug a failure noticed within two weeks. The Aug–Sep Glue logs Chat 25 needs were exported to the local backup first.
+- `/aws-glue/*` names are account-wide; OK because only JobPulse runs Glue in this account (checked 2026-10-06). Revisit if ledgerline adds Glue.
+
+## No expiry on `athena-results/` yet (Chat 24)
+- The dbt gold tables live in `athena-results/tables/` (see incidents, 2026-10-06). Expiring the prefix would delete them.
+- Cost of waiting: 1.5 GB × ~$0.025/GB-month ≈ $0.04/month. Fix order (Chat 25): tables out of the results prefix → verify → expire.
+
+## EC2 dashboard removed from Terraform and CI (Chat 24)
+- Instance + EIP were already gone; SG, IAM role/policy/instance profile remained. Removed `ec2.tf`, the 2 outputs, and the `deploy-dashboard` job (it failed on every push — no host).
+- Leftovers outside Terraform for Varun: key pair `jobpulse-dev`, GitHub secrets `EC2_DASHBOARD_IP` / `EC2_SSH_KEY`.
+
+## `.gitattributes` forces LF (Chat 24)
+- Windows `autocrlf` + Terraform file hashing = phantom diffs. LF everywhere makes hashes identical on Mac, Windows and CI.
+
+## Enrichment: LLM off by default, no own retry loop, circuit breaker (Chat 25)
+- Evidence: no Claude call has succeeded since 2026-04-21 and the pipeline's numbers didn't change — the LLM's value is unmeasured. Paying for it (up to the $0.50/day cap ≈ $15/month) before Chat 31 measures it breaks "measure before adding complexity".
+- `--use_llm false` in the Glue job: rules + the existing LLM cache only. One argument to turn it back on.
+- Removed our 3× retry loop: the Anthropic SDK already retries connection errors, 429 and 5xx with backoff. Ours also retried 400/401, which never succeed, sleeping 7 s each time.
+- Circuit breaker: 5 failures in a row → rules for the rest of the run, first error printed. Bounds a bad key to ~5–20 calls (16 threads in flight), not thousands.
+- Trade-off: while off, sparse JDs (Adzuna 500-char snippets) get weaker extraction — which was already the reality since April.
+
+## Enrichment not made incremental (Chat 25) — measured instead
+- Roadmap said "only re-process JDs not already scored". Measured: rules + scoring for 5,729 real JDs = 4 s. The hour was failed LLM calls sleeping. Incremental processing would add a state store to save 4 seconds.
+- The expensive path (LLM) is already incremental: results cached by description hash across days.
+- Embeddings are the step that re-does real paid work daily → Chat 30.
+
+## Explicit bronze schema, all job fields as strings (Chat 25)
+- Inference let one source's type change break every source (Aug 1–9) and made single-source days fail on missing fields.
+- Every field is `string`: Spark keeps a list/number as its JSON text instead of failing, and `parse_tags()` normalizes. Types are enforced in silver, not at read.
+- Cost: a new ingestor field must be added to `BRONZE_JOB_FIELDS`, or it is dropped silently (runbook §2).
+- Rejected: a strict typed schema with `mode=FAILFAST` — loud, but one bad source would still stop the whole night.
+
+## Real quality gates: `dbt build`, GE freshness from the data (Chat 25)
+- `dbt run` → `dbt build`: the 21 tests now fail the step. Ran them first against live gold: 2 failed → fixed the model and the data, not the tests.
+- GE freshness compared `snapshot_date` with a value the job had just written into the column (it could never fail). Now: IST date of `ingested_at` (from the bronze file) must equal the partition date. New expectation: `tags` values are lists.
+
+## Athena workgroup: stop enforcing client settings, so dbt tables live in `gold/models/` (Chat 25)
+- With enforcement on, Athena puts every CTAS table under the result location — the gold tables shared a prefix with throwaway CSVs, so no expiry was possible.
+- Enforcement off: dbt's `s3_data_dir` (`s3://jobpulse-gold-dev/models/`) takes effect. The 1 GB per-query scan cap is a separate workgroup control and still applies (AWS docs: the override covers results location, encryption, bucket owner and object ownership only).
+- Trade-off: a client *could* now send results elsewhere. Single user, IAM-limited — acceptable.
+- Order: move tables → verify the catalog (runbook §18) → enable the 7-day expiry (rule shipped `Disabled`).
+- Alternative: a second workgroup only for dbt (keeps enforcement for everyone else). More resources for one user; revisit if others query.
+
+## One owner for code deploys: CI (Chat 25)
+- Before: Terraform (`archive_file`, `aws_s3_object` etag, `null_resource` zips) and `deploy.yml` both deployed the same code → a permanent plan diff, and whichever ran last won.
+- Chose CI: it already deployed everything on push (Chat 20: code deploys shouldn't need an infra apply). Terraform creates each resource once and ignores code attributes (`lifecycle { ignore_changes }`); the two `null_resource` uploaders are deleted.
+- Consequence: `terraform apply` never ships code. A brand-new environment needs one CI deploy after the first apply.
+- The CI deploy now also waits for the PySpark tests (new job, Spark 3.3.2 = Glue 4.0).
+
+## Absence-of-success alarm: 26 one-hour buckets (Chat 25)
+- The question: "was there a successful run in the last 26 h?" — not "did something fail in the last 5 min?".
+- A single 24 h period flaps: a run a few minutes later than yesterday leaves a gap. 26 × 1 h with 26/26 breaching = "no success anywhere in 26 h", 2 h of slack. Missing data = breaching, so "nothing ran" alarms too.
+- Duration warning: runners publish their own `JobDurationSeconds` (Glue has no duration metric for Python Shell); alarm at 70% of each job's timeout, threshold computed from the Terraform timeout so the two can't drift apart.
+
+## Greenhouse descriptions: fetch the full JD with `?content=true` (Chat 25 open → decided Chat 27)
+- Greenhouse is ~74% of jobs (4,462 / 6,006 on Oct 9) and the list endpoint sends no JD text, so the eval corpus would be mostly titles.
+- Measured 2026-10-11, all 30 slugs: 4,466 jobs, **every one** with a JD; response 4.3 MB → 53 MB (4.4 MB gzipped in bronze);
+  fetch 14 s → 26 s; clean JD median 5,751 chars (89% longer than the 4,000-char embed cut); **366 MB Python peak** locally.
+- Options: (1) turn it on; (2) turn it on but keep Greenhouse out of the nightly embedding until Chat 30; (3) keep it off and
+  freeze the corpus from the other sources (~1.5K described jobs, 1.2K of them 500-char Adzuna snippets).
+- Chose (1). Cost: ~+4.4M Voyage tokens/night while every night re-embeds everything (~130M/month ≈ $2.6 at $0.02/M once the
+  free tokens are gone) — until Chat 30 makes embeddings incremental. (2) saves that but adds code Chat 30 deletes.
+- Stored as **decoded HTML** (`html.unescape`, same form as Arbeitnow), not stripped text: the `<h3>` headings mark JD sections
+  for the Chat 28 chunking experiment; stripping is one measured decision in Chat 28 for both sources.
+- Lambda memory 256 → **1024 MB** (Terraform). At 256 MB the run would OOM, and the Parallel state has no per-branch catch:
+  one failed source fails the whole night. Order: `terraform apply` first, push the code second.
+- `company_name` stays the slug (`stripe`), so `dim_company` keys don't change; the API's real name is a later, separate change.
+
+## Anthropic secret: fix the reader, not the secret (Chat 26)
+- The secret is JSON since 2026-04-24; the enrichment agent read it as a raw string → 401 on every call.
+- Options: (1) put the raw key back in Secrets Manager; (2) make the code accept both shapes.
+- Chose (2): the Voyage secret is JSON too, so JSON is the house format; a code fix is reviewed in a diff, unit-tested and
+  shipped by CI, while a console edit leaves no trace. Accepting the raw shape too means a rotation in either format can't
+  break it again.
+
+## Lab notebooks: in the repo, data outside it (Chat 26)
+- `notebooks/` is committed **with outputs**, so the results read on GitHub without re-running (JD text is public job ads;
+  no keys — they come from Secrets Manager at run time).
+- The data (`jobpulse_lab_data/`, ~9 MB parquet) stays outside the repo; the first cell re-downloads it.
+- Separate `.venv` (gitignored) instead of the system Python: the lab needs `pyarrow==14.0.2` / `numpy==1.26.4` to match
+  Glue, without touching the global install.
+
+## Eval corpus: frozen, versioned, latest-snapshot-wins (Chat 27)
+- Labels (qrels) point at exact job_ids and texts, so the corpus must not move: `eval/freeze_corpus.py` writes
+  `s3://jobpulse-gold-dev/eval/corpus_v1/` once and refuses to overwrite; a new corpus = `corpus_v2/`.
+- One row per `job_id` across the pinned dates; the latest snapshot's text wins (a JD edited on day 2 keeps the day-2 text).
+- Manifest = dates, row count, per-source counts, `content_sha256` over (job_id, title, description) in job_id order, git sha.
+  Same rows → same hash on any machine, so "did the corpus change?" is a string compare.
+- Pinned dates: the first three nights with Greenhouse JDs (Oct 12–14), not "a few weeks": Greenhouse returns every open
+  job each night, so one night already holds ~4.5K full JDs.
+- Queries carry a `relevant_if` line — the rubric both the human labeler and the LLM judge read, so they judge the same thing.

@@ -67,7 +67,7 @@ profile:
       - langchain
 
   seniority: senior
-  yoe: 2
+  yoe: 3
   preferred_locations: [remote, india, bangalore, mumbai]
   preferred_role_families: [DATA, SDE]
   salary_min_usd: 24000

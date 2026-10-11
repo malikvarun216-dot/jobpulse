@@ -52,6 +52,28 @@ resource "aws_s3_bucket_lifecycle_configuration" "silver" {
   }
 }
 
+# Gold — expire Athena query-result CSVs after 7 days (1.5 GB of them in Oct 2026).
+# Enabled 2026-10-08 only after runbook §18 passed: all 4 dbt tables live under gold/models/
+# since Chat 25 (before, they sat in athena-results/tables/<uuid>/ and this rule would have
+# deleted the gold layer). Also cleans the orphaned athena-results/tables/* folders.
+# Before re-pointing any table at athena-results/, remove this rule.
+resource "aws_s3_bucket_lifecycle_configuration" "gold" {
+  bucket = aws_s3_bucket.layers["gold"].id
+
+  rule {
+    id     = "athena-results-expire"
+    status = "Enabled"
+
+    filter {
+      prefix = "athena-results/"
+    }
+
+    expiration {
+      days = 7
+    }
+  }
+}
+
 # Lifecycle rules — archive (Glacier after 180 days)
 resource "aws_s3_bucket_lifecycle_configuration" "archive" {
   bucket = aws_s3_bucket.layers["archive"].id

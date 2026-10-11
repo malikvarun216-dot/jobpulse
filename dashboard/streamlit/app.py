@@ -1,5 +1,7 @@
+import html
 import json
 import os
+import re
 import sys
 
 import boto3
@@ -69,6 +71,28 @@ def parse_tags(raw: str) -> list:
         return []
     inner = raw.strip().lstrip("[").rstrip("]")
     return [t.strip() for t in inner.split(",") if t.strip()]
+
+
+@st.cache_data(ttl=3600)
+def load_descriptions(job_ids: tuple, snapshot_dates: tuple) -> dict:
+    """job_id -> plain-text description, for a handful of jobs.
+
+    FLAT_JOIN_SQL leaves description out (20K rows x several KB each), so before Chat 25
+    the "Why these match?" prompt always got an empty excerpt. Read just these rows from
+    silver; the snapshot_date filter keeps the scan to those partitions.
+    """
+    ids = ", ".join("'" + str(j).replace("'", "''") + "'" for j in job_ids)
+    dates = ", ".join(f"DATE '{d}'" for d in snapshot_dates)
+    df = run_query(
+        "SELECT job_id, description FROM jobpulse_silver_dev.silver_jobs "
+        f"WHERE snapshot_date IN ({dates}) AND job_id IN ({ids})"
+    )
+    out = {}
+    for job_id, raw in zip(df["job_id"].astype(str), df["description"]):
+        if isinstance(raw, str) and raw.strip():
+            text = re.sub(r"<[^>]+>", " ", html.unescape(raw))  # descriptions are HTML
+            out[job_id] = re.sub(r"\s+", " ", text).strip()
+    return out
 
 
 @st.cache_data(ttl=3600)
@@ -340,16 +364,18 @@ with tab_semantic:
                     import anthropic as _anthropic
                     _client = _anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-                    for _, row in df_sem.head(3).iterrows():
+                    top3 = df_sem.head(3)
+                    descriptions = load_descriptions(
+                        tuple(top3["job_id"].astype(str)),
+                        tuple(sorted(top3["snapshot_date"].dt.strftime("%Y-%m-%d").unique())),
+                    )
+
+                    for _, row in top3.iterrows():
                         label = f"{row['title']} at {row['company_name']} ({row['country']})"
                         with st.expander(label):
-                            desc_snippet = ""
-                            if "description" in df_all.columns:
-                                raw_desc = df_all.loc[
-                                    df_all["job_id"] == row["job_id"], "description"
-                                ].values
-                                if len(raw_desc) and raw_desc[0]:
-                                    desc_snippet = str(raw_desc[0])[:500]
+                            desc_snippet = descriptions.get(str(row["job_id"]), "")[:1500]
+                            if not desc_snippet:
+                                st.caption("No description stored for this job — the explanation uses title and metadata only.")
 
                             prompt = (
                                 f"Query: {st.session_state.sem_query}\n\n"

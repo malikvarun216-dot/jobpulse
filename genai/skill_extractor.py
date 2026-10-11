@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-import time
 
 import anthropic
 
@@ -65,32 +64,25 @@ def _llm_extract(
 
     budget.check_and_increment(estimated_input, estimated_output)
 
-    last_error: Exception | None = None
-    for attempt in range(3):
-        try:
-            response = client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=300,
-                system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
-                messages=[{"role": "user", "content": description[:4000]}],
-                timeout=10.0,
-            )
-            usage = response.usage
-            budget.record_actual_usage(
-                input_tokens=usage.input_tokens,
-                output_tokens=usage.output_tokens,
-                cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0),
-            )
-            raw = response.content[0].text.strip()
-            data = json.loads(raw)
-            return ExtractionResult(**data)
-        except (anthropic.APIError, anthropic.APIConnectionError, anthropic.APITimeoutError) as e:
-            last_error = e
-            time.sleep(2 ** attempt)
-        except (json.JSONDecodeError, ValueError):
-            break
-
-    raise RuntimeError(f"LLM extraction failed: {last_error}")
+    # One call, no retry loop of our own. The SDK already retries what is worth retrying
+    # (connection errors, 429, 5xx) with backoff. The old loop here also retried errors that
+    # never succeed (400 bad request, 401 bad key) and slept 1+2+4 s each time: ~7 s per job,
+    # ~1 hour per night once every call failed (Chat 25). Errors now raise straight to the caller.
+    response = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=300,
+        system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
+        messages=[{"role": "user", "content": description[:4000]}],
+        timeout=10.0,
+    )
+    usage = response.usage
+    budget.record_actual_usage(
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0),
+    )
+    raw = response.content[0].text.strip()
+    return ExtractionResult(**json.loads(raw))
 
 
 class SkillExtractor:
@@ -103,6 +95,10 @@ class SkillExtractor:
         self._client = client
         self._budget = budget
 
+    def extract_llm(self, description: str) -> ExtractionResult:
+        """LLM only. Raises on any failure so the caller can count it."""
+        return _llm_extract(description, self._client, self._budget)
+
     def extract(self, description: str) -> tuple[ExtractionResult, str]:
         rules_result = _rule_based_extract(description)
 
@@ -110,7 +106,6 @@ class SkillExtractor:
             return rules_result, "rules"
 
         try:
-            llm_result = _llm_extract(description, self._client, self._budget)
-            return llm_result, "llm"
+            return self.extract_llm(description), "llm"
         except Exception:
             return rules_result, "rules"

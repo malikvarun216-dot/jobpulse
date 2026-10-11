@@ -20,7 +20,7 @@ EMBEDDING_MODEL = "voyage-4-lite"
 def load_embeddings(s3_client, gold_bucket: str, snapshot_date: str = None):
     """
     Load embeddings Parquet for the given snapshot_date (or latest if None).
-    Returns (matrix [N, 512], parallel list of job_ids).
+    Returns (matrix [N, 1024], parallel list of job_ids).
     """
     if not snapshot_date:
         resp = s3_client.list_objects_v2(
@@ -30,7 +30,7 @@ def load_embeddings(s3_client, gold_bucket: str, snapshot_date: str = None):
         )
         prefixes = [p["Prefix"] for p in resp.get("CommonPrefixes", [])]
         if not prefixes:
-            return np.empty((0, 512), dtype=np.float32), []
+            return np.empty((0, 1024), dtype=np.float32), []
         key = f"{sorted(prefixes)[-1]}data.parquet"
     else:
         key = f"embeddings/snapshot_date={snapshot_date}/data.parquet"

@@ -1,10 +1,10 @@
-Chat 1 — Repo Setup
+## Chat 1 — Repo Setup
 - Created GitHub repo: jobpulse (private)
 - Scaffolded full folder structure
 - Branching strategy: dev → main
 
 ## Chat 2 — Himalayas Ingestor + AWS Setup
-Date: 2025-04-17
+Date: 2026-04-17
 
 ### Built
 - ingestion/sources/himalayas/ingest_himalayas.py
@@ -1040,3 +1040,268 @@ ParallelIngest (Remotive | Arbeitnow | Adzuna | Greenhouse)
 
 ### Test count: 103 passing (16 new Greenhouse tests)
 ### Live volume: ~6,600 jobs/run (~198K/month across 4 sources)
+
+---
+
+## Production Run — Unattended (2026-04-26 → 2026-09-19)
+Reconstructed in Chat 23 from AWS (Step Functions, Glue job history, CloudWatch alarm history). Not written at the time.
+
+### What happened
+- **Ran every night unattended for ~3 months.** Enrichment Glue job: **115 SUCCEEDED** runs on record.
+- **Enrichment crept up to its timeout.** 15–20 min in late April → **48–56 min every night from Apr 29** (after Greenhouse, ~6.6K jobs/run) against a **60-min timeout**. First TIMEOUTs Jul 25–26; TIMEOUT every night from ~Aug 15. Total: 29 TIMEOUTs. Volume had grown to **7,855 jobs** (Aug 14).
+- **Source schema drift.** `bronze_to_silver` FAILED Aug 1–9 (6 runs): `cannot resolve 'job.tags' … cannot cast string to array<string>`. Recovered by itself Aug 10. Source not identified — bronze (7-day lifecycle) had expired.
+- **Alarm fired but self-reset.** `jobpulse-sfn-failures-dev` → ALARM ~2 AM, back to OK ~15 min later, every night. Emails delivered (subscription confirmed) but read like one-off blips.
+- **Step Functions history (90-day window, Jul 10 → Sep 19):** 20 SUCCEEDED, 52 FAILED.
+- **2026-09-19:** EventBridge rule `jobpulse-daily-ingest-dev` set to DISABLED (Varun; uncommitted `eventbridge.tf` edit, applied in AWS).
+- **EC2 dashboard instance + Elastic IP** no longer exist in AWS (removed outside Terraform; date not recorded) but are still declared in `ec2.tf`.
+- **Dependency drift:** unpinned `anthropic>=0.40.0` in the enrichment job resolved to 0.125.0 by September.
+
+### Data left in S3 (2026-10-06)
+| Location | Size | Note |
+|---|---|---|
+| `jobpulse-silver-dev` | 179 MB, 8,219 objects | **153 daily snapshots (Apr 18 – Sep 19)** with full descriptions |
+| `jobpulse-gold-dev/embeddings/` | 633 MB, 96 files | one file per day; every job re-embedded daily |
+| `jobpulse-gold-dev/athena-results/` | 1.5 GB, 5,016 objects | mostly old dashboard query CSVs (no lifecycle); dbt CTAS tables (85 MB) live under `tables/` |
+| `jobpulse-gold-dev/enrichment-scores/` | 15 MB | |
+| `jobpulse-gold-dev/enrichment-cache/` | 40 KB, 698 objects | LLM extraction cache + budget ledgers |
+| bronze, archive | 0 | bronze expires after 7 days |
+
+---
+
+## Chat 23 — Recon, AWS Decision, Docs Overhaul
+Date: 2026-10-06
+
+### Goal
+Pick the project back up after 5 months away, find out what happened in production, decide what to do about the
+AWS free plan ending (~Oct 16), and turn JobPulse into an AI Data Engineer project with interview-ready docs.
+
+### Found
+- **Local checkout was stale:** main checkout on `dev` at `ccf0cc4` (Chat 9) while GitHub `dev` was at `98b1e4c` (Chat 22 + 3 EC2 deploy fixes). Running `terraform apply` from it would have planned to destroy everything built in Chats 10–22 (shared S3 state).
+- **Production history** — see "Production Run" above.
+- **Adzuna API key committed** in `terraform/envs/dev/terraform.tfvars` (docs claimed the file was gitignored).
+- **Docs vs code gaps** (code is the truth):
+  - README / CLAUDE.md describe things never built: `SalaryParser`, `SeniorityClassifier`, `DedupAgent`, Batch API, JSON guardrails, MinHash/LSH, SCD2 `dim_company`, `dim_date`, `dim_location`, "Claude embeddings".
+  - `dbt_runner.py` runs `dbt run`, not `dbt build` → the 21 dbt tests never ran in production.
+  - 2 of 5 GE expectations can't fail (`ge_runner.py` sets `snapshot_date` itself before checking it).
+  - Dashboard "Why these match?" never receives the job description (`FLAT_JOIN_SQL` doesn't select it) → Claude explains jobs it never saw.
+  - Embeddings use only the first 4,000 characters of each JD; every job re-embedded daily; search covers latest day only.
+  - Budget tracker checks without reserving (race across 16 threads); price constants are Haiku 3.5's; prompt caching set on a prompt too short to cache.
+  - Step Functions: `Catch` on every step, no `Retry` anywhere.
+  - Real test count: 228 test functions (~214 run in CI; 14 PySpark tests skipped).
+- **Three outside claims verified:** (1) "NumPy in-memory cosine" — true, but a vector DB is not the main gap at 8K vectors; (2) "nothing measures search quality" — true, and extraction quality isn't measured either; (3) "resume undersells semantic search / dbt" — false (both already on the resume); GE missing is true; "orchestrator/sub-agent" should NOT be added (not true in code).
+
+### Decided (details in decisions.md)
+- Stay on AWS, upgrade to a paid plan (not migrate to GCP / a $0 stack).
+- No Redshift — Athena fits the workload.
+- Dashboard runs locally on demand; EC2 hosting retired.
+- Vector store chosen by evaluation: pgvector (RDS) vs Amazon S3 Vectors vs exact NumPy (Chat 29).
+- Go live first (cheap on AWS), but evaluate on a frozen, versioned corpus.
+- Roadmap Chats 24–33 in `docs/roadmap.md`.
+
+### Built (docs only — no code or infra changes)
+- **`docs/interview_guide.md`** (new) — pitch, one-posting story, full pipeline (current + target), layer-by-layer why/why-not, AWS services vs popular alternatives (Athena vs Redshift, Step Functions vs MWAA…), design patterns, AI theory in simple words mapped to JobPulse, 12 stories, numbers, honest limits, likely questions, resume bullets, timeline. Updated every chat from now on.
+- **`docs/roadmap.md`** (new) — Chats 24–33 with done-criteria.
+- **`docs/runbook.md`** — was empty; now 16 failure modes with commands.
+- **`docs/incidents.md`** — 6 new incidents (timeout creep, tags drift, self-resetting alarm, empty RAG context, stale checkout, committed key).
+- **`docs/decisions.md`** — Chat 23 decisions.
+- **`README.md`** — rewritten to match the code.
+- `progress.md` — Chat 1 heading + Chat 2 date (2025 → 2026) fixed; this entry + "Production Run".
+- `CLAUDE.md` (local, gitignored) — current status, docs table, end-of-chat routine now includes the interview guide.
+
+### Verified
+- Account plan: `PAID / ACTIVE`, $68.13 credits remaining (shared with ledgerline). Budgets already in place and account-wide: $20/month, $2/day, $0.01 zero-spend.
+- AWS read-only inventory: EventBridge rule DISABLED; EC2/EIP gone; 5 Lambdas, 5 Glue jobs, state machine, 2 secrets, tfstate bucket + DynamoDB lock still exist; SNS subscription confirmed; IAM user created 2026-04-16 (free plan likely ends ~2026-10-16).
+
+### Next
+Chat 24 — Stabilize: secrets out of git, remove EC2 from Terraform, cost hygiene (athena-results lifecycle, log retention, pinned deps), local backup, clean `terraform plan`. **Before it:** `git pull --ff-only origin dev` in the main checkout, rotate the Adzuna key. (Account already paid; budgets already cover it.)
+
+---
+
+## Chat 24 — Stabilize
+Date: 2026-10-06
+
+### Goal
+Make the account and repo safe before going live again: secrets out of git, Terraform matching reality, cost hygiene,
+a local backup, and a `terraform plan` that shows only intended changes.
+
+### Built
+- **Secrets:** `adzuna_app_id` / `adzuna_app_key` now come from `TF_VAR_` env vars (or a local tfvars); `*.tfvars` gitignored;
+  `alert_email` got a default. `terraform.tfvars` must be untracked with `git rm --cached` (Varun).
+- **EC2 retired from code:** `ec2.tf` deleted (SG, IAM role/policy/attachment, instance profile → destroyed on apply; instance +
+  EIP were already gone), 2 outputs removed, `deploy-dashboard` job removed from `deploy.yml`.
+- **Log retention:** 9 log groups (5 Lambda + 4 `/aws-glue/*`) at 14 days, adopted with `import` blocks in `monitoring.tf`.
+  `required_version >= 1.7`.
+- **Pinned Glue packages:** `anthropic==0.125.0`, `pydantic==2.13.5`, `voyageai==0.5.0`, `great-expectations==1.8.1`,
+  `pandas==2.3.3` (versions the last green runs installed).
+- **`.gitattributes`:** `* text=auto eol=lf`.
+- **Local backup:** `C:\Users\malik\jobpulse_backup\2026-10-06\` — 943 MB; silver 8,219 / gold embeddings 96 /
+  enrichment-scores 103 / enrichment-cache 698 / 4 gold tables (21 files) — all counts match S3. Plus Glue logs
+  Aug 1 – Sep 20 (122K events) for the Chat 25 tags-drift + timeout investigation.
+- Docs: runbook §14/§15/§17, decisions (6), incidents (2), interview guide (§3, §4, §5, story 13, §10, §11, §14).
+
+### Not done (on purpose)
+- **No `athena-results/` lifecycle rule.** The gold tables live in `athena-results/tables/<uuid>/` (workgroup enforces its
+  output location → dbt's `s3_data_dir` ignored). An expiry rule would have deleted them. Moved to Chat 25.
+
+### Found
+- `core.autocrlf=true` made Terraform see every Python file as changed → `.gitattributes`.
+- CI (`deploy.yml`) and Terraform both deploy Lambda code + Glue scripts → recurring benign diff (zip bytes, S3 tags).
+- `deploy-dashboard` CI job failed on every push since the EC2 was removed.
+- Glue logs show `anthropic` drifting 0.117 → 0.125 across nights (unpinned `>=`).
+
+### Verified
+- `terraform plan` (worktree, LF-normalized): 9 to import, 23 to change, 5 to destroy. Intended: 9 imports + retention,
+  3 Glue jobs (pins), 5 EC2 leftovers destroyed. Benign (two deployers): 5 Lambdas `source_code_hash`, 6 S3 objects `tags_all`.
+- `ruff` clean; pytest 208 passed / 14 skipped / 6 failed — the 6 are `test_ge_runner.py`, GE not installed in the local
+  Python (repo's `great_expectations/` folder imports as an empty namespace package); CI installs it.
+
+### Closed out (2026-10-07)
+- Committed `7d7aedb` (18 files: incl. `git rm` of `ec2.tf`, `terraform.tfvars`; `interview_guide.md` untracked — now local only with `learning.md`).
+- Applied: 9 imported, 23 changed, 5 destroyed. Verified: 9 log groups at 14 d; dashboard IAM role + SG gone; 3 Glue jobs pinned.
+- Adzuna key rotated; first apply wrote the literal `<new key>` (stale PowerShell window) → fixed with a saved one-change plan;
+  Lambda key verified 32 hex chars, equal to the User-scope value (incident logged).
+- A skipped commit + `git reset --hard` wiped the uncommitted changes once → restored from the worktree (incident logged).
+- Cost allocation tags `project` and `layer` activated. Worktrees removed; work now happens in the main checkout.
+
+### Next
+Chat 25 — fix the failures, move gold tables out of `athena-results/` then add the expiry, absence-of-success alarm, go live.
+First step: one test invoke of the Adzuna Lambda to prove the rotated key works.
+
+---
+
+## Chat 25 — Fix the failures, go live
+Date: 2026-10-08
+
+### Goal
+Find the real causes of the Aug–Sep failures, fix them, turn the quality checks into real gates, then go live again.
+
+### Found (measured, from the Chat 24 log export + local backup)
+- **Enrichment timeout = a failure path, not volume.** No Claude call has succeeded since 2026-04-21 (cache writes stop that day; `llm=0`, `$0` in every snapshot). Each failure: 3 retries with 1+2+4 s sleeps, then labelled "rules". Greenhouse JDs are empty (4,035 / 5,729 on Aug 14), so only 17 jobs passed the regex fast path. Rules for all 5,729 JDs: 4 s.
+- **Glue Python Shell stdout is buffered** → timed-out runs logged nothing.
+- **`tags` drift:** traceback confirmed (`cannot cast string to array<string>`); the source can't be identified (logs show only the Spark plan; bronze expired).
+- **dbt tests never ran in prod.** Run against live gold: 19 pass, 2 fail — `dim_company` 368 duplicate keys (fact→company join 1,147,783 → 2,011,211 rows, +75%), `source_count` null in 24 pre-dedup rows.
+- **9 of 14 PySpark tests failed** once Spark was available (always skipped in CI).
+- `requirements.txt` let numpy 2 install next to pyarrow 14 (import fails) — pinned 1.26.4.
+- Adzuna rotated key works: dry-run invoke fetched 1,200 jobs, wrote nothing.
+- Adzuna descriptions are 500-char snippets; Greenhouse sends none (`?content=true` would — decision open).
+
+### Built
+- `genai/jd_enrichment_agent.py` — one decision path (rules → cache → LLM), empty JDs skip the LLM, circuit breaker (5 in a row), `use_llm` flag, per-source timing, progress every 1,000 jobs, `llm_errors` / `breaker_open` in the summary.
+- `genai/skill_extractor.py` — own retry loop removed; `extract_llm()` raises so failures are counted.
+- `genai/enrichment_runner.py`, `genai/embedding_runner.py` — line-buffered stdout, `[timing]` per stage, `--use_llm`, publish `JobPulse/JobDurationSeconds`. New `genai/run_metrics.py`.
+- `spark/jobs/bronze_to_silver.py` — `bronze_schema()` (explicit, all strings), `parse_tags()`.
+- `transform/ge_runner/ge_runner.py` — freshness from `ingested_at` (IST), `tags`-is-list expectation (6 total).
+- `transform/dbt_runner/dbt_runner.py` — `dbt build`; `s3_data_dir` = `gold/models/`.
+- dbt: `dim_company` one row per key; staging coalesces `source_count` / `source_apis`.
+- `dashboard/streamlit/app.py` — "Why these match?" gets real description text from silver.
+- Terraform: workgroup enforcement off; gold `athena-results/` 7-day expiry (**Disabled** until the tables move); enrichment timeout 60 → 20, `--use_llm false`; `cloudwatch:PutMetricData` (namespace JobPulse); absence-of-success alarm replaces the failure alarm; 2 duration alarms; CI owns code (`ignore_changes`, `null_resource`s removed).
+- CI: `spark-tests` job (PySpark 3.3.2, Java 11) in `ci.yml` and gating `deploy.yml`; Greenhouse zip step fixed; `requirements.txt` pins numpy 1.26.4, GE 1.8.1.
+- Tests: +6 `parse_tags`, +3 Spark tags/schema, +4 agent LLM guards, +2 GE; 2 contradictory dedup tests rewritten.
+
+### Verified
+- `ruff` clean; pytest without Spark (as in CI) **226 passed, 17 skipped**; PySpark tests with Spark 3.4.4 + JDK 11 locally: **128 passed** (`spark/tests/`).
+- Agent on 5,729 real JDs: 4.4 s (LLM off), 14 s (LLM on, every call failing) — was ~60 min.
+- GE on real silver (Aug 14, Jul 31): pass. dbt tests on live gold before the fix: 19/21. New `dim_company` SQL on Athena: 28,260 rows = 28,260 keys.
+- `terraform validate` OK; `terraform plan`: **4 add, 4 change, 3 destroy** — exactly the intended set; the Chat 24 "two deployers" diff is gone.
+
+### Go-live (2026-10-08)
+- Committed `4de9a58`, CI green (test + spark-tests + deploy; deployed scripts match the commit by md5). Applied: 4 added, 4 changed, 3 destroyed.
+- Manual run **SUCCEEDED in 9 min 36 s**: ingest 28 s · Spark 2 min 10 s · GE 6/6 on 6,891 rows · `dbt build` **26/26 PASS** (113 s) · enrichment **23 s** (6,923 jobs, rules 6,506 / cache 417, 0 LLM errors) · embeddings 39 s (2,442 new). Both runners published `JobPulse/JobDurationSeconds`.
+- Runbook §18 passed: all 4 dbt tables under `gold/models/`. Fact = silver row for row (770,151) — the fact table had been ~55% inflated by the `dim_company` bug.
+- Step Functions history (Jul 11 – Sep 19, 72 runs) split by duration: <1 s = **Arbeitnow `KeyError: 0`** (5 nights, new finding — PHP API sends objects for lists; fixed with `as_list()`), 2–3.5 min = `tags` drift, ~1 h 10 = enrichment timeout. The one August success (Aug 14) finished enrichment at 59.3 min.
+- GitGuardian flagged the old Adzuna key in the public repo (from the Chat 24 deletion diff); key already rotated, live key verified different. `*.tfplan` gitignored.
+- No-success alarm stayed `INSUFFICIENT_DATA` after creation: the success metric had expired during the 19-day pause (runbook §12).
+- Phase 2 (commit `896c75e`): Arbeitnow `as_list()` deployed by CI; applied with the no-success alarm **replaced**
+  (1 added, 2 changed, 1 destroyed). Verified: EventBridge rule `ENABLED`, gold lifecycle `athena-results-expire` `Enabled`.
+- Saved plan files deleted (they hold the Adzuna key in plain text). GitGuardian alert: old key confirmed revoked at
+  Adzuna, alert marked revoked.
+- Recreated no-success alarm still `INSUFFICIENT_DATA` / "Unchecked: Initial alarm creation" minutes later — open (see Next).
+
+### Not done
+- Done-criteria: 3 green **scheduled** nights (Oct 9, 10, 11, 2:00 AM IST — the schedule was enabled after tonight's slot) and a
+  deliberate failure that fires the no-success alarm once without auto-reset. Can't be fast-forwarded: they test the
+  unattended trigger, new data each day, and the alarm's 26 h window — re-running today only overwrites the same partition.
+
+### Next
+- Chat 26 starts now, in parallel (notebook on exported data, no AWS changes). Each chat opens with a night check;
+  Chat 25 closes when Oct 9–11 are green.
+- If the alarm is still "Unchecked" after the Oct 9 run: rebuild it with metric math (`FILL(m1, 0)`, so an empty hour
+  counts as 0 instead of missing).
+- Why the Claude calls fail (key vs credits) — check console.anthropic.com.
+- Done-criteria (3 green nights; a deliberate failure fires the alarm once and does not auto-reset) — after go-live.
+
+
+## Chat 26 — AI concepts lab (2026-10-09)
+
+### Night check
+- Oct 9 02:00 IST scheduled run **SUCCEEDED** (11 min 6 s) — soak night 1 of 3. Enrichment 48 s, embeddings 79 s (Glue run time).
+- `jobpulse-sfn-no-success-26h-dev` now **OK** (was "Unchecked" after creation) → the metric-math rebuild is not needed.
+
+### Built
+- `notebooks/chat26_ai_concepts_lab.ipynb` — 5 experiments on the live Oct 9 output (6,006 silver rows, 1,544 vectors),
+  executed with outputs saved. Local `.venv` + kernel (runbook §19). Cost of one run: < $0.01 Claude + free-tier Voyage.
+- `genai/jd_enrichment_agent.py`: `parse_api_key()` — **root cause of "every Claude call fails since April"**: the secret
+  became JSON on 2026-04-24 and the code sent the JSON text as the key (401). Proved with one call each way. 2 tests.
+- Comments/docs corrected: vectors are **1024-d**, not 512 (`embedding_agent.py`, `semantic_search.py`, roadmap, decisions).
+
+### Measured (Oct 9 data)
+- Vector coverage: 1,544 / 6,006 jobs (26%). Greenhouse 4,462 rows = empty description. Of the 1,544: 1,200 are Adzuna 500-char snippets.
+- Arbeitnow/Remotive descriptions are **raw HTML**: the median Arbeitnow job keeps 2,988 visible chars of its 4,000-char
+  window (~25% markup); 79% of Arbeitnow and 63% of Remotive jobs are cut at 4,000.
+- Aqemia "Senior Data Engineer": Responsibilities start at raw char 4,379 → requirements are not in its vector. Skills
+  query: 0.71 on the Qualifications chunk vs 0.46 on the pipeline vector.
+- Keyword vs vector: vector wins paraphrases ("keeps servers running" → BM25 finds housekeeping); BM25 wins tool names
+  ("Snowflake" → vector finds Christmas casual staff, "Airflow" → mechanical engineers, "dbt" → legal secretary).
+- precision@10 (2 queries, draft title-only labels): vector 0.9 / 1.0, BM25 0.3 / 0.5.
+- RAG: title only → "not stated" everywhere; pipeline's 4,000 chars → no tools named; retrieved sections → Python,
+  SQL, Snowflake, dbt, Airflow, Terraform, AWS — with fewer input tokens (1,046 vs 1,288).
+
+### Committed
+- `79aa6ba` (2026-10-10): CI #21 + Deploy #19 green; deployed `genai_package.zip` checked — contains `parse_api_key`.
+- Soak night 2 (Oct 10, 02:00 IST) **SUCCEEDED** in 10 min 40 s; no-success alarm OK.
+
+### Not done
+- Done-criterion "each concept explained aloud in 90 s" — Varun's drill (script at the end of the notebook), parked.
+- Step 5 labels are Claude's drafts from titles — Varun to check against the snippets.
+
+### Next
+- Night check Oct 10 + 11, then the alarm test → Chat 25 closes.
+- Chat 27 (corpus + labels) — Greenhouse `?content=true` decision still first.
+
+
+## Chat 27 — Evaluation foundations, part 1 (2026-10-11)
+
+### Night check
+- Oct 11 02:00 IST **SUCCEEDED** (10 min 23 s) — soak night 3 of 3. Embeddings 71 s, enrichment 44 s. All 3 alarms OK.
+- Chat 25 is left with the deliberate-failure alarm test only.
+
+### Decided + built
+- Greenhouse `?content=true` → **on** (decisions.md). `ingest_greenhouse.py` fetches the full JD and stores it as decoded
+  HTML; 3 new tests (19 pass). `lambda.tf`: Greenhouse memory 256 → 1024 MB.
+- `eval/freeze_corpus.py` — pinned silver dates → one row per job_id (latest wins) → `corpus.parquet` + `manifest.json`
+  in `s3://jobpulse-gold-dev/eval/corpus_v1/`, never overwritten. 4 tests. Dry run on Oct 9: 5,998 jobs, 1,536 with a JD,
+  Greenhouse 0 / 4,462.
+- `config/user_profile.yml`: `yoe` 2 → 3 (total since Jul 2023, matches the resume). Seniority fit: a job asking 3 years
+  now gets full points instead of 75%; one asking 6 gets 25% instead of 0.
+- `README.md` rewritten for recruiters (2026-10-12): one-line hook (6,000 raw postings a night → ranked for me), simple
+  Mermaid flow, 5-step "how it works", 4 headline numbers, one failure story (56 min → 4 s), what's next; depth moved
+  to links into `docs/`. Stale facts removed (paused, 512-d vectors, 228 tests).
+- `eval/queries_v1.yml` — 50 **draft** queries (12 keyword, 12 descriptive, 10 role, 7 filtered, 9 edge), each with a
+  `relevant_if` rubric line. Drafts from `user_profile.yml`; Varun replaces them with real searches before labeling.
+
+### Measured
+- Greenhouse with content (30 slugs, 2026-10-11): 4,466 jobs, all with a JD; 53 MB vs 4.3 MB; 26 s vs 14 s; clean JD
+  median 5,751 chars, p90 8,343; 89% longer than 4,000 chars; 366 MB Python peak (Lambda had 256 MB).
+- **11 of 30 Greenhouse slugs return 404**: doordash, notion, plaid, snowflake, confluent, hashicorp, cockroachdb, hubspot,
+  zendesk, canva, palantir (likely moved ATS).
+- Silver Oct 9: `role_family = Other` for **5,610 / 6,006 rows (93%)**, `DATA` only 46; `country = other` for 1,923 (32%).
+- Silver Oct 9 has 8 exact duplicate rows (Adzuna, same job_id twice in one snapshot — likely pagination overlap).
+
+### Not done
+- Corpus not frozen: it needs the Oct 12–14 nights with Greenhouse JDs (→ Chat 27 part 2).
+- Pooling, labeling page, Claude judge, Cohen's κ → Chat 27 part 2.
+- Local `pytest tests/`: 7 `test_ge_runner` failures = known local GE shadowing (runbook §19), not this change.
+
+### Next
+- Varun: `terraform apply` (memory only), **then** push. Night Oct 12 = first Greenhouse JDs; check bronze size and Lambda memory.
+- Chat 27 part 2 (on/after Oct 14): freeze corpus_v1, finalize queries, pool, label, judge, κ.

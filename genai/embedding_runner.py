@@ -23,6 +23,10 @@ import zipfile
 import boto3
 import pandas as pd
 
+# Flush every print to CloudWatch now, not at exit — a timed-out run otherwise logs nothing.
+sys.stdout.reconfigure(line_buffering=True)
+_STARTED = time.perf_counter()
+
 # ---------------------------------------------------------------------------
 # Bootstrap: make genai package importable in both local dev and Glue 4.0.
 # ---------------------------------------------------------------------------
@@ -44,6 +48,7 @@ else:
     sys.path.insert(0, _GENAI_EXTRACT_DIR)
 
 from genai.embedding_agent import EmbeddingAgent
+from genai.run_metrics import publish_duration
 
 # ---------------------------------------------------------------------------
 # Argument parsing
@@ -57,6 +62,7 @@ parser.add_argument("--workgroup",     default="jobpulse-dev")
 parser.add_argument("--gold_database", default="jobpulse_gold_dev")
 parser.add_argument("--snapshot_date", default="")
 parser.add_argument("--dry_run",       default="false")
+parser.add_argument("--job_name",      default="jobpulse-embedding-dev")
 args, _ = parser.parse_known_args()
 
 GOLD_BUCKET = args.gold_bucket
@@ -170,5 +176,7 @@ if __name__ == "__main__":
 
     if not DRY_RUN:
         repair_embeddings_partition()
+        publish_duration(args.job_name, time.perf_counter() - _STARTED, REGION)
 
+    print(f"[timing] total={time.perf_counter() - _STARTED:.1f}s")
     print(json.dumps(summary))

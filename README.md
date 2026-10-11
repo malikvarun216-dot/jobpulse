@@ -1,179 +1,91 @@
 # JobPulse
 
-**A production-grade, serverless data engineering pipeline that ingests 3,600+ job postings daily from multiple APIs, enriches them with a custom GenAI agent, and delivers market intelligence through an interactive dashboard.**
+[![CI](https://github.com/malikvarun216-dot/jobpulse/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/malikvarun216-dot/jobpulse/actions/workflows/ci.yml)
 
-Built end-to-end on AWS free tier — runs unattended, 24/7, laptop-off.
+**Every night, JobPulse reads about 6,000 new job postings and tells me which ones are worth my time.**
 
----
+It pulls raw postings from four job APIs, cleans and models them on AWS, uses AI to understand each job
+description, and ranks every job against my skills and experience. In the morning I open one dashboard: the best
+matches are at the top, and I can search by meaning, like *"streaming data platform at a startup"*, not just by
+keywords.
 
-## Demo
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/pipeline-dark.svg">
+  <img alt="How JobPulse works: raw postings from 4 job APIs, AWS pipeline, AI, ranked for me, dashboard" src="docs/images/pipeline-light.svg">
+</picture>
 
-> Dashboard live on Streamlit — filter by role, country, seniority, salary, and match score. Semantic job search coming in the next release.
+## What it answers
 
----
+| Question | How |
+|---|---|
+| How many openings per role / country / source? | Star schema in Athena, dashboard filters |
+| Which skills and companies show up most? | Tag frequency, company leaderboard |
+| Which jobs are worth applying to? | Personal `match_score` (0 to 100) |
+| Which jobs *mean* what I'm looking for, even with different words? | Embedding-based semantic search |
 
-## What It Does
+## How it works
 
-| Question | Answer |
-|----------|--------|
-| How many offers per role / location / seniority? | Live counts, updated daily |
-| Which stacks and companies are trending? | Skill frequency + company leaderboard |
-| Where's the best salary-to-cost-of-living ratio? | Salary arbitrage view (in progress) |
-| Which jobs are worth applying to today? | Ranked by personal match score (0–100) |
+1. **Collect.** Serverless functions pull postings from Greenhouse, Adzuna, Arbeitnow and Remotive every night at 2 AM.
+2. **Clean.** Spark turns four different formats into one table, and quality checks stop bad data before it goes further.
+3. **Model.** dbt builds a star schema on S3 that can be queried with SQL in Athena.
+4. **Understand.** Skills and seniority are extracted from each description, and each description becomes an
+   embedding, a numeric representation of its meaning, so similar jobs can be found even when the words differ.
+5. **Rank.** Every job gets a match score from 0 to 100 against my profile, and Claude explains why the top jobs match.
 
----
+| 6,000 | 10 min | 255 | 0 |
+|:---:|:---:|:---:|:---:|
+| jobs every night | end to end | automated tests | servers to manage |
+
+## Built to run on its own
+
+The whole pipeline runs unattended on AWS: Lambda, Step Functions, Glue, S3 and Athena, all defined in Terraform
+and deployed by GitHub Actions. If a night is missed, an alarm emails me.
+
+It has also been through real failures. One nightly step slowly grew to an hour and then started timing out. It
+looked like a volume problem, but every AI call had been failing quietly and waiting in retries. Fixing the root
+cause took that step from **56 minutes to 4 seconds**. That story and others are in [docs/incidents.md](docs/incidents.md).
 
 ## Architecture
 
-```
-APIs (20+ sources)
-    │
-    ▼
-Lambda ingestors  ──  EventBridge (daily 2 AM IST)
-    │
-    ▼
-S3 bronze  (raw JSON, 7-day lifecycle)
-    │
-    ▼  Step Functions
-Glue Spark job
-    │
-    ▼
-S3 silver  (Parquet, deduplicated, partitioned by date/country/role)
-    │
-    ▼  dbt + Athena
-S3 gold  (star schema: fact_job_posting + 4 dimensions)
-    │
-    ▼
-GenAI enrichment  (skills · seniority · match score)
-    │
-    ▼
-Streamlit dashboard
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/architecture-dark.svg">
+  <img alt="Architecture: EventBridge and Step Functions run Lambda ingestors, S3 bronze, Glue PySpark, S3 silver, Great Expectations, dbt and Athena, S3 gold, enrichment, Voyage AI embeddings and a Streamlit dashboard with Claude, on a platform of Terraform, GitHub Actions, CloudWatch and SNS, and Secrets Manager" src="docs/images/architecture-light.svg">
+</picture>
 
----
+## What's next
 
-## Tech Stack
+Measuring search quality with a labelled evaluation set, then improving it with hybrid keyword and vector search
+and comparing two vector databases (pgvector and Amazon S3 Vectors). Each change has to improve the measured
+numbers. Plan in [docs/roadmap.md](docs/roadmap.md).
 
-| Layer | Tools |
-|-------|-------|
-| Ingestion | AWS Lambda, Python |
-| Orchestration | AWS Step Functions, EventBridge |
-| Processing | AWS Glue (PySpark), S3 |
-| Warehousing | Athena, Glue Data Catalog |
-| Transformation | dbt-core (Athena adapter) |
-| GenAI | Claude API (Haiku), custom agentic pipeline |
-| Dashboard | Streamlit |
-| IaC | Terraform |
-| CI/CD | GitHub Actions (planned) |
-| Data Quality | dbt tests, Great Expectations (planned) |
-| Monitoring | CloudWatch, SNS |
+**Stack:** Python, PySpark, SQL, dbt, AWS (Lambda, Step Functions, Glue, S3, Athena), Great Expectations,
+Terraform, GitHub Actions, Claude API, Voyage AI, Streamlit.
 
----
+**More detail:** [design decisions](docs/decisions.md) · [incidents](docs/incidents.md) · [runbook](docs/runbook.md) · [progress log](docs/progress.md)
 
-## Data Sources
+<details>
+<summary><b>Run it locally</b></summary>
 
-Three live, more in progress:
+Install dependencies and run the tests (same as CI):
 
-| Source | Jobs/run | Salary data |
-|--------|---------|-------------|
-| Adzuna | ~2,500 | ✅ min / max (12 countries) |
-| Arbeitnow | ~1,000 | — |
-| Remotive | ~25 | — |
-
-**Planned:** Greenhouse, Lever, USAJobs, Reed.co.uk, HN Algolia, Devpost hackathons
-
-All sources tested for Cloudflare/bot-protection from Lambda datacenter IPs before implementation.
-
----
-
-## GenAI Enrichment
-
-A custom agentic pipeline — built in plain Python, no frameworks.
-
-**Extracts per job description:**
-- `skills[]` — normalized against a curated vocabulary
-- `seniority` — intern → exec
-- `role_family` — DE, SDE, PM, DS, ML, DevOps, etc.
-- `remote_policy` — onsite / hybrid / remote
-- `salary_min`, `salary_max`, `currency`
-- `yoe_required`
-
-**Architecture patterns used:**
-- Orchestrator agent + specialized sub-agents (SkillExtractor, SalaryParser, SeniorityClassifier)
-- Pre/post hooks for validation, budget enforcement, S3 cache writes
-- Rules-first fast path — regex handles ~70% of jobs in <1ms, LLM only for the rest
-- 16-thread parallel enrichment via `ThreadPoolExecutor`
-- Thread-safe budget tracker with `threading.Lock`
-- S3 response cache keyed by JD hash — never pays twice for the same job
-
-**Result:** 3,400 jobs enriched in ~3–5 minutes. Cost capped at $0.50/day.
-
----
-
-## Match Scoring
-
-Every job is scored 0–100 against a personal profile (`config/user_profile.yml`):
-
-| Signal | Weight |
-|--------|--------|
-| Skill overlap | 40% |
-| Seniority fit | 20% |
-| Location fit | 15% |
-| Role family | 15% |
-| Salary fit | 5% |
-| Freshness | 5% |
-
----
-
-## Data Model
-
-Star schema on S3, queried through Athena:
-
-```
-fact_job_posting
-    ├── dim_company      (SCD Type 2)
-    ├── dim_location     (city · country · timezone)
-    ├── dim_role         (role_family · seniority)
-    └── dim_date
+```powershell
+pip install -r requirements.txt
 ```
 
-Deduplication: md5 hash on `(company + title + country)` — canonical row keeps earliest post date, tracks all source APIs in an array.
-
----
-
-## Production Discipline
-
-- **Serverless-first** — EventBridge + Lambda run unattended, no always-on server
-- **Idempotent** — all Lambda and Glue jobs safe to rerun without side effects
-- **Cost-guardrailed** — S3 lifecycle rules, Athena 1 GB scan cap, AWS Budgets alerts at $0.01 / $1 / $5
-- **Monitored** — CloudWatch Logs + Alarms → SNS email on any pipeline failure
-- **Tested** — 87 unit tests, all mock-based, no real AWS or API calls in CI
-
----
-
-## Repo Structure
-
-```
-├── ingestion/sources/     # one folder per API (remotive, arbeitnow, adzuna, ...)
-├── transform/spark/       # Glue bronze → silver Spark job
-├── transform/dbt/         # gold layer — star schema models + dbt tests
-├── genai/                 # enrichment agent, skill extractor, match scorer
-├── config/                # user_profile.yml, aws_config.yml
-├── terraform/envs/dev/    # all AWS infra as code
-├── tests/                 # 87 unit tests
-└── docs/                  # architecture decisions, runbook, incident log
+```powershell
+pytest tests/ spark/tests/ -v
 ```
 
----
+Infrastructure is in `terraform/envs/dev/`. Secrets come from environment variables, not committed files:
 
-## What's Coming
+```powershell
+$env:TF_VAR_adzuna_app_id = "<id>"; $env:TF_VAR_adzuna_app_key = "<key>"
+```
 
-- **Semantic search** — JD embeddings via Claude API + cosine similarity, no managed vector DB
-- **"Why this job" explanations** — per-result generated by Claude
-- **More sources** — Greenhouse, Lever, USAJobs, Reed.co.uk (~15K–20K jobs/day at full scale)
-- **CI/CD** — GitHub Actions lint → test → deploy
-- **Salary arbitrage view** — same role across countries, cost-of-living normalized
+Start the dashboard against AWS:
 
----
+```powershell
+streamlit run dashboard/streamlit/app.py
+```
 
-*Built as a personal learning project — DE + GenAI + AWS, end-to-end, from scratch.*
+</details>

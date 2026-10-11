@@ -8,7 +8,7 @@ import json
 import os
 import sys
 import unittest
-from unittest.mock import MagicMock, patch, mock_open
+from unittest.mock import MagicMock, patch
 
 os.environ["BRONZE_BUCKET"] = "test-bronze-bucket"
 os.environ["AWS_REGION"]    = "ap-south-1"
@@ -26,6 +26,7 @@ def make_raw_job(i: int, slug: str = "stripe") -> dict:
         "location": {"name": "San Francisco, CA"},
         "departments": [{"id": 1, "name": "Engineering"}],
         "offices": [{"id": 1, "name": "San Francisco"}],
+        "content": "&lt;h3&gt;Requirements&lt;/h3&gt;&lt;p&gt;Python &amp;amp; SQL&lt;/p&gt;",
     }
 
 
@@ -65,6 +66,13 @@ class TestFetchCompanyJobs(unittest.TestCase):
         self.assertEqual(result[0]["id"], 1001)
 
     @patch("ingest_greenhouse.urllib.request.urlopen")
+    def test_requests_full_content(self, mock_urlopen):
+        mock_urlopen.return_value = _make_urlopen_ctx(make_api_response([]))
+        sut.fetch_company_jobs("stripe")
+        url = mock_urlopen.call_args[0][0].full_url
+        self.assertTrue(url.endswith("/stripe/jobs?content=true"))
+
+    @patch("ingest_greenhouse.urllib.request.urlopen")
     def test_returns_empty_list_on_404(self, mock_urlopen):
         import urllib.error
         mock_urlopen.side_effect = urllib.error.HTTPError(
@@ -99,6 +107,15 @@ class TestNormalizeJobs(unittest.TestCase):
         self.assertIn("San Francisco", job["tags"])
         self.assertIsNone(job["salary"])
         self.assertIsNone(job["job_type"])
+
+    def test_description_is_decoded_html(self):
+        # API double-escapes: "&amp;amp;" → one unescape → "&amp;" (still valid HTML for "&")
+        job = sut.normalize_jobs([make_raw_job(1)], "stripe")[0]
+        self.assertEqual(job["description"], "<h3>Requirements</h3><p>Python &amp; SQL</p>")
+
+    def test_missing_content_gives_none(self):
+        job = sut.normalize_jobs([{"id": 1, "title": "Engineer", "content": ""}], "stripe")[0]
+        self.assertIsNone(job["description"])
 
     def test_job_id_includes_slug_prefix(self):
         raw = [make_raw_job(1, slug="airbnb")]

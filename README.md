@@ -1,15 +1,18 @@
 # JobPulse
 
-**A serverless AWS data pipeline that collects ~7,000 job postings a night from four public job APIs, models
-them into a star schema, uses an LLM as a parser to extract skills and seniority, scores every job against a
-personal profile, and supports semantic (meaning-based) job search.**
+[![CI](https://github.com/malikvarun216-dot/jobpulse/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/malikvarun216-dot/jobpulse/actions/workflows/ci.yml)
 
-> **Status (Oct 2026):** ran unattended from late April to August 2026; nightly schedule paused since
-> 2026-09-19 after the enrichment step outgrew its timeout. Being stabilized and extended with a measured
-> AI layer (retrieval evaluation, vector store comparison, extraction evaluation) — see
-> [`docs/roadmap.md`](docs/roadmap.md).
+**Every night, JobPulse reads about 6,000 new job postings and tells me which ones are worth my time.**
 
----
+It pulls raw postings from four job APIs, cleans and models them on AWS, uses AI to understand each job
+description, and ranks every job against my skills and experience. In the morning I open one dashboard: the best
+matches are at the top, and I can search by meaning, like *"streaming data platform at a startup"*, not just by
+keywords.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/pipeline-dark.svg">
+  <img alt="How JobPulse works: raw postings from 4 job APIs, AWS pipeline, AI, ranked for me, dashboard" src="docs/images/pipeline-light.svg">
+</picture>
 
 ## What it answers
 
@@ -17,143 +20,65 @@ personal profile, and supports semantic (meaning-based) job search.**
 |---|---|
 | How many openings per role / country / source? | Star schema in Athena, dashboard filters |
 | Which skills and companies show up most? | Tag frequency, company leaderboard |
-| Which jobs are worth applying to? | Personal `match_score` (0–100) |
+| Which jobs are worth applying to? | Personal `match_score` (0 to 100) |
 | Which jobs *mean* what I'm looking for, even with different words? | Embedding-based semantic search |
 
-## Architecture
+## How it works
 
-```
-EventBridge (2:00 AM IST)
-  └─ Step Functions (STANDARD)
-      ├─ ParallelIngest   Lambda × 4: Remotive | Arbeitnow | Adzuna (7 countries) | Greenhouse (30 companies)
-      │                   → S3 bronze   raw JSON.gz, 7-day lifecycle
-      ├─ RunGlueJob       Glue Spark → S3 silver   Parquet, partitioned snapshot_date / country / role_family
-      ├─ RunDataQuality   Great Expectations on silver (fail before gold)
-      ├─ RunDbtGold       dbt-athena → gold star schema (fact_job_posting + dim_company / dim_role / dim_country)
-      ├─ RunEnrichment    rules → Claude Haiku fallback → skills, seniority, YoE → match_score
-      ├─ EmbedJDs         Voyage AI voyage-4-lite (512-d) → embeddings Parquet in S3
-      └─ Complete / Failure → CloudWatch alarm → SNS email
-Dashboard: Streamlit (Athena + NumPy cosine search + Claude "why these match"), run locally on demand
-IaC: Terraform (S3 remote state + DynamoDB lock) · CI/CD: GitHub Actions (ruff + pytest → deploy on push to dev)
-```
+1. **Collect.** Serverless functions pull postings from Greenhouse, Adzuna, Arbeitnow and Remotive every night at 2 AM.
+2. **Clean.** Spark turns four different formats into one table, and quality checks stop bad data before it goes further.
+3. **Model.** dbt builds a star schema on S3 that can be queried with SQL in Athena.
+4. **Understand.** Skills and seniority are extracted from each description, and each description becomes an
+   embedding, a numeric representation of its meaning, so similar jobs can be found even when the words differ.
+5. **Rank.** Every job gets a match score from 0 to 100 against my profile, and Claude explains why the top jobs match.
 
-## Tech stack
+| 6,000 | 10 min | 255 | 0 |
+|:---:|:---:|:---:|:---:|
+| jobs every night | end to end | automated tests | servers to manage |
 
-| Layer | Tools |
-|---|---|
-| Ingestion | AWS Lambda (Python 3.12, stdlib + boto3 only) |
-| Orchestration | EventBridge, Step Functions |
-| Processing | AWS Glue (PySpark 4.0; Python Shell for dbt / GE / LLM / embeddings) |
-| Storage & query | S3 (Parquet + Snappy), Glue Data Catalog, Athena (1 GB per-query scan cap) |
-| Transformation | dbt-core 1.9 + dbt-athena-community |
-| Data quality | Great Expectations (silver), dbt schema tests (gold) |
-| GenAI | Claude Haiku 4.5 (extraction, explanations), Voyage AI embeddings |
-| Dashboard | Streamlit + Plotly |
-| IaC / CI/CD | Terraform, GitHub Actions |
-| Monitoring | CloudWatch Logs + Alarms, SNS |
+## Built to run on its own
 
-## Data sources
+The whole pipeline runs unattended on AWS: Lambda, Step Functions, Glue, S3 and Athena, all defined in Terraform
+and deployed by GitHub Actions. If a night is missed, an alarm emails me.
 
-| Source | Jobs/run (approx.) | Notes |
-|---|---|---|
-| Greenhouse | ~4,000 | 30 company boards, public JSON |
-| Adzuna | ~1,500–2,000 | 7 English-language markets; structured salary min/max |
-| Arbeitnow | ~1,000 | public API |
-| Remotive | ~20–30 | public API |
+It has also been through real failures. One nightly step slowly grew to an hour and then started timing out. It
+looked like a volume problem, but every AI call had been failing quietly and waiting in retries. Fixing the root
+cause took that step from **56 minutes to 4 seconds**. That story and others are in [docs/incidents.md](docs/incidents.md).
 
-~6,600 jobs/run in April 2026, ~7,900 by August. Himalayas and RemoteOK are implemented but blocked by
-Cloudflare from AWS IP addresses; Lever and Ashby were evaluated and dropped.
+## What's next
 
-## GenAI layer (what exists today)
+Measuring search quality with a labelled evaluation set, then improving it with hybrid keyword and vector search
+and comparing two vector databases (pgvector and Amazon S3 Vectors). Each change has to improve the measured
+numbers. Plan in [docs/roadmap.md](docs/roadmap.md).
 
-- **Rules first, LLM second:** regex against a skill whitelist + seniority patterns; Claude Haiku only when
-  regex finds < 5 skills or no seniority. Took enrichment from a 57-min timeout to ~3–5 min for 3,400 jobs.
-- **Guardrails:** Pydantic schemas, skill whitelist (no invented skills), retries with backoff, fallback to the
-  rules result on any failure, $0.50/day budget cap.
-- **Cost:** results cached in S3 by md5 of the description — the same description is never paid for twice;
-  `--force_rescore` re-scores from cache with zero LLM spend after a profile change.
-- **Match score (0–100):** skills 50 (core skills weighted 3×) · seniority 10 (YoE-aware) · location 15 ·
-  role family 15 · salary 5 · freshness 5. Profile in `config/user_profile.yml`.
-- **Semantic search:** query and job descriptions embedded with Voyage (512-d), cosine similarity in NumPy,
-  top-50 blended with `match_score`.
+**Stack:** Python, PySpark, SQL, dbt, AWS (Lambda, Step Functions, Glue, S3, Athena), Great Expectations,
+Terraform, GitHub Actions, Claude API, Voyage AI, Streamlit.
 
-**Not built yet** (planned, with measurement): retrieval evaluation, hybrid keyword + vector search, a vector
-database (pgvector vs Amazon S3 Vectors), incremental / versioned embeddings, extraction evaluation, weekly
-AI brief. See [`docs/roadmap.md`](docs/roadmap.md).
+**More detail:** [design decisions](docs/decisions.md) · [incidents](docs/incidents.md) · [runbook](docs/runbook.md) · [progress log](docs/progress.md)
 
-## Data model
+<details>
+<summary><b>Run it locally</b></summary>
 
-```
-fact_job_posting   grain: one row per posting per snapshot_date
-  ├── dim_company   company_key = md5(lower(trim(company_name)))
-  ├── dim_role      role_key on (role_family, category)
-  └── dim_country
-enrichment_scores  (separate table owned by the enrichment job — dbt rebuilds would wipe it otherwise)
-```
-
-Same-day cross-source duplicates are tagged with `source_apis[]` / `source_count`. Cross-day dedup, SCD Type 2,
-`dim_date`, `dim_location` and skill bridge tables are not built.
-
-## Engineering practices
-
-- **Idempotent:** dynamic partition overwrite per `snapshot_date`; dbt CTAS rebuilds; reruns don't duplicate.
-- **Cost guards:** S3 lifecycle (bronze 7 days, silver → Standard-IA 30 days, archive → Glacier IR 180 days),
-  Athena scan cap, LLM daily cap.
-- **Tested:** 228 test functions, every external call mocked, no AWS credentials in CI.
-- **Least privilege:** ingestion Lambdas can write only to bronze.
-- **Documented:** decisions, incidents (59), runbook, roadmap in [`docs/`](docs/).
-
-## Repo layout
-
-```
-├── ingestion/sources/<source>/   one Lambda ingestor per API
-├── spark/jobs/                   Glue bronze → silver job (+ spark/tests/)
-├── dbt_project/                  staging + gold models, schema tests
-├── transform/dbt_runner/         Glue Python Shell wrapper for dbt
-├── transform/ge_runner/          Great Expectations quality gate
-├── genai/                        enrichment agent, skill extractor, match scorer, guardrails, embeddings, search
-├── dashboard/streamlit/          Streamlit app (+ Dockerfile)
-├── config/user_profile.yml       personal profile + scoring weights
-├── terraform/envs/dev/           all AWS infrastructure
-├── tests/                        unit tests
-├── .github/workflows/            ci.yml, deploy.yml
-└── docs/                         progress, decisions, incidents, runbook, roadmap
-```
-
-## Local development (Windows PowerShell)
-
-Work happens on `dev` in the main checkout; `main` gets milestone merges only.
-
-Install dependencies:
+Install dependencies and run the tests (same as CI):
 
 ```powershell
 pip install -r requirements.txt
 ```
 
-Run the tests (same as CI):
-
 ```powershell
 pytest tests/ spark/tests/ -v
 ```
 
-Terraform secrets come from environment variables, never a committed file (`*.tfvars` is gitignored):
+Infrastructure is in `terraform/envs/dev/`. Secrets come from environment variables, not committed files:
 
 ```powershell
 $env:TF_VAR_adzuna_app_id = "<id>"; $env:TF_VAR_adzuna_app_key = "<key>"
 ```
 
-Then plan from `terraform/envs/dev/` and read every line before applying:
-
-```powershell
-terraform plan
-```
-
-Dashboard, run locally against AWS:
+Start the dashboard against AWS:
 
 ```powershell
 streamlit run dashboard/streamlit/app.py
 ```
 
----
-
-*Personal learning project — data engineering + GenAI + AWS, built end to end.*
+</details>

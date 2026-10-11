@@ -1281,6 +1281,11 @@ Find the real causes of the Aug–Sep failures, fix them, turn the quality check
 - `eval/freeze_corpus.py` — pinned silver dates → one row per job_id (latest wins) → `corpus.parquet` + `manifest.json`
   in `s3://jobpulse-gold-dev/eval/corpus_v1/`, never overwritten. 4 tests. Dry run on Oct 9: 5,998 jobs, 1,536 with a JD,
   Greenhouse 0 / 4,462.
+- `config/user_profile.yml`: `yoe` 2 → 3 (total since Jul 2023, matches the resume). Seniority fit: a job asking 3 years
+  now gets full points instead of 75%; one asking 6 gets 25% instead of 0.
+- `README.md` rewritten for recruiters (2026-10-12): one-line hook (6,000 raw postings a night → ranked for me), simple
+  Mermaid flow, 5-step "how it works", 4 headline numbers, one failure story (56 min → 4 s), what's next; depth moved
+  to links into `docs/`. Stale facts removed (paused, 512-d vectors, 228 tests).
 - `eval/queries_v1.yml` — 50 **draft** queries (12 keyword, 12 descriptive, 10 role, 7 filtered, 9 edge), each with a
   `relevant_if` rubric line. Drafts from `user_profile.yml`; Varun replaces them with real searches before labeling.
 

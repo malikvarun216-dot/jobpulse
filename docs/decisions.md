@@ -706,3 +706,10 @@
   12,000 chars (flagged, 1 of 2,246). Model is chosen by κ on the human sample, not by price alone; `--max-usd` (default $2)
   refuses a bigger run unless raised on purpose.
 - **qrels:** the human label wins where both exist; `label_source` column records who labeled each pair.
+
+## Profile from the resume, not by hand (Chat 27 part 2)
+- `user_profile.yml` tiers follow the resume: core = Jio work + project stacks, secondary = used, learning = "Familiar" +
+  roadmap. Skills not on the resume (cassandra, langchain) removed — the profile should rank jobs I can defend in an interview.
+- `seniority: mid` at 3 YOE. Trade-off: senior-titled jobs drop from full to half seniority points (10% weight).
+- New skills go into `SKILL_VOCAB` at the same time; a test-free rule is easy to break, so the profile file says it in a comment.
+- Scorer normalization left as is on purpose: changing it now would move scores without an eval to say it's better (Chat 28).

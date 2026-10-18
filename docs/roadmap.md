@@ -146,6 +146,9 @@ Notebook on ~20 real JDs from the exported silver data:
 - From Chat 27b: vector search fails bare keywords badly (`snowflake` → sales associate, `spark` → "DRIVER"). Markup is only
   ~12% of the 4,000-char window, so test also: Voyage `input_type="query"/"document"`, and skipping company boilerplate.
   The dashboard "hybrid" isn't keyword + vector — it blends in the query-independent match_score.
+- From Chat 27b (profile rebuild): **match_score barely uses skills** — skill overlap averages 1.6 / 50 points because it is
+  divided by the total weight of all profile skills; no corpus job reaches 70. Fix the normalization (e.g. against the job's
+  own skills or the top-N matched) and check it on the eval set before shipping — it also changes the dashboard hybrid.
 - Pick fusion, k and grain **by the numbers**.
 
 ## Chat 29 — Vector stores on AWS, compared by eval

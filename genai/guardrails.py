@@ -79,6 +79,9 @@ SKILL_VOCAB: set[str] = {
     # Process
     "data modeling", "etl", "elt", "rest api", "graphql",
     "microservices", "agile", "scrum",
+    # Added 2026-10-18 from the resume — without them these skills could never match a job
+    "structured streaming", "schema registry", "unity catalog", "great expectations",
+    "cdc", "scd", "embeddings", "pgvector",
 }
 
 

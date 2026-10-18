@@ -1342,6 +1342,18 @@ Find the real causes of the Aug–Sep failures, fix them, turn the quality check
 - No human labels yet, judge not run (no Claude spend this chat), κ not measured, `qrels_v1.parquet` not written.
 - Local `pytest tests/`: 128 pass, 7 `test_ge_runner` = known local GE gap (runbook §19).
 
+### Profile rebuilt from the resume (same day)
+- `config/user_profile.yml`: 50 skills in 3 tiers from resume f18 (core 17: Kafka, PySpark, Structured Streaming, Schema
+  Registry, Delta, Databricks, Snowflake, dbt, Airflow, Terraform …). Dropped cassandra, langchain; hive/bigquery → learning.
+  `seniority` senior → **mid** (3 YOE). Locations + delhi, new delhi, gurugram, gurgaon, noida.
+- `genai/guardrails.py` `SKILL_VOCAB` + 8 terms (structured streaming, schema registry, unity catalog, great expectations,
+  cdc, scd, embeddings, pgvector) — a profile skill outside the vocab can never match. 962 corpus jobs mention one of them.
+- Measured on corpus_v1 (rules extraction, old vs new profile): mean score 17.1 → 15.6; jobs ≥ 50: 63 → 32; **jobs ≥ 70:
+  0 → 0**; top-50 overlap 35/50. Takes effect from the next nightly run, no Claude cost (scores are recomputed every night).
+- **Found: the match score barely uses skills.** Skill overlap averages 1.6 of 50 points, because it divides by the weight of
+  *all* profile skills (more skills in the profile = lower scores). Location + role + freshness dominate → the new top 15 has
+  no data engineering job, and the dashboard's "worth applying (> 70)" is always empty. Not fixed — measured fix in Chat 28.
+
 ### Next
 - Varun: swap queries (replace q12), `pip install streamlit` in `.venv`, label 300 pairs (~1–1.5 h).
 - Then: judge on the human sample → κ → judge all → `qrels_v1.parquet` → Chat 28 baseline.

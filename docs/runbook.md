@@ -276,7 +276,7 @@ If a table still points at `athena-results/`: the workgroup is enforcing again (
   first cell prints `silver rows: 6,006 | rows with a vector: 1,544 | vector matrix: (1544, 1024)`.
   Rebuild from scratch:
   ```powershell
-  python -m venv .venv; .\.venv\Scripts\python.exe -m pip install "pyarrow==14.0.2" "numpy==1.26.4" pandas boto3 voyageai anthropic rank_bm25 pyyaml ipykernel nbclient; .\.venv\Scripts\python.exe -m ipykernel install --sys-prefix --name jobpulse-lab --display-name "JobPulse lab (.venv)"
+  python -m venv .venv; .\.venv\Scripts\python.exe -m pip install "pyarrow==14.0.2" "numpy==1.26.4" pandas boto3 voyageai anthropic rank_bm25 pyyaml streamlit ipykernel nbclient; .\.venv\Scripts\python.exe -m ipykernel install --sys-prefix --name jobpulse-lab --display-name "JobPulse lab (.venv)"
   ```
 - Keys come from Secrets Manager (`jobpulse/voyage_key_dev`, `jobpulse/anthropic_key_dev`, both JSON) — never set them as env vars.
 - `pytest tests` in this venv: `test_ge_runner.py` fails (7) because Great Expectations isn't installed there — the
@@ -315,3 +315,21 @@ If a table still points at `athena-results/`: the workgroup is enforcing again (
 - "already exists" = by design: a frozen corpus is never overwritten. New data → new `--version`.
 - Before freezing: the manifest's `by_source.greenhouse.with_description` must be > 0 — if it is 0, the dates predate the
   Chat 27 deploy.
+- `Parquet file size is 0 bytes` on a `..._$folder$` path = Glue folder markers (fixed Chat 27b: they are skipped).
+- `corpus_v1` (2026-10-18): 9,266 rows, `content_sha256 f8383eff…`. A re-run on the same dates must print the same hash.
+
+## 23. Label the eval set (pool → human labels → judge → κ → qrels)
+
+All local, `.venv\Scripts\python.exe`, data in `C:\Users\malik\jobpulse_lab_data\`. Order matters:
+1. `eval/pool.py` — after any query change. Seconds; embeds only new query texts (Voyage key from Secrets Manager).
+   A query whose `bm25_rank` count is 0 has no keyword match at all (check it's intended).
+2. `.venv\Scripts\streamlit.exe run eval\label_app.py` — labels go to `human_labels_v1.csv` (append-only; last label per
+   pair wins; "Undo last" removes the last line). The sample comes from the pool → finish queries + re-pool **before** labeling.
+3. `eval/judge.py --subset human --model <id> --dry-run` (estimate) → without `--dry-run` (submits a batch, polls each minute,
+   usually < 1 h). Window closed? `--collect <batch_id>` with the same `--subset/--model`. Statuses other than
+   `succeeded` (refusal, max_tokens, errored) come back with `label` = null and are left out of κ.
+4. `eval/agreement.py --model <id>` → κ + confusion table + every 0-vs-2 disagreement. κ ≥ ~0.6 → `judge.py --subset all`,
+   then `agreement.py --model <id> --write-qrels` → `eval/qrels_v1.parquet` (commit it).
+- Claude key: `ANTHROPIC_API_KEY` if set, else Secrets Manager `jobpulse/anthropic_key_dev`. Spend prints at the end of each
+  run ("Actual cost"); `--max-usd` (default 2) blocks bigger submits.
+

@@ -1,6 +1,6 @@
 # JobPulse Roadmap — Data + AI track (Chat 24 onward)
 
-Last updated: **Chat 27 (2026-10-11)**. Update this file at the end of every chat: tick the chat, adjust the next one.
+Last updated: **Chat 27 part 2 (2026-10-18)**. Update this file at the end of every chat: tick the chat, adjust the next one.
 
 ## Why this roadmap exists
 
@@ -23,7 +23,7 @@ Ground rules for every chat:
 | 24 | Stabilize the account and repo (must finish before ~Oct 16) | ✅ done (2026-10-07) |
 | 25 | Fix the failures, go live again | ✅ live 2026-10-08 — nights 1–3 (Oct 9–11) green; closes after the alarm test |
 | 26 | AI concepts lab (learning session) | ✅ built + committed `79aa6ba` (2026-10-10); 90-s drill parked (Varun) |
-| 27 | Evaluation foundations: freeze a corpus, label it | 🟡 part 1 done (2026-10-11): Greenhouse JDs on, freeze script, draft queries · part 2 ⏭ on/after Oct 14 |
+| 27 | Evaluation foundations: freeze a corpus, label it | 🟡 part 2 (2026-10-18): `corpus_v1` frozen (9,266 jobs), pool + label page + judge + κ built · waiting on real queries + 300 human labels |
 | 28 | Baseline + better retrieval (hybrid, chunk grain) | |
 | 29 | Vector stores on AWS: pgvector (RDS) vs S3 Vectors, by eval | |
 | 30 | Embeddings as a real pipeline (incremental, versioned, freshness) | |
@@ -128,6 +128,11 @@ Notebook on ~20 real JDs from the exported silver data:
 >
 > Part 2 (on/after Oct 14): check the Oct 12–14 silver has Greenhouse JDs → `freeze_corpus.py --dates 2026-10-12 2026-10-13 2026-10-14`
 > → Varun swaps draft queries for real ones → pooling (BM25 + NumPy vector + current hybrid, top-20 each) → labeling page → judge → κ.
+> ✅ Part 2 (2026-10-18): `corpus_v1` frozen (9,266 jobs, all with a JD, hash `f8383eff…`). `eval/pool.py` → 2,246 pairs on
+> the drafts (BM25 and vector agree on only 94). `label_app.py`, `judge.py` (Batches, JSON schema), `agreement.py` (κ → qrels).
+> **Left:** Varun swaps queries (q12 `kinesis` matches 0 jobs) → re-pool → label 300 → judge human sample → κ → judge all →
+> `eval/qrels_v1.parquet`. Judge cost (batch): Haiku 5.5 $0.04 / Sonnet 5.5 $0.83 on the 300; all pairs $0.32 / $6.33.
+>
 > Found in part 1, for later chats: `role_family = Other` on 93% of silver rows (the role filter is useless — fix before
 > the dashboard/brief rely on it); 11 / 30 Greenhouse slugs 404; 8 Adzuna duplicate rows within one snapshot.
 
@@ -138,6 +143,9 @@ Notebook on ~20 real JDs from the exported silver data:
 - Chunk grain experiment: one vector per JD (4,000-char cut) vs section chunks (responsibilities / requirements / benefits, max-score roll-up). Report truncation rate.
 - From Chat 26: strip HTML before embedding (Arbeitnow window is ~25% markup; 79% of Arbeitnow JDs cut at 4,000) — a cheap
   candidate to measure first. Query set must mix descriptive queries *and* bare tool names (vector loses those: Snowflake, Airflow, dbt).
+- From Chat 27b: vector search fails bare keywords badly (`snowflake` → sales associate, `spark` → "DRIVER"). Markup is only
+  ~12% of the 4,000-char window, so test also: Voyage `input_type="query"/"document"`, and skipping company boilerplate.
+  The dashboard "hybrid" isn't keyword + vector — it blends in the query-independent match_score.
 - Pick fusion, k and grain **by the numbers**.
 
 ## Chat 29 — Vector stores on AWS, compared by eval

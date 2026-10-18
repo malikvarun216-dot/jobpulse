@@ -534,3 +534,12 @@ Newest first. Chat 23 entries were reconstructed from AWS history (Step Function
 - Fix: `terraform force-unlock 85025acf-b0e9-c3a4-977f-d28b97aea659` — deleted the DynamoDB lock record manually. Plan succeeded immediately.
 - Prevention: always let `terraform apply` complete or cancel cleanly with Ctrl+C (which triggers lock cleanup). Avoid force-killing the process.
 - Lesson: force-unlock is safe only when certain no other apply is running. One person, one machine, lock from yesterday = safe to force-unlock.
+
+## [2026-10-18] — Corpus freeze crashed on Glue `$folder$` markers
+- What happened: `freeze_corpus.py --dry-run` failed: `Could not open Parquet input source '.../country=AU_$folder$': Parquet file size is 0 bytes`.
+- What I thought: a broken silver file from one night.
+- Root cause: Glue/Hadoop writes zero-byte `<prefix>_$folder$` objects as "this is a folder" markers. The script downloaded
+  every object under the snapshot prefix and pyarrow tried to read all of them as Parquet.
+- Fix: skip `Size == 0` objects on download; build the dataset from `*.parquet` files only (with `partition_base_dir`).
+- Prevention: test `test_load_snapshot_skips_zero_byte_folder_markers`.
+- Lesson: S3 has no folders — anything that lists a prefix must decide which objects are data.

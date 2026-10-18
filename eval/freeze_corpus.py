@@ -43,6 +43,8 @@ def download_silver(s3, date: str, cache: Path) -> Path:
         return local_root
     for page in s3.get_paginator("list_objects_v2").paginate(Bucket=SILVER_BUCKET, Prefix=f"snapshot_date={date}/"):
         for obj in page.get("Contents", []):
+            if obj["Size"] == 0:  # Glue/Hadoop "country=AU_$folder$" markers, not data
+                continue
             local = local_root / obj["Key"].split("/", 1)[1]
             local.parent.mkdir(parents=True, exist_ok=True)
             s3.download_file(SILVER_BUCKET, obj["Key"], str(local))
@@ -52,7 +54,8 @@ def download_silver(s3, date: str, cache: Path) -> Path:
 
 
 def load_snapshot(root: Path, date: str) -> pa.Table:
-    t = ds.dataset(root, format="parquet", partitioning="hive").to_table()
+    files = [str(f) for f in root.rglob("*.parquet")]  # older caches may still hold zero-byte $folder$ markers
+    t = ds.dataset(files, format="parquet", partitioning="hive", partition_base_dir=str(root)).to_table()
     t = t.select(COLUMNS)
     t = t.set_column(0, "job_id", pc.cast(t["job_id"], pa.string()))
     return t.append_column("snapshot_date", pa.array([date] * t.num_rows, pa.string()))
@@ -79,7 +82,8 @@ def make_manifest(corpus: pa.Table, version: str, dates: list[str]) -> dict:
     df = corpus.select(["source", "has_description"]).to_pandas()
     by_source = df.groupby("source")["has_description"].agg(["size", "sum"])
     try:
-        git_sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+        # "-dirty" = frozen with uncommitted code changes (corpus_v1 was: the $folder$ fix, committed after)
+        git_sha = subprocess.run(["git", "describe", "--always", "--dirty"], capture_output=True, text=True).stdout.strip()
     except OSError:
         git_sha = None
     return {

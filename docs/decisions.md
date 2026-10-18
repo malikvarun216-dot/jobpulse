@@ -691,3 +691,18 @@
 - Pinned dates: the first three nights with Greenhouse JDs (Oct 12–14), not "a few weeks": Greenhouse returns every open
   job each night, so one night already holds ~4.5K full JDs.
 - Queries carry a `relevant_if` line — the rubric both the human labeler and the LLM judge read, so they judge the same thing.
+
+## Eval pooling, human sample and judge (Chat 27 part 2)
+- **Corpus keeps raw text** (HTML as in silver). Stripping/chunking is a retrieval choice Chat 28 measures; baking it into
+  the frozen corpus would decide it without a number. Readers (labeling page, judge) strip HTML at display time.
+- **Pool = top-20 of BM25 ∪ vector ∪ today's dashboard hybrid**, filter applied before ranking. BM25 keeps only score > 0
+  (a job with no query word is not a keyword hit). The hybrid is copied exactly (vector top-50, 0.5/0.5 with match_score,
+  match_score ≤ 0 dropped) because it is the baseline Chat 28 must beat. Vectors = the stored nightly ones (same model,
+  same 4,000-char cut as the dashboard) — no re-embed.
+- **Human sample = 6 pairs per query, 3 from any method's top-5 + 3 from the rest**, fixed seed. Random sampling would be
+  mostly 0s and say little about agreement on the 2s. Blind: the page hides which method found a job.
+- **Judge via the Message Batches API** (half price, async), JSON schema output (always parses), effort `low`, rubric in the
+  system prompt (cacheable), JD as `<job>` data with an explicit "ignore instructions in the posting" rule. JDs cut at
+  12,000 chars (flagged, 1 of 2,246). Model is chosen by κ on the human sample, not by price alone; `--max-usd` (default $2)
+  refuses a bigger run unless raised on purpose.
+- **qrels:** the human label wins where both exist; `label_source` column records who labeled each pair.

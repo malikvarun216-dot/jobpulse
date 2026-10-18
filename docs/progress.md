@@ -1305,3 +1305,43 @@ Find the real causes of the Aug–Sep failures, fix them, turn the quality check
 ### Next
 - Varun: `terraform apply` (memory only), **then** push. Night Oct 12 = first Greenhouse JDs; check bronze size and Lambda memory.
 - Chat 27 part 2 (on/after Oct 14): freeze corpus_v1, finalize queries, pool, label, judge, κ.
+
+## Chat 27 — Evaluation foundations, part 2 (2026-10-18)
+
+### Night check
+- Oct 13–18 02:00 IST: 6 of 6 **SUCCEEDED** (13–15 min each, longer since Greenhouse JDs). All 3 alarms OK.
+
+### Built
+- **`corpus_v1` frozen** → `s3://jobpulse-gold-dev/eval/corpus_v1/` (`corpus.parquet` 14.5 MB + `manifest.json`) from
+  silver Oct 12–14: **9,266 jobs, all with a description** — Greenhouse 4,595, Adzuna 3,818, Arbeitnow 835, Remotive 18.
+  `content_sha256 f8383eff…` — identical in the dry run and the real run (reproducible).
+- `freeze_corpus.py` fix: skip zero-byte `country=XX_$folder$` objects (Glue folder markers) that crashed pyarrow; read only
+  `*.parquet`. Manifest now records `git describe --dirty` (corpus_v1 says `902951a` but was frozen with this fix uncommitted).
+- `eval/common.py` (corpus/queries loaders, `strip_html`, filters, stratified human sample), `eval/pool.py` (BM25 + vector +
+  today's dashboard hybrid, top-20 each), `eval/label_app.py` (Streamlit labeling page, blind), `eval/judge.py` (Claude judge
+  via the Batches API, JSON schema, cost estimate + `--max-usd` guard), `eval/agreement.py` (Cohen's κ, plain + quadratic;
+  writes `eval/qrels_v1.parquet`). `tests/test_eval_pipeline.py` (7) + 1 new freeze test → 12 eval tests pass.
+
+### Measured
+- **Pool (draft queries): 2,246 pairs**, 30–54 per query (median 46). Only BM25 found 721; only vector/hybrid 1,306; all three
+  agree on just 94. The methods barely overlap → pooling with several methods matters.
+- Vector search on bare keywords is poor: `snowflake` → a sales associate, `spark` and `rag` → a "DRIVER" posting. BM25 finds
+  real Snowflake/Spark jobs. Markup is only ~12% of the embedded 4,000 chars (median), so HTML alone is not the cause —
+  candidates for Chat 28: company boilerplate first in the window, no `input_type` query/document on Voyage calls.
+- Every corpus job already has a same-day stored vector (100%) → pooling cost 216 Voyage tokens (46 query texts), no re-embed.
+- Corpus quality: Greenhouse 100% HTML, 96% > 4,000 raw chars; `country = other` 3,840 (41%); 139 jobs share
+  (company, title, location) under different job_ids; Adzuna still 500-char snippets (one with a broken UTF-8 char).
+- Keyword hits in the corpus: kinesis **0**, iceberg 27, dbt 40, airflow 72, snowflake 117 — q12 (`kinesis`) has nothing to find.
+- Judge estimate (batch price): human sample 300 pairs Haiku 5.5 $0.04 / Sonnet 5.5 $0.83 / Opus 5.5 $1.66; all 2,246 pairs
+  $0.32 / $6.33 / $12.66.
+- The dashboard "hybrid" is not keyword + vector: it re-ranks vector top-50 by 0.5 × similarity + 0.5 × match_score, and
+  match_score is query-independent (profile only).
+
+### Not done
+- Queries still drafts (Varun). Pool is re-run after the swap (seconds, cached query vectors).
+- No human labels yet, judge not run (no Claude spend this chat), κ not measured, `qrels_v1.parquet` not written.
+- Local `pytest tests/`: 128 pass, 7 `test_ge_runner` = known local GE gap (runbook §19).
+
+### Next
+- Varun: swap queries (replace q12), `pip install streamlit` in `.venv`, label 300 pairs (~1–1.5 h).
+- Then: judge on the human sample → κ → judge all → `qrels_v1.parquet` → Chat 28 baseline.

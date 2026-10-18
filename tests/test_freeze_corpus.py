@@ -55,3 +55,17 @@ def test_manifest_counts_by_source():
     assert m["rows_with_description"] == 2
     assert m["by_source"]["greenhouse"] == {"rows": 2, "with_description": 1}
     assert len(m["content_sha256"]) == 64
+
+
+def test_load_snapshot_skips_zero_byte_folder_markers(tmp_path):
+    # Glue leaves "country=AU_$folder$" (0 bytes) next to the real partition folders; pyarrow can't read it as Parquet
+    import pyarrow.parquet as pq
+    part = tmp_path / "country=AU" / "role_family=DATA"
+    part.mkdir(parents=True)
+    cols = [c for c in sut.COLUMNS if c not in ("country", "role_family")]
+    pq.write_table(pa.table({c: pa.array(["1" if c == "job_id" else "x"], pa.string()) for c in cols}), part / "part-0.snappy.parquet")
+    (tmp_path / "country=AU_$folder$").write_bytes(b"")
+    t = sut.load_snapshot(tmp_path, "2026-10-12")
+    assert t.num_rows == 1
+    assert t["country"].to_pylist() == ["AU"]
+    assert t["snapshot_date"].to_pylist() == ["2026-10-12"]

@@ -130,13 +130,17 @@ Notebook on ~20 real JDs from the exported silver data:
 > → Varun swaps draft queries for real ones → pooling (BM25 + NumPy vector + current hybrid, top-20 each) → labeling page → judge → κ.
 > ✅ Part 2 (2026-10-18): `corpus_v1` frozen (9,266 jobs, all with a JD, hash `f8383eff…`). `eval/pool.py` → 2,246 pairs on
 > the drafts (BM25 and vector agree on only 94). `label_app.py`, `judge.py` (Batches, JSON schema), `agreement.py` (κ → qrels).
-> **Left:** Varun swaps queries (q12 `kinesis` matches 0 jobs) → re-pool → label 300 → judge human sample → κ → judge all →
+> Queries rewritten from the resume the same day (2,302 pairs). **Left:** Varun reviews queries → re-pool → label 300 → judge human sample → κ → judge all →
 > `eval/qrels_v1.parquet`. Judge cost (batch): Haiku 5.5 $0.04 / Sonnet 5.5 $0.83 on the 300; all pairs $0.32 / $6.33.
 >
 > Found in part 1, for later chats: `role_family = Other` on 93% of silver rows (the role filter is useless — fix before
 > the dashboard/brief rely on it); 11 / 30 Greenhouse slugs 404; 8 Adzuna duplicate rows within one snapshot.
 
 ## Chat 28 — Baseline + better retrieval
+
+> 🟡 Harness built early (2026-10-18): `eval/search.py` (bm25, vector, dashboard, rrf) + `eval/run_eval.py` (metrics,
+> judged@10, latency, results file). Waiting only on `qrels_v1`. Still to add here: chunk grain, HTML strip, Voyage
+> `input_type`, reranker, match_score normalization fix.
 
 - `eval/run_eval.py`: one interface `search(query, k) -> [job_id]`; writes metrics + latency p50/p95 + cost per run to `eval/results.parquet`.
 - Compare: BM25, NumPy vector (exact), **today's 0.5/0.5 hybrid (baseline)**, RRF hybrid, optional reranker on top-50, optional query rewriting.

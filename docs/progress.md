@@ -1354,6 +1354,23 @@ Find the real causes of the Aug–Sep failures, fix them, turn the quality check
   *all* profile skills (more skills in the profile = lower scores). Location + role + freshness dominate → the new top 15 has
   no data engineering job, and the dashboard's "worth applying (> 70)" is always empty. Not fixed — measured fix in Chat 28.
 
+### Queries rewritten from the resume (same day)
+- `eval/queries_v1.yml`: 50 queries from resume f18 (`origin: resume`) — Kafka, Structured Streaming, Delta, Databricks,
+  CDC, schema changes, data quality, medallion, SCD history, GDPR … Every query checked against the corpus first; dropped
+  `kinesis` (0 jobs). Re-pooled: **2,302 pairs**, 30–55 per query, the three methods agree on 93. q42 `dataengineer` has
+  0 keyword hits (intended edge case).
+- Corpus slice to know: only **41 / 9,266** titles contain "data engineer" (5 in IN, 4 remote) — role queries will have few 2s.
+
+### Chat 28 harness built early (same day, while labels wait)
+- `eval/search.py`: the four methods in one place — `bm25`, `vector`, `dashboard` (today's hybrid), **`rrf`** (Reciprocal
+  Rank Fusion of BM25 + vector, k = 60) — plus the shared `Index`. `pool.py` now calls it; rebuilt pool is **identical**
+  (2,302 rows, `DataFrame.equals` True).
+- `eval/run_eval.py`: every method × 50 queries → precision@10, recall@50, MRR, nDCG@10, **judged@10** (pool-bias check),
+  latency p50/p95; appends per-query rows to `eval/results_v1.parquet`; `--no-save` for smoke tests. 3 new tests (15 eval tests).
+- Smoke run on a **fake** answer key (plumbing only, not quality): runs end to end; latency on 9,266 jobs p50/p95 —
+  vector 1.9 / 2.3 ms, BM25 7.6 / 40 ms, RRF 10 / 43 ms. RRF judged@10 = 0.94 (6% of its top 10 outside the pool).
+
 ### Next
-- Varun: swap queries (replace q12), `pip install streamlit` in `.venv`, label 300 pairs (~1–1.5 h).
+- Varun: read `queries_v1.yml`, edit what doesn't sound like you, flip `origin: resume` → `varun`; then re-run `pool.py`
+  and label 300 pairs (~1–1.5 h). After κ + qrels: `run_eval.py` = the Chat 28 baseline, no more code needed.
 - Then: judge on the human sample → κ → judge all → `qrels_v1.parquet` → Chat 28 baseline.

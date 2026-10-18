@@ -713,3 +713,11 @@
 - `seniority: mid` at 3 YOE. Trade-off: senior-titled jobs drop from full to half seniority points (10% weight).
 - New skills go into `SKILL_VOCAB` at the same time; a test-free rule is easy to break, so the profile file says it in a comment.
 - Scorer normalization left as is on purpose: changing it now would move scores without an eval to say it's better (Chat 28).
+
+## Eval scoring rules (Chat 28 harness, built in Chat 27b)
+- **Relevant = grade 2** for precision/recall/MRR (a "partly" job isn't one I'd apply to); nDCG uses all grades (gain 2^g − 1).
+- **Unlabeled = 0**, and every run reports **judged@10** so a method that wins by surfacing unlabeled jobs is visible, not hidden.
+- **RRF with k = 60** as the first real hybrid: rank-based, so BM25 scores and cosines never need a common scale; no weights
+  to tune (yet). Inputs: top-100 of each.
+- Methods live in `eval/search.py`, used by both pooling and scoring, so "the dashboard hybrid" means one thing.
+- Latency excludes query embedding (cached); each method recomputes its own scores so timings are comparable.

@@ -330,6 +330,9 @@ All local, `.venv\Scripts\python.exe`, data in `C:\Users\malik\jobpulse_lab_data
    `succeeded` (refusal, max_tokens, errored) come back with `label` = null and are left out of κ.
 4. `eval/agreement.py --model <id>` → κ + confusion table + every 0-vs-2 disagreement. κ ≥ ~0.6 → `judge.py --subset all`,
    then `agreement.py --model <id> --write-qrels` → `eval/qrels_v1.parquet` (commit it).
+5. `eval/run_eval.py [--methods ...] [--note "what changed"]` → summary table + nDCG by query type; appends to
+   `eval/results_v1.parquet` (commit it). "No answer key" = step 4 not done. Smoke test without saving: `--qrels <file> --no-save`.
+   judged@10 well below 1.0 → that method surfaces unlabeled jobs; label them (judge them) before calling it a win.
 - Claude key: `ANTHROPIC_API_KEY` if set, else Secrets Manager `jobpulse/anthropic_key_dev`. Spend prints at the end of each
   run ("Actual cost"); `--max-usd` (default 2) blocks bigger submits.
 

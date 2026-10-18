@@ -82,3 +82,33 @@ def test_judge_prompt_flags_cut_postings_and_shows_filter():
     text, cut = judge.pair_prompt({"text": "data engineer", "relevant_if": "DE role", "filters": {"country": "IN"}}, job)
     assert cut and "[... posting cut here]" in text
     assert 'Filter: {"country": "IN"}' in text and "<p>" not in text
+
+
+def test_rrf_rewards_agreement_between_methods():
+    from eval.search import rrf_rank
+    bm25 = np.array([0, 1, 2])
+    vec = np.array([3, 1, 4])
+    fused = rrf_rank([bm25, vec], k=5).tolist()
+    assert fused[0] == 1  # rank 2 in both beats rank 1 in only one
+    assert set(fused) == {0, 1, 2, 3, 4}
+
+
+def test_query_metrics_match_the_learning_doc_example():
+    # learning.md Part C.4: results #1, #3, #4 relevant (grade 2), 5 relevant jobs exist in the qrels
+    from eval.run_eval import query_metrics
+    ranked = [f"j{i}" for i in range(1, 11)]
+    labels = {"j1": 2, "j3": 2, "j4": 2, "x1": 2, "x2": 2, "j2": 0}
+    m = query_metrics(ranked, labels)
+    assert m["precision@10"] == pytest.approx(0.3)
+    assert m["recall@50"] == pytest.approx(0.6)
+    assert m["mrr"] == pytest.approx(1.0)
+    assert m["judged@10"] == pytest.approx(0.4)  # j1, j2, j3, j4 have labels
+    assert 0 < m["ndcg@10"] < 1
+
+
+def test_ndcg_is_one_for_perfect_order_and_nan_without_relevant():
+    from eval.run_eval import ndcg_at, query_metrics
+    assert ndcg_at([2, 1, 0], [0, 1, 2]) == pytest.approx(1.0)
+    assert ndcg_at([0, 1, 2], [0, 1, 2]) < 1.0
+    m = query_metrics(["a", "b"], {"a": 1})
+    assert np.isnan(m["recall@50"]) and np.isnan(m["mrr"])  # no grade-2 job → undefined, left out of means

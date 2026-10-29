@@ -1406,5 +1406,9 @@ Find the real causes of the Aug–Sep failures, fix them, turn the quality check
 ### Not done
 - No RDS, no S3 Vectors yet (paid session, after labels). pgvector not scored on relevance yet (needs qrels).
 
+### Labeling plan changed to option B (same day)
+- `human_sample` reordered into rounds (same 300 pairs, verified); labeling page shows round + a goal of 100; `judge.py
+  --subset labeled`, `agreement.py --judge-subset labeled` (default). 19 labels kept (mix: 7 × 0, 3 × 1, 9 × 2). 1 new test.
+
 ### Next
 - Varun: keep labeling. Then: judge → κ → qrels → `run_eval.py` with pg methods added → one RDS + S3 Vectors session.

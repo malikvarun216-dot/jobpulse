@@ -716,6 +716,10 @@
 
 ## Eval scoring rules (Chat 28 harness, built in Chat 27b)
 - **Relevant = grade 2** for precision/recall/MRR (a "partly" job isn't one I'd apply to); nDCG uses all grades (gain 2^g − 1).
+- **Option B — 100 human labels, not 300 (2026-10-29):** κ on ~100 pairs (±~0.15) is enough to decide whether to trust the
+  judge; 300 only narrows the error. The sample is reordered into rounds (2 per query per round, 1 likely + 1 unlikely),
+  so stopping after round 1 covers all 50 queries. Same 300 pairs as before — only the order changed. Judge runs on the
+  pairs actually labeled (`--subset labeled`): ≈ $0.01 Haiku 5.5 / $0.28 Sonnet 5.5 for 100.
 - **Relevance ≠ personal fit:** a label answers "is this about what the query asks?", not "would I apply?". Years and
   seniority count only when the query names a level (q26, q49); fit to me is the match score's job. Same rule in the
   labeling page and the judge rubric, so human and judge measure the same thing (2026-10-19).

@@ -9,7 +9,7 @@ kappa subtracts that. Quadratic-weighted kappa also counts 1-vs-2 as a smaller m
 Rule of thumb (roadmap): kappa >= ~0.6 → trust the judge for the remaining pairs.
 
 Usage:
-  python eval/agreement.py --model claude-haiku-5-5                 # kappa on the human sample
+  python eval/agreement.py --model claude-haiku-5-5                 # kappa on the pairs you labeled
   python eval/agreement.py --model claude-haiku-5-5 --write-qrels   # + eval/qrels_v1.parquet from the "all" run
 """
 
@@ -44,11 +44,13 @@ def main() -> None:
     p.add_argument("--model", required=True)
     p.add_argument("--version", default="v1")
     p.add_argument("--write-qrels", action="store_true")
+    p.add_argument("--judge-subset", default="labeled", choices=["labeled", "human"],
+                   help="which judge run to compare against (judge.py --subset ...)")
     args = p.parse_args()
 
     human = pd.read_csv(DEFAULT_CACHE / f"human_labels_{args.version}.csv", dtype={"job_id": str})
     human = human.drop_duplicates(["query_id", "job_id"], keep="last")
-    judge = pd.read_parquet(DEFAULT_CACHE / f"judge_{args.version}_human_{args.model}.parquet")
+    judge = pd.read_parquet(DEFAULT_CACHE / f"judge_{args.version}_{args.judge_subset}_{args.model}.parquet")
     m = human.merge(judge[judge.label.notna()], on=["query_id", "job_id"], suffixes=("_human", "_judge"))
     a, b = m.label_human.astype(int), m.label_judge.astype(int)
 

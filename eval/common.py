@@ -46,15 +46,23 @@ def human_sample(pool: pd.DataFrame, per_query: int = 6, seed: int = 27) -> pd.D
     The pairs Varun labels by hand (same set the judge is checked on). Per query: half from the top-5 of any
     method (likely relevant), half from the rest (likely not) — a purely random draw would be almost all 0s,
     and agreement on the 2s is the part that matters.
+
+    Order = ROUNDS: round 1 is 2 pairs (1 likely + 1 unlikely) for every query, then round 2, then round 3.
+    Stopping after any round covers all queries evenly (option B in Chat 27: ~100 labels = round 1).
+    The set of pairs is the same as before the reorder — only the order changed (2026-10-29).
     """
     best = pool[["bm25_rank", "vector_rank", "hybrid_rank"]].min(axis=1)
     picks = []
     for _, g in pool.assign(_top=best <= 5).groupby("query_id", sort=True):
         top, rest = g[g._top], g[~g._top]
         n_top = min(len(top), per_query // 2)
-        picks.append(top.sample(n_top, random_state=seed))
-        picks.append(rest.sample(min(len(rest), per_query - n_top), random_state=seed))
-    return pd.concat(picks)[["query_id", "job_id"]].reset_index(drop=True)
+        t = top.sample(n_top, random_state=seed).assign(_order=lambda d: range(0, 2 * len(d), 2))  # 0, 2, 4
+        r = rest.sample(min(len(rest), per_query - n_top), random_state=seed).assign(
+            _order=lambda d: range(1, 2 * len(d), 2))                                              # 1, 3, 5
+        picks.append(pd.concat([t, r]).sort_values("_order").assign(_pos=lambda d: range(len(d))))
+    s = pd.concat(picks)
+    s["round"] = s["_pos"] // 2 + 1
+    return s.sort_values(["round", "query_id", "_pos"])[["query_id", "job_id", "round"]].reset_index(drop=True)
 
 
 def filter_mask(corpus: pd.DataFrame, filters: dict | None) -> pd.Series:

@@ -5,13 +5,14 @@ LLM-as-judge: Claude labels (query, job) pairs 0 / 1 / 2 with the same rubric th
 Runs through the Message Batches API (async, 50% price, results within ~1 h), JSON-schema output so every
 answer parses, effort "low" (a classification, not a puzzle).
 
-Two subsets:
-  human   the ~300 pairs Varun labels (common.human_sample) — to measure agreement (kappa) first
+Subsets:
+  labeled only the pairs Varun has actually labeled so far (human_labels_v1.csv) — cheapest way to get kappa
+  human   the full ~300-pair human sample (common.human_sample)
   all     every pool pair (~2,250) — only after the judge's kappa on "human" is good enough
 
 Usage:
-  python eval/judge.py --subset human --model claude-haiku-5-5 --dry-run   # cost estimate, no API call
-  python eval/judge.py --subset human --model claude-haiku-5-5             # submit, wait, write results
+  python eval/judge.py --subset labeled --model claude-haiku-5-5 --dry-run   # cost estimate, no API call
+  python eval/judge.py --subset labeled --model claude-haiku-5-5             # submit, wait, write results
   python eval/judge.py --collect msgbatch_...  --subset human --model ...  # re-collect an earlier batch
 
 Output: {cache}/judge_{version}_{subset}_{model}.parquet  (query_id, job_id, label, reason, tokens)
@@ -126,7 +127,7 @@ def collect(client, batch_id: str, meta: pd.DataFrame, model: str) -> pd.DataFra
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--subset", choices=["human", "all"], required=True)
+    p.add_argument("--subset", choices=["labeled", "human", "all"], required=True)
     p.add_argument("--model", choices=sorted(PRICES), required=True)
     p.add_argument("--version", default="v1")
     p.add_argument("--max-usd", type=float, default=2.0, help="refuse to submit above this estimate")
@@ -137,7 +138,13 @@ def main() -> None:
     corpus = load_corpus(args.version).set_index("job_id")
     queries = {q["id"]: q for q in load_queries(args.version)}
     pool = pd.read_parquet(DEFAULT_CACHE / f"pool_{args.version}.parquet")
-    pairs = human_sample(pool) if args.subset == "human" else pool[["query_id", "job_id"]]
+    if args.subset == "labeled":
+        done = pd.read_csv(DEFAULT_CACHE / f"human_labels_{args.version}.csv", dtype={"job_id": str})
+        pairs = done.drop_duplicates(["query_id", "job_id"], keep="last")[["query_id", "job_id"]]
+    elif args.subset == "human":
+        pairs = human_sample(pool)
+    else:
+        pairs = pool[["query_id", "job_id"]]
     reqs, meta = build_requests(pairs, corpus, queries, args.model)
     est = estimate_usd(meta, args.model)
     print(f"{len(reqs)} pairs | {meta.desc_cut.sum()} postings cut at {MAX_DESC_CHARS:,} chars | "

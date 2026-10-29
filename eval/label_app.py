@@ -56,8 +56,11 @@ labels = read_labels()
 done = set(zip(labels["query_id"], labels["job_id"]))
 todo = [(q, j) for q, j in zip(sample["query_id"], sample["job_id"]) if (q, j) not in done]
 
-st.sidebar.progress(len(done & set(zip(sample.query_id, sample.job_id))) / len(sample),
-                    text=f"{len(sample) - len(todo)} / {len(sample)} labeled")
+n_done = len(sample) - len(todo)
+GOAL = 100  # option B (Chat 27): round 1 ≈ 100 pairs covers every search; rounds 2–3 are optional extra precision
+st.sidebar.progress(min(n_done / GOAL, 1.0), text=f"{n_done} / {GOAL} labeled (goal) · {len(sample)} available")
+if n_done >= GOAL:
+    st.sidebar.success("Goal reached — tell Claude 'done'. More labels only make κ more precise.")
 st.sidebar.markdown("\n".join(f"- **{v}**" for v in SCALE.values()))
 st.sidebar.caption("Judge the job against the query's *relevant if* line, not 'would I apply'. The title alone is "
                    "not enough — read for the actual work. Years/seniority count only if the query names a level "
@@ -73,9 +76,9 @@ if not todo:
 qid, job_id = todo[0]
 q, job = queries[qid], corpus.loc[job_id]
 
-in_query = list(sample.loc[sample.query_id == qid, "job_id"])  # pairs are grouped by query on purpose
-st.caption(f"Search {sorted(queries).index(qid) + 1} of {len(queries)} · job {in_query.index(job_id) + 1} of "
-           f"{len(in_query)} for this search — the same rule for all {len(in_query)}, then the next search")
+rnd = int(sample.loc[(sample.query_id == qid) & (sample.job_id == job_id), "round"].iloc[0])
+st.caption(f"Round {rnd} of {sample['round'].max()} · search {sorted(queries).index(qid) + 1} of {len(queries)} — "
+           f"each round gives every search 2 jobs, so stopping after a round still covers all {len(queries)} searches")
 st.markdown(f"### `{qid}` · {q['text']}")
 st.markdown(f"**Relevant if:** {q['relevant_if']}" + (f"  \n**Filter:** {q['filters']}" if q.get("filters") else ""))
 st.divider()

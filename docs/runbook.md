@@ -338,7 +338,8 @@ All local, `.venv\Scripts\python.exe`, data in `C:\Users\malik\jobpulse_lab_data
 2. `.venv\Scripts\streamlit.exe run eval\label_app.py` — label against the query's `relevant_if` line, not "would I apply";
    years/seniority count only when the query names a level (q26, q49). Labels go to `human_labels_v1.csv` (append-only; last label per
    pair wins; "Undo last" removes the last line). The sample comes from the pool → finish queries + re-pool **before** labeling.
-3. `eval/judge.py --subset human --model <id> --dry-run` (estimate) → without `--dry-run` (submits a batch, polls each minute,
+   The sample is ordered in **rounds** (round 1 = 2 pairs per query = 100); the sidebar goal is 100 (option B).
+3. `eval/judge.py --subset labeled --model <id> --dry-run` (estimate; `labeled` = only pairs already labeled, `human` = all 300) → without `--dry-run` (submits a batch, polls each minute,
    usually < 1 h). Window closed? `--collect <batch_id>` with the same `--subset/--model`. Statuses other than
    `succeeded` (refusal, max_tokens, errored) come back with `label` = null and are left out of κ.
 4. `eval/agreement.py --model <id>` → κ + confusion table + every 0-vs-2 disagreement. κ ≥ ~0.6 → `judge.py --subset all`,

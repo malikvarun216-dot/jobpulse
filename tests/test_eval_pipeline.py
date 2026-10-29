@@ -112,3 +112,14 @@ def test_ndcg_is_one_for_perfect_order_and_nan_without_relevant():
     assert ndcg_at([0, 1, 2], [0, 1, 2]) < 1.0
     m = query_metrics(["a", "b"], {"a": 1})
     assert np.isnan(m["recall@50"]) and np.isnan(m["mrr"])  # no grade-2 job → undefined, left out of means
+
+
+def test_human_sample_rounds_cover_every_query_first():
+    rows = [{"query_id": q, "job_id": f"{q}{i}", "bm25_rank": i + 1, "vector_rank": None, "hybrid_rank": None}
+            for q in ["q1", "q2", "q3"] for i in range(20)]
+    pl = pd.DataFrame(rows).astype({"bm25_rank": "Int64", "vector_rank": "Int64", "hybrid_rank": "Int64"})
+    s = common.human_sample(pl)
+    first = s.head(6)  # round 1 = 2 pairs x 3 queries
+    assert (first["round"] == 1).all() and sorted(first.query_id.unique()) == ["q1", "q2", "q3"]
+    ranks = first.merge(pl, on=["query_id", "job_id"]).bm25_rank
+    assert (ranks <= 5).sum() == 3  # each query's round 1 = 1 likely relevant + 1 likely not

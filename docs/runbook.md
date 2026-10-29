@@ -330,6 +330,12 @@ If a table still points at `athena-results/`: the workgroup is enforcing again (
 - Docker Desktop "removing stale socket … cannot be accessed by the system": quit Docker, stop leftover `*docker*` processes,
   `wsl --shutdown`, delete the `.sock` named in the error (or restart Windows), start again. Don't reset to factory defaults.
 
+## 25. role_family looks wrong
+- Rules: `spark/jobs/bronze_to_silver.py` → `TITLE_ROLE_RULES` (title, first match wins) → `ROLE_FAMILY_MAP` (category) →
+  `TAG_ROLE_MAP` (tags, whole word). Check a day locally: load `jobpulse_lab_data/silver_<date>/` with pandas and call
+  `resolve_role_family(category, list(tags), title)` per row; compare per-family counts and sample titles before/after.
+- Many "Other" rows are expected (non-tech jobs). A new rule needs a unit test in `spark/tests/` and a before/after on real data.
+
 ## 23. Label the eval set (pool → human labels → judge → κ → qrels)
 
 All local, `.venv\Scripts\python.exe`, data in `C:\Users\malik\jobpulse_lab_data\`. Order matters:

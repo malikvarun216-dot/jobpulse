@@ -1485,3 +1485,17 @@ Find the real causes of the Aug–Sep failures, fix them, turn the quality check
 
 ### Not done
 - `qrels_v1` still paused (Chat 27 part 3). Nothing shipped to the nightly pipeline. Reranker not started.
+
+## Chat 28 part 2 — role_family from the title (2026-10-30)
+
+- `spark/jobs/bronze_to_silver.py`: `TITLE_ROLE_RULES` + `extract_role_family_from_title()`; `resolve_role_family(category,
+  tags, title)` = title → category → tags; tag matching whole-word. The UDF now also gets `job.title`.
+- Measured on Oct 14 silver (5,933 rows): Other 59% → 58% · DATA 263 → 455 · DevOps 32 → 154 · Design 224 → 110 (173 were
+  recruiters etc. via the "ui" substring bug) · 23 / 24 "data engineer" titles DATA. Per source Other: Adzuna 81% → 71%,
+  Arbeitnow 75% → 67%, Greenhouse 52% → 54% (bogus tag labels removed).
+- Tried and dropped: JD keyword rule (≥ 2 of dbt/Airflow/BigQuery/ETL/warehouse/Snowflake/Hadoop) — 49 hits, mostly Databricks
+  boilerplate. 7 new unit tests; 3 Spark transform expectations SDE → DATA ("Senior Data Engineer" fixture).
+  Local: 263 passed, 17 skipped (PySpark tests need Java — they run in CI `spark-tests`).
+- Bedrock discussed: Chat 32 brief on Claude via Bedrock, Titan v2 as the Chat 30 challenger (decisions.md).
+- Effect: ships with the next push to `dev` (CI deploys the Glue script); the first night after it writes the new labels.
+  match_score role points move for jobs that change between DATA/SDE and other families.

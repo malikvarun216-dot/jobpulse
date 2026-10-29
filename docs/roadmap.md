@@ -141,6 +141,7 @@ Notebook on ~20 real JDs from the exported silver data:
 > Python 4× (shared); Docker 1.7×, AWS 1.4×, Terraform 0.9× (SDE/DevOps). Basis for the `role_family` fix: title says data
 > OR ≥ 2 strong-DE keywords → DATA. Spark is inflated by Databricks boilerplate ("creators of Apache Spark").
 >
+> ✅ role_family fixed in Chat 28 (2026-10-30, ships on push): title rules first, whole-word tags — DATA 263 → 455 on Oct 14 silver.
 > Found in part 1, for later chats: `role_family = Other` on 93% of silver rows (the role filter is useless — fix before
 > the dashboard/brief rely on it); 11 / 30 Greenhouse slugs 404; 8 Adzuna duplicate rows within one snapshot.
 
@@ -205,6 +206,9 @@ Notebook on ~20 real JDs from the exported silver data:
 - CI regression with recorded LLM responses (no API calls in CI).
 
 ## Chat 32 — Weekly AI brief (grounded generation)
+
+> Chat 28 decision: build it on **Claude via Bedrock** (IAM auth, no API key) — check ap-south-1 availability and
+> enable model access first. See decisions.md.
 
 - SQL → facts JSON (week-over-week counts, rising skills, top companies). Claude writes only from the facts, cites `job_id`s.
 - Automated faithfulness check: every number in the brief must match the facts JSON.

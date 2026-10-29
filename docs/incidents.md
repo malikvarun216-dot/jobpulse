@@ -563,3 +563,13 @@ Newest first. Chat 23 entries were reconstructed from AWS history (Step Function
 - Fix: measure "HNSW forced" (`enable_seqscan/bitmapscan = off`) separately from "planner's choice"; tie-aware recall.
 - Prevention: `bench_pg.py` reports both; sanity row (exact Postgres vs NumPy) must be 1.000 before any other number counts.
 - Lesson: before believing a benchmark, `EXPLAIN` what actually ran — and check the ground truth agrees with itself.
+
+## [2026-10-30] — Recruiters labeled "Design", retail jobs labeled "DATA"
+- What happened: 173 of 224 Design jobs on Oct 14 silver were recruiters, interns and finance roles; "Retail Promoter" and
+  "Sr. Counsel" were DATA.
+- What I thought: Greenhouse department tags are noisy.
+- Root cause: tag → role matching used substring `keyword in tag`: "ui" is inside "Recruiting" / "Requisitions", "ai" inside
+  "Retail". Hidden because 59% of rows were "Other" and nobody looked at the small families.
+- Fix: whole-word match (`\bkeyword\b`), title rules before category/tags.
+- Prevention: unit tests for the substring cases; role changes measured on a real silver day (before/after per family + samples).
+- Lesson: short keywords in substring matching are a classifier bug waiting to happen — match words, and sample the output.

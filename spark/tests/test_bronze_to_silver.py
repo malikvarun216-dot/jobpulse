@@ -244,6 +244,34 @@ class TestResolveRoleFamily:
     def test_falls_back_to_tags_when_no_category(self):
         assert resolve_role_family(None, ["devops", "kubernetes"]) == "DevOps"
 
+    def test_title_wins_over_category_and_tags(self):
+        # Greenhouse has no category; Adzuna's are generic — the title decides first (Chat 28)
+        assert resolve_role_family("IT Jobs", ["sales"], "Senior Data Engineer") == "DATA"
+        assert resolve_role_family(None, [], "Software Engineer, Data Platform") == "DATA"
+        assert resolve_role_family(None, [], "Senior Site Reliability Engineer") == "DevOps"
+        assert resolve_role_family(None, [], "Principal Frontend Engineer") == "SDE"
+
+    def test_title_rule_order(self):
+        assert resolve_role_family(None, [], "Sr. Product Manager, Data Engineering") == "PM"  # PM before DATA
+        assert resolve_role_family(None, [], "Senior Growth Data Engineer") == "DATA"         # DATA before Marketing
+        assert resolve_role_family(None, [], "Senior Product Designer") == "Design"
+        assert resolve_role_family(None, [], "Data Center Technician") == "Other"             # not a data job
+
+    def test_title_without_family_falls_back(self):
+        assert resolve_role_family("Data", [], "Account Executive") == "DATA"
+        assert resolve_role_family(None, [], "Delivery Driver") == "Other"
+
+
+class TestTagsWholeWord:
+    def test_substring_no_longer_matches(self):
+        # "ai" in "Retail", "ui" in "Recruiting" used to tag these DATA / Design
+        assert extract_role_family_from_tags(["Retail"]) == "Other"
+        assert extract_role_family_from_tags(["6520 Recruiting"]) == "Other"
+
+    def test_whole_word_still_matches(self):
+        assert extract_role_family_from_tags(["machine learning"]) == "DATA"
+        assert extract_role_family_from_tags(["UI"]) == "Design"
+
 
 # ---------------------------------------------------------------------------
 # Full transform test — requires PySpark
@@ -354,7 +382,7 @@ def test_remotive_silver_values(spark):
     assert str(row["snapshot_date"]) == "2026-04-18"
     assert row["title"] == "Senior Data Engineer"
     assert row["company_name"] == "Acme Corp"
-    assert row["role_family"] == "SDE"
+    assert row["role_family"] == "DATA"  # title beats category "Software Development" (Chat 28)
     assert row["country"] == "remote"
     assert row["state"] is None
     assert set(row["tags"]) == {"python", "spark", "aws"}
@@ -371,7 +399,7 @@ def test_remoteok_silver_values(spark):
     assert row["title"] == "Data Engineer"
     assert row["apply_url"] == "https://remoteok.com/jobs/999001"
     assert row["country"] == "remote"
-    assert row["role_family"] in ("DATA", "SDE")  # tags: python, data, aws → DATA or SDE
+    assert row["role_family"] == "DATA"  # title "Data Engineer" (Chat 28)
 
 
 @pytestmark_pyspark
@@ -536,7 +564,7 @@ def test_tags_as_plain_string(spark):
     raw_df = _read_bronze(spark, {**REMOTIVE_BRONZE, "jobs": [job]})
     row = build_silver_df(raw_df).collect()[0]
     assert row["tags"] == ["python", "spark"]
-    assert row["role_family"] == "SDE"
+    assert row["role_family"] == "DATA"  # title "Senior Data Engineer" (Chat 28)
 
 
 @pytestmark_pyspark

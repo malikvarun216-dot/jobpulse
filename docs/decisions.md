@@ -747,3 +747,22 @@
   scale — and at default settings it misses ~17% of the true top 10 on this data, so if used: ef_search ≥ 100 or m = 32.
 - With a country filter, let the planner pre-filter (B-tree + exact sort); if HNSW must be used with filters, turn on
   `hnsw.iterative_scan` or results can come back short.
+
+## role_family from the job title first (Chat 28, 2026-10-30)
+- Order: title rules (`TITLE_ROLE_RULES`) → source category → tags. Greenhouse sends no category and Adzuna's are generic
+  ("IT Jobs"), so the title is the only signal for most rows. First match wins: PM, Design → DATA → DevOps → SDE → Marketing
+  ("Product Manager, Data Engineering" = PM; "Senior Growth Data Engineer" = DATA).
+- **Dropped:** "technical title + ≥ 2 strong DE keywords in the JD → DATA". Measured on corpus_v1 it fired on 49 jobs, mostly
+  Databricks Solutions Architects and engine engineers — company boilerplate, the same trap as Spark. Title-only is simpler
+  and cleaner.
+- Tags match whole words now ("ai" no longer matches "Retail", "ui" no longer matches "Recruiting").
+- Not a goal: 0% "Other". Most remaining Other rows are non-tech (drivers, recruiters, accountants, sales). Measured on
+  Oct 14 silver: Other 59% → 58%, DATA 263 → 455, 23 / 24 "data engineer" titles DATA, 173 bogus Design labels removed.
+- New labels apply from the deploy night on; old silver keeps old labels (no backfill — trend charts by role show a step).
+
+## Bedrock: test it where it is cheap to switch (Chat 28, 2026-10-30) — planned
+- **Chat 32 brief on Claude via Bedrock** (`bedrock-runtime`, IAM role auth): new code, so no migration; no API-key secret
+  (the Chat 26 outage was a secret-handling bug); CloudWatch metrics and one AWS bill. Check ap-south-1 model availability /
+  cross-region inference profile and enable model access first (console, Varun).
+- **Chat 30: Titan Text Embeddings v2 as the challenger** to Voyage, scored with `run_eval.py` on the same corpus.
+- The label judge stays on the Anthropic Batches API: its κ was measured there; moving it means re-measuring agreement.

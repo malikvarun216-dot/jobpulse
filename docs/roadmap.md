@@ -147,6 +147,14 @@ Notebook on ~20 real JDs from the exported silver data:
 > 🟡 Harness built early (2026-10-18): `eval/search.py` (bm25, vector, dashboard, rrf) + `eval/run_eval.py` (metrics,
 > judged@10, latency, results file). Waiting only on `qrels_v1`. Still to add here: chunk grain, HTML strip, Voyage
 > `input_type`, reranker, match_score normalization fix.
+>
+> 🟡 Part 1 (2026-10-30): provisional run on the 108 human labels (judged@10 only 2–8% → not a ranking; harness smoke test).
+> Built, not yet measured: `eval/embed_variants.py` (variants `strip`, `strip_doc`, `strip_doc_title`, `chunks`; lab-only)
+> + `run_eval.py --variants` and `dashboard_fixed`; `MatchScorer` `skill_full_at` (off unless set in the profile; at 12 →
+> 404 corpus jobs reach 70, was 0). Dry-run: 50% of jobs lose text at the 4,000 cut after stripping; chunks = 36,115 texts
+> (3.9 / job). Embedded (19.7M Voyage tokens): provisional nDCG@10 vector 0.225 → `strip_doc` 0.268; `input_type` fixes bare
+> keywords (`spark` no longer → DRIVER); chunks' top 10 is 42% outside the pool. **Left:** add variants to the pool → qrels →
+> score → pick by numbers → ship the winner to `embedding_agent.py` / the profile. Reranker not started.
 
 - `eval/run_eval.py`: one interface `search(query, k) -> [job_id]`; writes metrics + latency p50/p95 + cost per run to `eval/results.parquet`.
 - Compare: BM25, NumPy vector (exact), **today's 0.5/0.5 hybrid (baseline)**, RRF hybrid, optional reranker on top-50, optional query rewriting.

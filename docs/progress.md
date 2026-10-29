@@ -1438,3 +1438,41 @@ Find the real causes of the Aug–Sep failures, fix them, turn the quality check
   Resume = `judge.py --subset all --model claude-sonnet-5-5 --max-usd 6` → `agreement.py --model claude-sonnet-5-5 --write-qrels`
   → `run_eval.py`.
 
+
+## Chat 28 part 1 — Baseline (provisional) + retrieval fixes built (2026-10-30)
+
+### Night check
+- Oct 27–29: 3 of 3 SUCCEEDED (~14 min each); `jobpulse-sfn-no-success-26h-dev` OK.
+
+### Provisional baseline — 108 human labels as the answer key (no `qrels_v1` yet)
+- `eval/run_eval.py --qrels <lab>/qrels_v1_provisional_human108.parquet --no-save` (not saved to results).
+- nDCG@10: vector 0.225 · dashboard_fixed 0.229 · dashboard 0.210 · rrf 0.184 · bm25 0.080. **judged@10 0.02–0.08** → over
+  90% of every top 10 is unlabeled and counts as 0, so this is a harness smoke test, not a ranking. RRF recall@50 0.905 (best).
+
+### Built (no API calls, $0)
+- `MatchScorer.skill_points()` + `skill_full_at` (profile key, unset = old behaviour). Old: matched weight / 95 (whole
+  profile) → no job reaches 70. With 12 (four core skills): mean 18.1 → 24.6, max 66.1 → 100, jobs ≥ 70: 0 → 404 of 9,266.
+  Not switched on in `user_profile.yml` — waits for the eval.
+- `eval/common.chunk_text()` (split at section headings like Requirements / Benefits, max 1,500 chars).
+- `eval/search.py`: `VARIANTS` + `variant_texts()`, `Index.load_variant()` / `variant_similarities()` (best chunk per job),
+  `fixed_match_scores()` → method `dashboard_fixed`. `eval/pool.query_vectors(..., input_type)`.
+- `eval/embed_variants.py`: re-embeds corpus_v1 per variant into the lab cache (checkpointed, `--dry-run`). Lab-only.
+- `run_eval.py --variants ...` → `vector_<v>` and `rrf_<v>`. 4 new tests (146 total; 7 `test_ge_runner` fail locally
+  because Great Expectations isn't installed in `.venv` — CI installs it).
+- Dry-run numbers: after stripping HTML, 50% of jobs still lose text at 4,000 chars; `chunks` = 36,115 texts (3.9 / job,
+  max 13); tokens ≈ 5.8M per single-vector variant, 8.7M for chunks.
+
+
+### Variants embedded + scored (same day) — Voyage 19.7M tokens (strip 4.37M, strip_doc 4.36M, strip_doc_title 4.40M, chunks 6.62M)
+- Provisional nDCG@10 (108 labels): vector_strip_doc **0.268** · vector_strip_doc_title 0.267 · dashboard_fixed 0.229 · vector
+  0.225 · dashboard 0.210 · vector_strip 0.209 · vector_chunks 0.185 · rrf 0.184 · rrf_* 0.135–0.182 · bm25 0.080. Still a smoke test.
+- Label-free checks (all 50 queries, top 10): share outside the labeled pool — vector 0.00 · strip 0.02 · strip_doc 0.17 ·
+  strip_doc_title 0.23 · **chunks 0.42** → the chunk scores are a floor (pool bias), not a verdict. Share of data/ML/platform
+  titles — 0.39 → 0.41 → 0.56 → 0.59 → 0.64.
+- Bare keywords fixed by `input_type`: `spark` DRIVER → "Java/Spark Developer"; `airflow` Mechanical Engineer → Senior Staff
+  Data Engineer; `dbt` Business Development Rep → Analytics Engineer. Stripping HTML alone changes almost nothing (0.209).
+- Reading: `input_type` is the cheap, big lever; title and chunks look good on titles but need labels on the jobs they newly find.
+- Next: add `vector_strip_doc_title` + `vector_chunks` to the pool **before** the 300-label round, so they get judged fairly.
+
+### Not done
+- `qrels_v1` still paused (Chat 27 part 3). Nothing shipped to the nightly pipeline. Reranker not started.

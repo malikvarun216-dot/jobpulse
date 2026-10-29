@@ -32,6 +32,31 @@ def strip_html(text: str | None) -> str:
     return re.sub(r"\s*\n\s*", "\n", t).strip()
 
 
+_SECTION = re.compile(r"responsibilit|requirement|qualification|what you|who you|you will|you'll|about (us|the|you)"
+                      r"|benefit|perks|we offer|nice to have|bonus|skills|compensation|salary|the role|the team", re.I)
+
+
+def chunk_text(text: str, max_chars: int = 1500, min_chars: int = 300) -> list[str]:
+    """
+    Split a stripped JD into section-sized pieces (Chat 28 chunk-grain experiment). A new chunk starts at a short
+    line that looks like a section heading ("Requirements", "What you'll do", "Benefits") once the current chunk
+    has min_chars, or when adding a line would pass max_chars. A single over-long line is cut into windows.
+    """
+    chunks, cur = [], ""
+    for line in (text or "").split("\n"):
+        heading = len(line) < 80 and bool(_SECTION.search(line))
+        if cur and ((heading and len(cur) >= min_chars) or len(cur) + len(line) + 1 > max_chars):
+            chunks.append(cur)
+            cur = ""
+        cur = f"{cur}\n{line}" if cur else line
+        while len(cur) > max_chars:
+            chunks.append(cur[:max_chars])
+            cur = cur[max_chars:]
+    if cur.strip():
+        chunks.append(cur)
+    return chunks or [""]
+
+
 def load_corpus(version: str = "v1", cache: Path = DEFAULT_CACHE) -> pd.DataFrame:
     """The local copy written by freeze_corpus.py (same bytes as s3://jobpulse-gold-dev/eval/corpus_{version}/)."""
     return pd.read_parquet(cache / f"corpus_{version}" / "corpus.parquet")

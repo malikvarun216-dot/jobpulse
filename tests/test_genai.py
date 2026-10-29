@@ -137,6 +137,15 @@ class TestMatchScorer(unittest.TestCase):
         score, _ = self.scorer.score(self._extraction(), self._job())
         self.assertGreaterEqual(score, 95.0)
 
+    def test_skill_full_at_saturates_instead_of_dividing_by_whole_profile(self):
+        from genai.match_scorer import MatchScorer
+        profile = {"skills": ["python", "sql", "aws", "dbt", "pyspark"], "seniority": "mid",
+                   "preferred_locations": [], "preferred_role_families": [], "weights": {"skill_overlap": 40}}
+        # old: 2 of 5 equal-weight skills = 2/5 of the points; new (full at 2): already full points
+        self.assertEqual(MatchScorer(profile).skill_points(["python", "sql"]), 16.0)
+        self.assertEqual(MatchScorer({**profile, "skill_full_at": 2}).skill_points(["Python", "SQL"]), 40.0)
+        self.assertEqual(MatchScorer({**profile, "skill_full_at": 4}).skill_points(["python", "java"]), 10.0)
+
     def test_zero_skill_overlap_reduces_score(self):
         score, detail = self.scorer.score(self._extraction(skills=["java", "kubernetes", "helm"]), self._job())
         self.assertEqual(detail["skill_overlap"], 0.0)

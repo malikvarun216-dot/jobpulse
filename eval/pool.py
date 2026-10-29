@@ -34,13 +34,16 @@ from eval.search import Index, bm25_rank, dashboard_rank, top_k, tokenize, vecto
 from genai.embedding_agent import EMBEDDING_MODEL, _get_voyage_key  # noqa: E402 — same model as the stored vectors
 
 
-def query_vectors(texts: list[str], cache: Path) -> dict[str, np.ndarray]:
-    path = cache / f"query_vectors_{EMBEDDING_MODEL}.parquet"
+def query_vectors(texts: list[str], cache: Path, input_type: str | None = None) -> dict[str, np.ndarray]:
+    """input_type=None matches the nightly vectors; "query" pairs with documents embedded as input_type="document"
+    (Voyage prepends a different instruction to each side). Separate cache file per input_type."""
+    suffix = f"_{input_type}" if input_type else ""
+    path = cache / f"query_vectors_{EMBEDDING_MODEL}{suffix}.parquet"
     cached = pd.read_parquet(path) if path.exists() else pd.DataFrame(columns=["text", "embedding"])
     missing = sorted(set(texts) - set(cached["text"]))
     if missing:
         import voyageai
-        result = voyageai.Client(api_key=_get_voyage_key()).embed(missing, model=EMBEDDING_MODEL)
+        result = voyageai.Client(api_key=_get_voyage_key()).embed(missing, model=EMBEDDING_MODEL, input_type=input_type)
         cached = pd.concat([cached, pd.DataFrame({"text": missing, "embedding": result.embeddings})], ignore_index=True)
         cached.to_parquet(path, index=False)
         print(f"Embedded {len(missing)} new query texts ({result.total_tokens} tokens)")

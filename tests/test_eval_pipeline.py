@@ -123,3 +123,28 @@ def test_human_sample_rounds_cover_every_query_first():
     assert (first["round"] == 1).all() and sorted(first.query_id.unique()) == ["q1", "q2", "q3"]
     ranks = first.merge(pl, on=["query_id", "job_id"]).bm25_rank
     assert (ranks <= 5).sum() == 3  # each query's round 1 = 1 likely relevant + 1 likely not
+
+
+def test_chunk_text_splits_at_section_headings_and_caps_length():
+    body = "We build pipelines. " * 20 + "\nRequirements\n" + "Python and SQL. " * 20 + "\nBenefits\nGood pay"
+    chunks = common.chunk_text(body, max_chars=1500, min_chars=300)
+    assert [c.split("\n")[0] for c in chunks[1:]] == ["Requirements", "Benefits"]
+    assert all(len(c) <= 50 for c in common.chunk_text("x" * 120, max_chars=50))
+    assert common.chunk_text("") == [""]
+
+
+def test_variant_texts_strip_title_and_cut():
+    from eval import search
+    html = "<p>" + "a" * 5000 + "</p>"
+    assert search.variant_texts("DE", html, "strip") == ["a" * 4000]
+    assert search.variant_texts("DE", "<b>dbt</b>", "strip_doc_title") == ["DE\ndbt"]
+    chunks = search.variant_texts("DE", html, "chunks")
+    assert len(chunks) == 4 and all(c.startswith("DE\n") for c in chunks)  # whole JD kept, title on every chunk
+
+
+def test_variant_similarity_is_the_best_chunk_per_job():
+    from eval import search
+    ix = search.Index.__new__(search.Index)  # skip the heavy __init__ (BM25 + parquet files)
+    ix.corpus = pd.DataFrame({"job_id": ["a", "b"]})
+    ix.variants = {"chunks": (np.array([[1, 0], [0, 1], [0.6, 0.8]], dtype=np.float32), np.array([0, 0, 1]))}
+    assert np.allclose(ix.variant_similarities("chunks", np.array([0.0, 1.0])), [1.0, 0.8])

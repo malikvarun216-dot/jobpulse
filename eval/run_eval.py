@@ -18,6 +18,7 @@ Output: one row per (run, method, query) appended to eval/results_{version}.parq
 Usage:
   python eval/run_eval.py                         # all methods, eval/qrels_v1.parquet
   python eval/run_eval.py --methods bm25 rrf --note "rrf first try"
+  python eval/run_eval.py --variants strip chunks       # + vector_<v> / rrf_<v> from eval/embed_variants.py
 """
 
 import argparse
@@ -33,7 +34,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from eval.common import DEFAULT_CACHE, EVAL_DIR, filter_mask, load_corpus, load_queries  # noqa: E402
-from eval.search import Index, bm25_rank, dashboard_rank, rrf_rank, vector_rank  # noqa: E402
+from eval.search import VARIANTS, Index, bm25_rank, dashboard_rank, rrf_rank, vector_rank  # noqa: E402
 
 DEPTH = 50  # every method returns its top 50; metrics read the top 10 or 50 of that
 
@@ -60,16 +61,23 @@ def query_metrics(ranked_ids: list[str], labels: dict[str, int]) -> dict:
     }
 
 
-def methods_for(ix: Index, mask: np.ndarray, text: str, qvec: np.ndarray) -> dict:
+def methods_for(ix: Index, mask: np.ndarray, text: str, qvec: np.ndarray, vqvecs: dict | None = None) -> dict:
     """Each entry: a zero-arg function returning best-first row positions. Each recomputes its own scores so the
-    timing is fair (no method reuses another's work). Query embedding time is excluded: vectors are cached."""
-    return {
+    timing is fair (no method reuses another's work). Query embedding time is excluded: vectors are cached.
+    vqvecs: variant name -> this query's vector for that variant (input_type "query" for document variants)."""
+    fns = {
         "bm25": lambda: bm25_rank(ix.bm25_scores(text), mask, DEPTH),
         "vector": lambda: vector_rank(ix.similarities(qvec), mask, DEPTH),
         "dashboard": lambda: dashboard_rank(ix.similarities(qvec), ix.match, mask, DEPTH),
+        "dashboard_fixed": lambda: dashboard_rank(ix.similarities(qvec), ix.match_fixed, mask, DEPTH),
         "rrf": lambda: rrf_rank([bm25_rank(ix.bm25_scores(text), mask, 100),
                                  vector_rank(ix.similarities(qvec), mask, 100)], DEPTH),
     }
+    for v, vq in (vqvecs or {}).items():
+        fns[f"vector_{v}"] = lambda v=v, vq=vq: vector_rank(ix.variant_similarities(v, vq), mask, DEPTH)
+        fns[f"rrf_{v}"] = lambda v=v, vq=vq: rrf_rank([bm25_rank(ix.bm25_scores(text), mask, 100),
+                                                       vector_rank(ix.variant_similarities(v, vq), mask, 100)], DEPTH)
+    return fns
 
 
 def summarize(res: pd.DataFrame) -> pd.DataFrame:
@@ -84,7 +92,9 @@ def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--version", default="v1")
     p.add_argument("--qrels", default=None, help="default eval/qrels_{version}.parquet")
-    p.add_argument("--methods", nargs="+", default=["bm25", "vector", "dashboard", "rrf"])
+    p.add_argument("--methods", nargs="+", default=["bm25", "vector", "dashboard", "dashboard_fixed", "rrf"])
+    p.add_argument("--variants", nargs="*", default=[], choices=sorted(VARIANTS),
+                   help="also score vector_<v> and rrf_<v> (needs embed_variants.py --variant <v> first)")
     p.add_argument("--note", default="", help="what changed in this run, saved with the results")
     p.add_argument("--no-save", action="store_true", help="print only; don't append to results (smoke tests)")
     args = p.parse_args()
@@ -99,14 +109,21 @@ def main() -> None:
     corpus = load_corpus(args.version)
     queries = load_queries(args.version)
     ix = Index(corpus, DEFAULT_CACHE)
-    qvecs = query_vectors([q["text"] for q in queries], DEFAULT_CACHE)
+    texts = [q["text"] for q in queries]
+    qvecs = query_vectors(texts, DEFAULT_CACHE)
+    vq_by_type = {t: query_vectors(texts, DEFAULT_CACHE, "query" if t == "document" else None)
+                  for t in {VARIANTS[v]["input_type"] for v in args.variants}}
+    for v in args.variants:
+        ix.load_variant(v, args.version)
+    methods = args.methods + [f"{kind}_{v}" for v in args.variants for kind in ("vector", "rrf")]
     job_ids = corpus["job_id"].to_numpy()
 
     rows = []
     for q in queries:
         mask = filter_mask(corpus, q.get("filters")).to_numpy()
-        fns = methods_for(ix, mask, q["text"], qvecs[q["text"]])
-        for name in args.methods:
+        vq = {v: vq_by_type[VARIANTS[v]["input_type"]][q["text"]] for v in args.variants}
+        fns = methods_for(ix, mask, q["text"], qvecs[q["text"]], vq)
+        for name in methods:
             t0 = time.perf_counter()
             ranked = fns[name]()
             ms = (time.perf_counter() - t0) * 1000

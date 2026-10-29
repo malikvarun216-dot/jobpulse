@@ -57,17 +57,22 @@ class MatchScorer:
         for s in tiers.get("learning", []):
             self._skill_weights[s.lower()] = 1.0
         self._max_skill_weight = sum(self._skill_weights.values()) or 1.0
+        # skill_full_at (Chat 28): full skill points once the matched weight reaches this (12 = four core skills).
+        # Unset = old behaviour, divide by the whole profile's weight (95) — no job can ever get near full points.
+        self._skill_full_at = profile.get("skill_full_at") or self._max_skill_weight
+
+    def skill_points(self, skills) -> float:
+        """Skill overlap points (0 … weights.skill_overlap), weighted by tier (core=3x, secondary=1.5x, learning=1x)."""
+        matched = {s.lower() for s in skills} & self._user_skills
+        weighted_match = sum(self._skill_weights.get(s, 1.0) for s in matched)
+        skill_score = min(weighted_match / self._skill_full_at, 1.0)
+        return round(skill_score * self._weights["skill_overlap"], 2)
 
     def score(self, extraction: ExtractionResult, job_row: dict[str, Any]) -> tuple[float, dict]:
         detail: dict[str, float] = {}
 
-        # 1. Skill overlap — weighted by tier (core=3x, secondary=1.5x, learning=1x)
-        job_skills = {s.lower() for s in extraction.skills}
-        matched = job_skills & self._user_skills
-        weighted_match = sum(self._skill_weights.get(s, 1.0) for s in matched)
-        # Normalize against total user skill weight so score is always [0, 1]
-        skill_score = min(weighted_match / self._max_skill_weight, 1.0)
-        detail["skill_overlap"] = round(skill_score * self._weights["skill_overlap"], 2)
+        # 1. Skill overlap
+        detail["skill_overlap"] = self.skill_points(extraction.skills)
 
         # 2. Seniority fit — YoE-aware when available, title-based fallback
         w_sen = self._weights["seniority_fit"]

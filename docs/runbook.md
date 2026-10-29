@@ -342,7 +342,7 @@ All local, `.venv\Scripts\python.exe`, data in `C:\Users\malik\jobpulse_lab_data
 3. `eval/judge.py --subset labeled --model <id> --dry-run` (estimate; `labeled` = only pairs already labeled, `human` = all 300) → without `--dry-run` (submits a batch, polls each minute,
    usually < 1 h). Window closed? `--collect <batch_id>` with the same `--subset/--model`. Statuses other than
    `succeeded` (refusal, max_tokens, errored) come back with `label` = null and are left out of κ.
-   κ low? → `.venv\Scripts\streamlit.exe run evaleview_app.py`: the pairs where you and Sonnet disagree, biggest gap
+   κ low? → `.venv\Scripts\streamlit.exe run eval\review_app.py`: the pairs where you and Sonnet disagree, biggest gap
    first, with both judges' labels and reasons. Keep or change each; decisions go to `review_log_v1.csv`, changes are appended
    to `human_labels_v1.csv`. Then re-run step 4. Report κ before AND after review (anchoring).
 4. `eval/agreement.py --model <id>` → κ + confusion table + every 0-vs-2 disagreement. κ ≥ ~0.6 → `judge.py --subset all`,
@@ -350,6 +350,12 @@ All local, `.venv\Scripts\python.exe`, data in `C:\Users\malik\jobpulse_lab_data
 5. `eval/run_eval.py [--methods ...] [--note "what changed"]` → summary table + nDCG by query type; appends to
    `eval/results_v1.parquet` (commit it). "No answer key" = step 4 not done. Smoke test without saving: `--qrels <file> --no-save`.
    judged@10 well below 1.0 → that method surfaces unlabeled jobs; label them (judge them) before calling it a win.
+6. Embedding variants (Chat 28): `eval/embed_variants.py --variant <strip|strip_doc|strip_doc_title|chunks> --dry-run`
+   (texts + ≈tokens, free) → same without `--dry-run` (Voyage spend; resumes from its checkpoint after an error) →
+   `run_eval.py --variants <names>` adds `vector_<v>` / `rrf_<v>`. "vectors don't cover the corpus" = the embed run
+   stopped early — re-run it, it skips what's done. Variants are lab-only; nothing changes in the nightly pipeline.
+   `UnicodeEncodeError: 'charmap'` on a print = a non-ASCII sign (≈, →) in a script's output on the Windows console —
+   use ASCII in prints, or set `$env:PYTHONIOENCODING = "utf-8"`.
 - Claude key: `ANTHROPIC_API_KEY` if set, else Secrets Manager `jobpulse/anthropic_key_dev`. Spend prints at the end of each
   run ("Actual cost"); `--max-usd` (default 2) blocks bigger submits.
 

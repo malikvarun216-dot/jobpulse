@@ -133,6 +133,8 @@ Notebook on ~20 real JDs from the exported silver data:
 > 2026-10-30: 108 human labels; κ vs Sonnet 0.29 → 0.69 after reviewing 52 disagreements (Haiku 0.47). Judge-all (≈ $5)
 > **paused** by choice — resume command in progress.md. Queries rewritten from the resume the same day (2,302 pairs). **Left:** Varun reviews queries → re-pool → label 300 → judge human sample → κ → judge all →
 > `eval/qrels_v1.parquet`. Judge cost (batch): Haiku 5.5 $0.04 / Sonnet 5.5 $0.83 on the 300; all pairs $0.32 / $6.33.
+> Chat 28 (2026-10-30): pool grown to **2,984** pairs (+682 found only by `strip_doc_title` / `chunks`); hand sample
+> unchanged (300). Judge-all estimate now Haiku $0.27 / Sonnet $5.32 raw ≈ **$7.0** calibrated.
 >
 > **Keyword lift (2026-10-19, corpus_v1):** share of jobs mentioning a skill that have a data title vs overall — dbt 22×,
 > Airflow 22×, BigQuery 18×, ETL/ELT 10×, warehouse 9×, Snowflake 9×, Hadoop 8× (strong DE); Kafka 6×, SQL 5×, Spark 4×,

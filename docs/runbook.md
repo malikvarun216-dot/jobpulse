@@ -334,6 +334,9 @@ If a table still points at `athena-results/`: the workgroup is enforcing again (
 
 All local, `.venv\Scripts\python.exe`, data in `C:\Users\malik\jobpulse_lab_data\`. Order matters:
 1. `eval/pool.py` — after any query change. Seconds; embeds only new query texts (Voyage key from Secrets Manager).
+   Since Chat 28 it also pools `vector_strip_doc_title` + `vector_chunks` (needs their `embed_variants.py` files;
+   `--variants` with no names = the old 3-method pool). The hand-label sample uses only the original 3 methods, so
+   adding methods never reshuffles it; variant-only pairs get judge labels. Old pool: `pool_v1_before_chat28.parquet`.
    A query whose `bm25_rank` count is 0 has no keyword match at all (check it's intended).
 2. `.venv\Scripts\streamlit.exe run eval\label_app.py` — label against the query's `relevant_if` line, not "would I apply";
    years/seniority count only when the query names a level (q26, q49). Labels go to `human_labels_v1.csv` (append-only; last label per
@@ -354,6 +357,10 @@ All local, `.venv\Scripts\python.exe`, data in `C:\Users\malik\jobpulse_lab_data
    (texts + ≈tokens, free) → same without `--dry-run` (Voyage spend; resumes from its checkpoint after an error) →
    `run_eval.py --variants <names>` adds `vector_<v>` / `rrf_<v>`. "vectors don't cover the corpus" = the embed run
    stopped early — re-run it, it skips what's done. Variants are lab-only; nothing changes in the nightly pipeline.
+   Local `pytest` fails in `test_ge_runner` with `no attribute 'get_context'` = Great Expectations not installed in
+   `.venv` (the empty root `great_expectations/` folder is imported instead). Install `great-expectations==1.8.1`, then
+   `pip install altair==6.3.0` again — GE pulls altair 4.2.2, which breaks Streamlit; GE's altair<5 pin is only for
+   Data Docs (unused), so `pip check`'s warning about it is expected.
    `UnicodeEncodeError: 'charmap'` on a print = a non-ASCII sign (≈, →) in a script's output on the Windows console —
    use ASCII in prints, or set `$env:PYTHONIOENCODING = "utf-8"`.
 - Claude key: `ANTHROPIC_API_KEY` if set, else Secrets Manager `jobpulse/anthropic_key_dev`. Spend prints at the end of each

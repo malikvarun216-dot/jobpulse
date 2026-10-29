@@ -66,6 +66,9 @@ def load_queries(version: str = "v1") -> list[dict]:
     return yaml.safe_load((EVAL_DIR / f"queries_{version}.yml").read_text(encoding="utf-8"))["queries"]
 
 
+SAMPLE_METHODS = ["bm25_rank", "vector_rank", "hybrid_rank"]  # the pool methods of Chat 27 part 2
+
+
 def human_sample(pool: pd.DataFrame, per_query: int = 6, seed: int = 27) -> pd.DataFrame:
     """
     The pairs Varun labels by hand (same set the judge is checked on). Per query: half from the top-5 of any
@@ -75,8 +78,12 @@ def human_sample(pool: pd.DataFrame, per_query: int = 6, seed: int = 27) -> pd.D
     Order = ROUNDS: round 1 is 2 pairs (1 likely + 1 unlikely) for every query, then round 2, then round 3.
     Stopping after any round covers all queries evenly (option B in Chat 27: ~100 labels = round 1).
     The set of pairs is the same as before the reorder — only the order changed (2026-10-29).
+
+    Only pairs found by the original three methods are sampled (SAMPLE_METHODS). Pairs that only the Chat 28 variants
+    found get judge labels (judge.py --subset all), so adding methods to the pool never reshuffles this sample.
     """
-    best = pool[["bm25_rank", "vector_rank", "hybrid_rank"]].min(axis=1)
+    pool = pool[pool[SAMPLE_METHODS].notna().any(axis=1)]
+    best = pool[SAMPLE_METHODS].min(axis=1)
     picks = []
     for _, g in pool.assign(_top=best <= 5).groupby("query_id", sort=True):
         top, rest = g[g._top], g[~g._top]

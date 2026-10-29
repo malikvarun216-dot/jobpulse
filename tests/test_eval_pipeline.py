@@ -148,3 +148,15 @@ def test_variant_similarity_is_the_best_chunk_per_job():
     ix.corpus = pd.DataFrame({"job_id": ["a", "b"]})
     ix.variants = {"chunks": (np.array([[1, 0], [0, 1], [0.6, 0.8]], dtype=np.float32), np.array([0, 0, 1]))}
     assert np.allclose(ix.variant_similarities("chunks", np.array([0.0, 1.0])), [1.0, 0.8])
+
+
+def test_build_pool_adds_variant_columns_without_touching_the_hand_sample():
+    corpus, vecs, bm25 = _toy()
+    queries = [{"id": "q1", "text": "kafka", "filters": None}]
+    qvecs = {"kafka": np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)}
+    match = np.array([50.0, 10.0, 90.0, 20.0])
+    base = pool.build_pool(corpus, queries, lambda t: bm25[t], vecs, qvecs, match, depth=1, hybrid_candidates=1)
+    sims = {"chunks": lambda t: np.array([0.0, 0.0, 0.0, 0.9])}  # the variant finds d, which nothing else does
+    p = pool.build_pool(corpus, queries, lambda t: bm25[t], vecs, qvecs, match, depth=1, hybrid_candidates=1, variant_sims=sims)
+    assert "vector_chunks_rank" in p.columns and p.set_index("job_id").loc["d", "vector_chunks_rank"] == 1
+    assert common.human_sample(p).equals(common.human_sample(base))  # variant-only pairs are never hand-sampled

@@ -1474,5 +1474,14 @@ Find the real causes of the Aug–Sep failures, fix them, turn the quality check
 - Reading: `input_type` is the cheap, big lever; title and chunks look good on titles but need labels on the jobs they newly find.
 - Next: add `vector_strip_doc_title` + `vector_chunks` to the pool **before** the 300-label round, so they get judged fairly.
 
+### Variants added to the pool (same day)
+- `pool.py` pools `vector_strip_doc_title` + `vector_chunks` (top-20 each): **2,302 → 2,984 pairs**, 682 found only by them.
+  Verified: old 2,302 pairs and their bm25/vector/hybrid ranks identical; all 108 labels still in the pool.
+- `common.human_sample` samples only pairs from the original 3 methods (`SAMPLE_METHODS`) → the 300-pair hand sample is
+  byte-identical to before. Variant-only pairs get judge labels. Old pool kept: `pool_v1_before_chat28.parquet`.
+- Judge-all estimate on 2,984 pairs: Haiku 5.5 $0.27 · Sonnet 5.5 $5.32 raw ≈ $7.0 calibrated (+32%). 1 new test (147 pass).
+- Local env: GE 1.8.1 installed in `.venv`; it downgraded altair to 4.2.2 (breaks Streamlit) → altair 6.3.0 restored; all 147
+  tests pass with it (runbook §23).
+
 ### Not done
 - `qrels_v1` still paused (Chat 27 part 3). Nothing shipped to the nightly pipeline. Reranker not started.

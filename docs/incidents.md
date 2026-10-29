@@ -543,3 +543,23 @@ Newest first. Chat 23 entries were reconstructed from AWS history (Step Function
 - Fix: skip `Size == 0` objects on download; build the dataset from `*.parquet` files only (with `partition_base_dir`).
 - Prevention: test `test_load_snapshot_skips_zero_byte_folder_markers`.
 - Lesson: S3 has no folders — anything that lists a prefix must decide which objects are data.
+
+## [2026-10-29] — Docker Desktop crashed on start: stale socket file
+- What happened: "An unexpected error occurred … removing stale socket: remove …\Docker\run\userAnalyticsOtlpHttp.sock:
+  The file cannot be accessed by the system." Engine stopped; `docker version` failed on the named pipe.
+- What I thought: broken install.
+- Root cause: a socket file left from the previous Docker run was still locked by Windows, so startup cleanup failed.
+- Fix: quit Docker Desktop, stop leftover docker processes, `wsl --shutdown`, delete the stale `.sock` (or restart Windows), start again.
+- Prevention: runbook §24. Never "Reset to factory defaults" for this (wipes images and volumes).
+- Lesson: read the exact path in the error — it named the one file to remove.
+
+## [2026-10-29] — pgvector benchmark looked perfect for the wrong reason
+- What happened: unfiltered recall@10 jumped to 0.998 at ef_search 20/40 but was 0.65/0.92 at 10/100; filtered recall was
+  identical at every ef_search.
+- What I thought: HNSW is excellent at 20–40.
+- Root cause: `EXPLAIN` showed the planner chose **Seq Scan** (no index → exact) at ef 20/40, and the **country B-tree +
+  exact sort** for every filtered query. The benchmark was measuring the planner, not the index. Second issue: 12% duplicate
+  vectors made ID-based recall < 1 even for exact search.
+- Fix: measure "HNSW forced" (`enable_seqscan/bitmapscan = off`) separately from "planner's choice"; tie-aware recall.
+- Prevention: `bench_pg.py` reports both; sanity row (exact Postgres vs NumPy) must be 1.000 before any other number counts.
+- Lesson: before believing a benchmark, `EXPLAIN` what actually ran — and check the ground truth agrees with itself.

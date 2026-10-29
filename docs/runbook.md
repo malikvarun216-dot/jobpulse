@@ -318,12 +318,25 @@ If a table still points at `athena-results/`: the workgroup is enforcing again (
 - `Parquet file size is 0 bytes` on a `..._$folder$` path = Glue folder markers (fixed Chat 27b: they are skipped).
 - `corpus_v1` (2026-10-18): 9,266 rows, `content_sha256 f8383eff…`. A re-run on the same dates must print the same hash.
 
+## 24. Local Postgres + pgvector (Chat 29)
+
+- Start: `docker compose -f vectorstore/docker-compose.yml up -d` (Docker Desktop must show **Engine running**). Stop: `… stop`.
+  Data lives in the `jobpulse_pg` volume; `load_pg.py` drops and reloads the table anyway (~21 s).
+- Connect: `docker exec -it jobpulse-pg psql -U jobpulse -d jobpulse`. Local-only password in the compose file; port bound to 127.0.0.1.
+- Load → measure: `.venv\Scripts\python.exe vectorstore\load_pg.py`, then `vectorstore\bench_pg.py` (writes
+  `pg_bench_v1.csv` in the lab data folder). The sanity line must say recall 1.000 — otherwise the load is wrong.
+- "Seq Scan" in `EXPLAIN` on a vector query = the planner skipped HNSW (normal at 9K rows). Benchmarks force the index separately.
+- Filtered HNSW returns fewer than k rows → `SET hnsw.iterative_scan = relaxed_order` (pgvector ≥ 0.8).
+- Docker Desktop "removing stale socket … cannot be accessed by the system": quit Docker, stop leftover `*docker*` processes,
+  `wsl --shutdown`, delete the `.sock` named in the error (or restart Windows), start again. Don't reset to factory defaults.
+
 ## 23. Label the eval set (pool → human labels → judge → κ → qrels)
 
 All local, `.venv\Scripts\python.exe`, data in `C:\Users\malik\jobpulse_lab_data\`. Order matters:
 1. `eval/pool.py` — after any query change. Seconds; embeds only new query texts (Voyage key from Secrets Manager).
    A query whose `bm25_rank` count is 0 has no keyword match at all (check it's intended).
-2. `.venv\Scripts\streamlit.exe run eval\label_app.py` — labels go to `human_labels_v1.csv` (append-only; last label per
+2. `.venv\Scripts\streamlit.exe run eval\label_app.py` — label against the query's `relevant_if` line, not "would I apply";
+   years/seniority count only when the query names a level (q26, q49). Labels go to `human_labels_v1.csv` (append-only; last label per
    pair wins; "Undo last" removes the last line). The sample comes from the pool → finish queries + re-pool **before** labeling.
 3. `eval/judge.py --subset human --model <id> --dry-run` (estimate) → without `--dry-run` (submits a batch, polls each minute,
    usually < 1 h). Window closed? `--collect <batch_id>` with the same `--subset/--model`. Statuses other than

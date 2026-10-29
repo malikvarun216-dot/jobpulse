@@ -1,0 +1,19 @@
+# Local Postgres + pgvector for Chat 29 (learn and measure for $0 before any RDS session).
+# Start:  docker compose -f vectorstore/docker-compose.yml up -d
+# Stop:   docker compose -f vectorstore/docker-compose.yml stop        (data kept in the named volume)
+# The password is a LOCAL-ONLY dev value: the port is bound to 127.0.0.1, so nothing outside this laptop can connect.
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.0-pg17   # official pgvector image: Postgres 17 + pgvector 0.8.0 (iterative index scans)
+    container_name: jobpulse-pg
+    environment:
+      POSTGRES_DB: jobpulse
+      POSTGRES_USER: jobpulse
+      POSTGRES_PASSWORD: jobpulse_local
+    ports:
+      - "127.0.0.1:5433:5432"            # 5433 on the laptop, so it can't clash with another local Postgres on 5432
+    command: ["postgres", "-c", "maintenance_work_mem=512MB", "-c", "shared_buffers=256MB"]
+    volumes:
+      - jobpulse_pg:/var/lib/postgresql/data
+volumes:
+  jobpulse_pg:

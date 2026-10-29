@@ -716,8 +716,22 @@
 
 ## Eval scoring rules (Chat 28 harness, built in Chat 27b)
 - **Relevant = grade 2** for precision/recall/MRR (a "partly" job isn't one I'd apply to); nDCG uses all grades (gain 2^g − 1).
+- **Relevance ≠ personal fit:** a label answers "is this about what the query asks?", not "would I apply?". Years and
+  seniority count only when the query names a level (q26, q49); fit to me is the match score's job. Same rule in the
+  labeling page and the judge rubric, so human and judge measure the same thing (2026-10-19).
 - **Unlabeled = 0**, and every run reports **judged@10** so a method that wins by surfacing unlabeled jobs is visible, not hidden.
 - **RRF with k = 60** as the first real hybrid: rank-based, so BM25 scores and cosines never need a common scale; no weights
   to tune (yet). Inputs: top-100 of each.
 - Methods live in `eval/search.py`, used by both pooling and scoring, so "the dashboard hybrid" means one thing.
 - Latency excludes query embedding (cached); each method recomputes its own scores so timings are comparable.
+
+## Vector store: learn on local Postgres first (Chat 29 part 1)
+- Local Docker Postgres + pgvector before RDS: same SQL, same index, $0, no "stopped RDS restarts after 7 days" trap.
+  RDS is for the AWS-only parts (VPC, IAM DB auth, cost) in one measured session.
+- Keyword search in Postgres = `tsvector` + GIN with an **OR** query (`plainto_tsquery` ANDs words; BM25 scores any overlap).
+- Hybrid = RRF in one SQL statement (two CTEs + FULL OUTER JOIN): one round trip, no score normalisation.
+- Recall is measured **tie-aware** because 12% of jobs share an identical vector; ID-based recall would punish correct answers.
+- At 9,266 jobs exact search needs no index (NumPy 1.9 ms, Postgres seq scan 33 ms). HNSW matters only at much larger
+  scale — and at default settings it misses ~17% of the true top 10 on this data, so if used: ef_search ≥ 100 or m = 32.
+- With a country filter, let the planner pre-filter (B-tree + exact sort); if HNSW must be used with filters, turn on
+  `hnsw.iterative_scan` or results can come back short.

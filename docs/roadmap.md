@@ -25,7 +25,7 @@ Ground rules for every chat:
 | 26 | AI concepts lab (learning session) | ✅ built + committed `79aa6ba` (2026-10-10); 90-s drill parked (Varun) |
 | 27 | Evaluation foundations: freeze a corpus, label it | 🟡 part 2 (2026-10-18): `corpus_v1` frozen (9,266 jobs), pool + label page + judge + κ built · waiting on real queries + 300 human labels |
 | 28 | Baseline + better retrieval (hybrid, chunk grain) | |
-| 29 | Vector stores on AWS: pgvector (RDS) vs S3 Vectors, by eval | |
+| 29 | Vector stores on AWS: pgvector (RDS) vs S3 Vectors, by eval | 🟡 part 1 local (2026-10-29): Docker pgvector loaded + benchmarked vs NumPy · RDS / S3 Vectors after labels |
 | 30 | Embeddings as a real pipeline (incremental, versioned, freshness) | |
 | 31 | Evaluate the LLM extraction (is the LLM worth it?) | |
 | 32 | Grounded generation: weekly AI brief | |
@@ -133,6 +133,11 @@ Notebook on ~20 real JDs from the exported silver data:
 > Queries rewritten from the resume the same day (2,302 pairs). **Left:** Varun reviews queries → re-pool → label 300 → judge human sample → κ → judge all →
 > `eval/qrels_v1.parquet`. Judge cost (batch): Haiku 5.5 $0.04 / Sonnet 5.5 $0.83 on the 300; all pairs $0.32 / $6.33.
 >
+> **Keyword lift (2026-10-19, corpus_v1):** share of jobs mentioning a skill that have a data title vs overall — dbt 22×,
+> Airflow 22×, BigQuery 18×, ETL/ELT 10×, warehouse 9×, Snowflake 9×, Hadoop 8× (strong DE); Kafka 6×, SQL 5×, Spark 4×,
+> Python 4× (shared); Docker 1.7×, AWS 1.4×, Terraform 0.9× (SDE/DevOps). Basis for the `role_family` fix: title says data
+> OR ≥ 2 strong-DE keywords → DATA. Spark is inflated by Databricks boilerplate ("creators of Apache Spark").
+>
 > Found in part 1, for later chats: `role_family = Other` on 93% of silver rows (the role filter is useless — fix before
 > the dashboard/brief rely on it); 11 / 30 Greenhouse slugs 404; 8 Adzuna duplicate rows within one snapshot.
 
@@ -156,6 +161,11 @@ Notebook on ~20 real JDs from the exported silver data:
 - Pick fusion, k and grain **by the numbers**.
 
 ## Chat 29 — Vector stores on AWS, compared by eval
+
+> 🟡 Part 1 local (2026-10-29): `vectorstore/` — Docker Postgres 17 + pgvector 0.8, corpus_v1 loaded, vector / keyword /
+> hybrid-RRF in SQL. Recall@10 vs exact: default HNSW (ef 40) **0.83**, ef 100 0.92, ef 200 0.97; m 32 → 0.97 at ef 100.
+> Filtered HNSW without iterative scan can return short. Planner skips HNSW at this size (seq scan, 33 ms). Left: score pg
+> methods in `run_eval.py` on qrels, then one RDS + S3 Vectors session, decision in decisions.md.
 
 - **pgvector on RDS Postgres** (db.t4g.micro, Terraform). Loader Lambda inside the VPC + **S3 gateway endpoint** (free) + **IAM DB auth** → no NAT gateway (~$30+/mo trap). Laptop access: SG allows only your IP /32, SSL required. HNSW index + `tsvector` hybrid in one SQL query.
 - **Amazon S3 Vectors** (GA in ap-south-1): vector bucket + index (**1024-d** — measured Chat 26; 512 only if Chat 30 re-embeds with `output_dimension=512`, cosine) with metadata (country, seniority, role_family, snapshot_date). No VPC.

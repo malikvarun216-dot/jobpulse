@@ -59,8 +59,9 @@ todo = [(q, j) for q, j in zip(sample["query_id"], sample["job_id"]) if (q, j) n
 st.sidebar.progress(len(done & set(zip(sample.query_id, sample.job_id))) / len(sample),
                     text=f"{len(sample) - len(todo)} / {len(sample)} labeled")
 st.sidebar.markdown("\n".join(f"- **{v}**" for v in SCALE.values()))
-st.sidebar.caption("Judge the job against the query's *relevant if* line. The title alone is not enough — "
-                   "read for the actual work. A filter (country) that doesn't match → 0.")
+st.sidebar.caption("Judge the job against the query's *relevant if* line, not 'would I apply'. The title alone is "
+                   "not enough — read for the actual work. Years/seniority count only if the query names a level "
+                   "(q26, q49). A filter (country) that doesn't match → 0.")
 if st.sidebar.button("↩ Undo last label"):
     undo_last()
     st.rerun()
@@ -72,6 +73,9 @@ if not todo:
 qid, job_id = todo[0]
 q, job = queries[qid], corpus.loc[job_id]
 
+in_query = list(sample.loc[sample.query_id == qid, "job_id"])  # pairs are grouped by query on purpose
+st.caption(f"Search {sorted(queries).index(qid) + 1} of {len(queries)} · job {in_query.index(job_id) + 1} of "
+           f"{len(in_query)} for this search — the same rule for all {len(in_query)}, then the next search")
 st.markdown(f"### `{qid}` · {q['text']}")
 st.markdown(f"**Relevant if:** {q['relevant_if']}" + (f"  \n**Filter:** {q['filters']}" if q.get("filters") else ""))
 st.divider()
@@ -83,6 +87,6 @@ with st.container(height=480):
 
 cols = st.columns(3)
 for col, (value, text) in zip(cols, SCALE.items()):
-    if col.button(text, key=f"b{value}", use_container_width=True):
+    if col.button(text, key=f"b{value}", width="stretch"):
         save(qid, job_id, value)
         st.rerun()

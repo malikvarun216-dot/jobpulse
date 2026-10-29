@@ -1374,3 +1374,37 @@ Find the real causes of the Aug–Sep failures, fix them, turn the quality check
 - Varun: read `queries_v1.yml`, edit what doesn't sound like you, flip `origin: resume` → `varun`; then re-run `pool.py`
   and label 300 pairs (~1–1.5 h). After κ + qrels: `run_eval.py` = the Chat 28 baseline, no more code needed.
 - Then: judge on the human sample → κ → judge all → `qrels_v1.parquet` → Chat 28 baseline.
+
+## Chat 29 part 1 — Local Postgres + pgvector (2026-10-29)
+
+### Night check
+- Oct 25–29: 5 of 5 SUCCEEDED; all 3 alarms OK. Labels: 19 / 300 (Varun, in progress).
+- Old AWS account 797096399862 (free plan ended) left to close on Oct 25 — not JobPulse (240939827246, PAID, $63.16 credits).
+
+### Built (no AWS, $0)
+- `vectorstore/docker-compose.yml` (pgvector/pgvector:0.8.0-pg17, 127.0.0.1:5433, named volume), `schema.sql`
+  (jobs + generated `tsvector` + `vector(1024)`), `indexes.sql` (HNSW cosine, GIN, country B-tree), `load_pg.py`
+  (corpus_v1 + same-day vectors via COPY), `pg.py` (vector / keyword / hybrid-RRF as SQL), `bench_pg.py` (recall vs NumPy,
+  latency). `tests/test_vectorstore.py` (3). `requirements.txt` + `psycopg[binary]==3.2.10`.
+- Docker Desktop crashed on start (stale socket) — fixed (incidents.md, runbook §24).
+
+### Measured
+- Load: 9,266 jobs via COPY 10.5 s, index build 9.2 s (21 s total); table 106 MB, HNSW 72 MB, GIN 7.6 MB.
+- Sanity: Postgres exact (index off) = NumPy exact, tie-aware recall@10 **1.000** on 50 queries; exact p50 33 ms (NumPy 1.9 ms).
+- **HNSW forced, unfiltered** (m 16, ef_construction 64): recall@10 0.65 / 0.75 / **0.83** / 0.92 / 0.97 at ef_search
+  10 / 20 / **40 (default)** / 100 / 200; p50 6–8 ms.
+- **Filtered + HNSW forced:** ef 10 → 0.957 and 1 query returned < 10 rows ("filter after the walk"); `hnsw.iterative_scan
+  = relaxed_order` → 1.000, 0 short.
+- **Planner's own choice:** filtered → country index + exact sort (1.000, ~9 ms); unfiltered ef 20/40 → **Seq Scan** (index
+  silently skipped, 1.000, 33 ms); ef 10/100/200 → HNSW. Found with `EXPLAIN`.
+- 12% of corpus jobs (1,105) share a vector with another job (largest group 22). Ties made ID-based recall unfair → tie-aware
+  recall (a result counts if its cosine ≥ the true 10th-best). De-duplicating does **not** fix recall (0.805 vs 0.840 at ef 40);
+  m 32 / ef_construction 128 does (0.877 → 0.967 at ef 100; 0.979 on distinct vectors), at 3× build time.
+- Keyword (tsvector, OR-query, ts_rank_cd) p50 39 ms / p95 147 ms; hybrid RRF in one SQL p50 62 ms / p95 174 ms.
+  In-process NumPy/BM25 is faster at this size (1.9 / 7.6 ms).
+
+### Not done
+- No RDS, no S3 Vectors yet (paid session, after labels). pgvector not scored on relevance yet (needs qrels).
+
+### Next
+- Varun: keep labeling. Then: judge → κ → qrels → `run_eval.py` with pg methods added → one RDS + S3 Vectors session.

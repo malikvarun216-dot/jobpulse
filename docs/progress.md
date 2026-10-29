@@ -1412,3 +1412,29 @@ Find the real causes of the Aug–Sep failures, fix them, turn the quality check
 
 ### Next
 - Varun: keep labeling. Then: judge → κ → qrels → `run_eval.py` with pg methods added → one RDS + S3 Vectors session.
+
+### First κ (2026-10-30) — judge vs Varun on 108 labeled pairs (48 / 50 queries)
+- Labels: 38 × 0, 26 × 1, 44 × 2. Judge batches: Sonnet 5.5 $0.264, Haiku 5.5 $0.013 (108/108 succeeded each).
+- **κ Varun–Sonnet 0.29** (quadratic 0.40), **Varun–Haiku 0.26** (quadratic 0.45), **Haiku–Sonnet 0.60**. Below the 0.6 bar → judge
+  NOT trusted yet; "judge all" not run.
+- Pattern: the judges are stricter. Where Varun gave 2, Sonnet gave 0 in 13 and 1 in 20. Databricks-company jobs: Varun 2 on
+  23 / 39 (sales roles, Spark-internals engineers) — the q04 rubric line says sales/support at Databricks = 0. One reverse case
+  (q42: Varun 0, both judges 2 — a real Data Engineer posting).
+- Reading: guideline drift (human vs written rule), the usual first calibration round — not a model failure (the two models agree).
+
+### After review (2026-10-30) — 52 disagreements adjudicated in `review_app.py`
+- Kept 18, changed 34 (31 of them to Sonnet's label). Moves: 2→0 ×12, 2→1 ×10, 1→0 ×5, 1→2 ×5, 0→1 ×1, 0→2 ×1.
+- **κ Varun–Sonnet 0.29 → 0.69** (quadratic 0.40 → 0.85, agree 52% → 81%); **Varun–Haiku 0.26 → 0.47** (quadratic 0.69).
+- Caveat: the review showed the judge's label (anchoring) and only touched Sonnet's disagreements, so 0.69 is an upper
+  bound; the blind number is 0.29. Next: a small blind check on fresh pairs before judging all 2,302.
+
+### Answer key paused (2026-10-30) — Varun's call, no more Claude spend for now
+- Judge-all cost re-estimated with measured output (68 tokens/pair, not 300): Sonnet 5.5 on 2,302 pairs ≈ $3.98 raw →
+  **≈ $5.25 calibrated** to the real 108-pair run (+32%); cutting descriptions at 6,000 chars saves only ≈ $0.30
+  (627 / 2,302 postings are longer). Over the ~$5 Claude budget → paused. Spent so far: $0.28.
+- `judge.py`: `--max-chars` option (cost lever, output file tagged `_6000c` so runs never overwrite), estimator uses 70 output tokens.
+  `agreement.py --all-file` to pick which judge run feeds qrels.
+- State to resume from: 108 human labels (after review) + Sonnet 12k labels on the same 108; κ 0.69 (upper bound, see above).
+  Resume = `judge.py --subset all --model claude-sonnet-5-5 --max-usd 6` → `agreement.py --model claude-sonnet-5-5 --write-qrels`
+  → `run_eval.py`.
+

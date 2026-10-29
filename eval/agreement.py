@@ -44,6 +44,7 @@ def main() -> None:
     p.add_argument("--model", required=True)
     p.add_argument("--version", default="v1")
     p.add_argument("--write-qrels", action="store_true")
+    p.add_argument("--all-file", default=None, help="judge run for --write-qrels (default judge_{v}_all_{model}.parquet)")
     p.add_argument("--judge-subset", default="labeled", choices=["labeled", "human"],
                    help="which judge run to compare against (judge.py --subset ...)")
     args = p.parse_args()
@@ -63,7 +64,7 @@ def main() -> None:
         print(f"\n0-vs-2 disagreements ({len(worst)}) — read these first:\n{worst.to_string(index=False)}")
 
     if args.write_qrels:
-        allj = pd.read_parquet(DEFAULT_CACHE / f"judge_{args.version}_all_{args.model}.parquet")
+        allj = pd.read_parquet(DEFAULT_CACHE / (args.all_file or f"judge_{args.version}_all_{args.model}.parquet"))
         q = allj[allj.label.notna()][["query_id", "job_id", "label"]].assign(label_source=args.model)
         hum = human[["query_id", "job_id", "label"]].assign(label_source="human")
         qrels = pd.concat([hum, q]).drop_duplicates(["query_id", "job_id"], keep="first")  # human label wins

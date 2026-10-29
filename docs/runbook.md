@@ -342,6 +342,9 @@ All local, `.venv\Scripts\python.exe`, data in `C:\Users\malik\jobpulse_lab_data
 3. `eval/judge.py --subset labeled --model <id> --dry-run` (estimate; `labeled` = only pairs already labeled, `human` = all 300) → without `--dry-run` (submits a batch, polls each minute,
    usually < 1 h). Window closed? `--collect <batch_id>` with the same `--subset/--model`. Statuses other than
    `succeeded` (refusal, max_tokens, errored) come back with `label` = null and are left out of κ.
+   κ low? → `.venv\Scripts\streamlit.exe run evaleview_app.py`: the pairs where you and Sonnet disagree, biggest gap
+   first, with both judges' labels and reasons. Keep or change each; decisions go to `review_log_v1.csv`, changes are appended
+   to `human_labels_v1.csv`. Then re-run step 4. Report κ before AND after review (anchoring).
 4. `eval/agreement.py --model <id>` → κ + confusion table + every 0-vs-2 disagreement. κ ≥ ~0.6 → `judge.py --subset all`,
    then `agreement.py --model <id> --write-qrels` → `eval/qrels_v1.parquet` (commit it).
 5. `eval/run_eval.py [--methods ...] [--note "what changed"]` → summary table + nDCG by query type; appends to

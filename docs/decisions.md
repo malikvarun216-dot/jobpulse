@@ -720,6 +720,14 @@
   judge; 300 only narrows the error. The sample is reordered into rounds (2 per query per round, 1 likely + 1 unlikely),
   so stopping after round 1 covers all 50 queries. Same 300 pairs as before — only the order changed. Judge runs on the
   pairs actually labeled (`--subset labeled`): ≈ $0.01 Haiku 5.5 / $0.28 Sonnet 5.5 for 100.
+- **Judge-all paused at ≈ $5 (2026-10-30):** Sonnet 5.5 is the only judge that passed κ (0.69 after review; Haiku 0.47),
+  and judging all 2,302 pairs costs ≈ $5 — the whole Claude budget. Not cutting descriptions to save $0.30: the κ check
+  was done at 12,000 chars, and a different setting would no longer be the validated judge. Cost estimates now use
+  measured output tokens (68), after the first estimate assumed 300 and overstated cost ~45%.
+- **κ too low (0.29) → adjudicate, don't just switch models (2026-10-30):** the two judges agree with each other (0.60),
+  so the gap is guideline drift, not model quality. Review the 52 disagreements with the rule + the judge's reason
+  (`review_app.py`), log every decision, and report κ before and after — the review can anchor me toward the judge.
+  If the review shows the RULE is wrong (not my label), change `relevant_if` and re-judge instead.
 - **Relevance ≠ personal fit:** a label answers "is this about what the query asks?", not "would I apply?". Years and
   seniority count only when the query names a level (q26, q49); fit to me is the match score's job. Same rule in the
   labeling page and the judge rubric, so human and judge measure the same thing (2026-10-19).

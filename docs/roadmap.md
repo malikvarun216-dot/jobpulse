@@ -130,7 +130,8 @@ Notebook on ~20 real JDs from the exported silver data:
 > → Varun swaps draft queries for real ones → pooling (BM25 + NumPy vector + current hybrid, top-20 each) → labeling page → judge → κ.
 > ✅ Part 2 (2026-10-18): `corpus_v1` frozen (9,266 jobs, all with a JD, hash `f8383eff…`). `eval/pool.py` → 2,246 pairs on
 > the drafts (BM25 and vector agree on only 94). `label_app.py`, `judge.py` (Batches, JSON schema), `agreement.py` (κ → qrels).
-> Queries rewritten from the resume the same day (2,302 pairs). **Left:** Varun reviews queries → re-pool → label 300 → judge human sample → κ → judge all →
+> 2026-10-30: 108 human labels; κ vs Sonnet 0.29 → 0.69 after reviewing 52 disagreements (Haiku 0.47). Judge-all (≈ $5)
+> **paused** by choice — resume command in progress.md. Queries rewritten from the resume the same day (2,302 pairs). **Left:** Varun reviews queries → re-pool → label 300 → judge human sample → κ → judge all →
 > `eval/qrels_v1.parquet`. Judge cost (batch): Haiku 5.5 $0.04 / Sonnet 5.5 $0.83 on the 300; all pairs $0.32 / $6.33.
 >
 > **Keyword lift (2026-10-19, corpus_v1):** share of jobs mentioning a skill that have a data title vs overall — dbt 22×,

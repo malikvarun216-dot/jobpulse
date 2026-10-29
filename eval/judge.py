@@ -35,7 +35,7 @@ os.environ.setdefault("AWS_DEFAULT_REGION", "ap-south-1")
 # $ per 1M tokens (input, output), standard API — the batch price is half. Source: claude-api skill, 2026-10-06.
 PRICES = {"claude-haiku-5-5": (0.10, 0.50), "claude-sonnet-5-5": (2.00, 10.00), "claude-opus-5-5": (4.00, 20.00)}
 MAX_DESC_CHARS = 12_000  # covers ~90% of JDs whole (Greenhouse p90 ≈ 11K chars); longer ones are cut and flagged
-EST_OUTPUT_TOKENS = 300  # thinking + the small JSON; measured numbers replace this after the first run
+EST_OUTPUT_TOKENS = 70   # measured 2026-10-30: mean 67 (Haiku 5.5) and 68 (Sonnet 5.5) output tokens per pair at effort low
 
 RUBRIC = """You label search results for a job-search engine evaluation. You get one search query and one job posting.
 Decide how relevant the job is to the query, using the query's "relevant if" line as the definition.
@@ -62,23 +62,23 @@ SCHEMA = {
 }
 
 
-def pair_prompt(q: dict, job: pd.Series) -> tuple[str, bool]:
+def pair_prompt(q: dict, job: pd.Series, max_chars: int = MAX_DESC_CHARS) -> tuple[str, bool]:
     desc = strip_html(job["description"])
-    cut = len(desc) > MAX_DESC_CHARS
+    cut = len(desc) > max_chars
     filters = f"\nFilter: {json.dumps(q['filters'])}" if q.get("filters") else ""
     text = (f"<query>\nText: {q['text']}\nRelevant if: {q['relevant_if']}{filters}\n</query>\n\n"
             f"<job>\nTitle: {job['title']}\nCompany: {job['company_name']}\nCountry: {job['country']}\n"
-            f"Location: {job['location_raw'] or 'unknown'}\n\n{desc[:MAX_DESC_CHARS]}"
+            f"Location: {job['location_raw'] or 'unknown'}\n\n{desc[:max_chars]}"
             f"{' [... posting cut here]' if cut else ''}\n</job>")
     return text, cut
 
 
-def build_requests(pairs: pd.DataFrame, corpus: pd.DataFrame, queries: dict, model: str):
+def build_requests(pairs: pd.DataFrame, corpus: pd.DataFrame, queries: dict, model: str, max_chars: int = MAX_DESC_CHARS):
     from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
     from anthropic.types.messages.batch_create_params import Request
     reqs, meta = [], []
     for i, (qid, job_id) in enumerate(zip(pairs["query_id"], pairs["job_id"])):
-        text, cut = pair_prompt(queries[qid], corpus.loc[job_id])
+        text, cut = pair_prompt(queries[qid], corpus.loc[job_id], max_chars)
         custom_id = f"p{i:05d}"  # batch ids allow only [A-Za-z0-9_-]; mapped back via meta
         reqs.append(Request(custom_id=custom_id, params=MessageCreateParamsNonStreaming(
             model=model,
@@ -131,6 +131,8 @@ def main() -> None:
     p.add_argument("--model", choices=sorted(PRICES), required=True)
     p.add_argument("--version", default="v1")
     p.add_argument("--max-usd", type=float, default=2.0, help="refuse to submit above this estimate")
+    p.add_argument("--max-chars", type=int, default=MAX_DESC_CHARS,
+                   help="cut each description here (cost lever: 6000 ≈ half the input tokens of 12000)")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--collect", metavar="BATCH_ID", help="collect an already-submitted batch")
     args = p.parse_args()
@@ -145,9 +147,9 @@ def main() -> None:
         pairs = human_sample(pool)
     else:
         pairs = pool[["query_id", "job_id"]]
-    reqs, meta = build_requests(pairs, corpus, queries, args.model)
+    reqs, meta = build_requests(pairs, corpus, queries, args.model, args.max_chars)
     est = estimate_usd(meta, args.model)
-    print(f"{len(reqs)} pairs | {meta.desc_cut.sum()} postings cut at {MAX_DESC_CHARS:,} chars | "
+    print(f"{len(reqs)} pairs | {meta.desc_cut.sum()} postings cut at {args.max_chars:,} chars | "
           f"estimate ${est:.2f} on {args.model} (batch price)")
     if args.dry_run:
         return
@@ -163,7 +165,8 @@ def main() -> None:
 
     batch_id = args.collect or client.messages.batches.create(requests=reqs).id
     print(f"Batch: {batch_id}  (if this window closes: --collect {batch_id})")
-    out = DEFAULT_CACHE / f"judge_{args.version}_{args.subset}_{args.model}.parquet"
+    tag = "" if args.max_chars == MAX_DESC_CHARS else f"_{args.max_chars}c"  # never overwrite a run made with other settings
+    out = DEFAULT_CACHE / f"judge_{args.version}_{args.subset}_{args.model}{tag}.parquet"
     collect(client, batch_id, meta, args.model).to_parquet(out, index=False)
     print(f"Written: {out}")
 

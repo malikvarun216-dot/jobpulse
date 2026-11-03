@@ -204,6 +204,18 @@ Notebook on ~20 real JDs from the exported silver data:
 - Per-field precision / recall / F1: rules-only vs rules + Haiku; % JDs sent to the LLM; $ per 1K JDs.
 - Fix: budget tracker check-then-reserve race; price constants (Haiku 3.5 numbers in code); `cache_control` on a prompt below the minimum cacheable size; Haiku may wrap JSON in ``` fences (json.loads fails); Message Batches API for the nightly run (measure the saving).
 - CI regression with recorded LLM responses (no API calls in CI).
+- **DynamoDB for the LLM cache + daily budget (added 2026-11-03)** — replaces two S3 JSON patterns that break here:
+  - Found: the extraction cache key is `md5(description)` only (`jd_enrichment_agent._cache_key`) — no model or prompt
+    version, so the Haiku 4.5 vs 5.5 comparison would get the first model's cached answers. The budget is one S3 JSON
+    (`guardrails.BudgetTracker`) updated read-modify-write: safe across threads, not across two runs; no reserve before a call.
+  - One table `jobpulse-llm-cache-dev` (on-demand, Terraform), two item types (single-table design):
+    `pk = JD#<sha256(desc)>`, `sk = EXTRACT#<model>#<prompt_v>` → extraction + tokens + $, TTL 90 days;
+    `pk = BUDGET#<date>`, `sk = TOTAL` → `UpdateItem ADD total_usd :c` with `ConditionExpression total_usd <= :cap_minus_c`
+    = atomic reserve (fails cleanly at the cap), TTL 7 days. `put_item` with `attribute_not_exists(pk)` so two threads
+    never pay for the same JD twice.
+  - IAM: the enrichment Glue role gets `GetItem/PutItem/UpdateItem` on this one table ARN only.
+  - Measure: cache hit rate per night, $ saved, and a 16-thread test that spend never passes the cap. Compare with the S3
+    version (requests, latency, cost) — keep S3 for the nightly embedding check (Chat 30: one batch read beats ~8K lookups).
 
 ## Chat 32 — Weekly AI brief (grounded generation)
 

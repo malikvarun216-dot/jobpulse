@@ -766,3 +766,9 @@
   cross-region inference profile and enable model access first (console, Varun).
 - **Chat 30: Titan Text Embeddings v2 as the challenger** to Voyage, scored with `run_eval.py` on the same corpus.
 - The label judge stays on the Anthropic Batches API: its κ was measured there; moving it means re-measuring agreement.
+
+## DynamoDB where a key-value store is the right tool (2026-11-03) — planned, Chat 31
+- Today DynamoDB is only the Terraform state lock (`jobpulse-tfstate-lock`, Chat 5) — configuration, not data work.
+- Chat 31 uses it for the two jobs S3 JSON does badly: the LLM extraction cache (key must include model + prompt version)
+  and the daily budget (atomic conditional counter instead of read-modify-write). Single table, on-demand, TTL.
+- Not for: vectors (decided Chat 15) or the nightly "already embedded?" check (one Parquet read beats ~8K lookups).

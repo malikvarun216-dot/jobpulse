@@ -1499,3 +1499,5 @@ Find the real causes of the Aug–Sep failures, fix them, turn the quality check
 - Bedrock discussed: Chat 32 brief on Claude via Bedrock, Titan v2 as the Chat 30 challenger (decisions.md).
 - Effect: ships with the next push to `dev` (CI deploys the Glue script); the first night after it writes the new labels.
   match_score role points move for jobs that change between DATA/SDE and other families.
+- Pushed 2026-10-30 (`22a68a6`): CI green incl. Spark transform tests; Deploy was running at end of chat — check it in the
+  next chat's night check (first night with new labels).

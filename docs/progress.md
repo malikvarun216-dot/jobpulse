@@ -1576,7 +1576,42 @@ Find the real causes of the Aug–Sep failures, fix them, turn the quality check
 - `deploy.yml`: builds `weekly_brief.zip` (genai/ + `athena_client.py` at the root) and updates the function code.
 - Tests: 4 new Lambda tests (fake Athena / Bedrock / S3) → 16 brief tests; full suite 163 passed. `terraform validate` OK.
 
+- **Applied + first Lambda run (Nov 5, 21:24 IST):** apply 9 added / 0 changed / 0 destroyed, function `Active`.
+  Manual invoke `{}` → week 2026-10-30 → 2026-11-05, **faithful on the first attempt**, 1 call, 3,592 tokens in / 236 out,
+  1.49 s, **$0.00426**; `facts.json`, `brief.md`, `llm_log.json` in `s3://jobpulse-gold-dev/briefs/week_end=2026-11-05/`.
+  Errors alarm OK. Pushed `c88ccd4`; CI #35 + Deploy #32 green (Lambda code updated by CI 15:57 UTC, 12,890-byte zip).
+
 ### Not done
-- Not applied, not committed, not invoked in AWS. Order matters: apply **before** the push (CI's update-function-code
+- First scheduled run = Monday 2026-11-09 08:30 IST. Order matters: apply **before** the push (CI's update-function-code
   fails if the function does not exist yet). Dashboard "Weekly brief" tab and the prompt fix (data_notes, what roles
   involve) — next.
+
+## Chat 32 part 3 — the brief becomes RAG (2026-11-05)
+
+- Decision (Varun): full RAG now, measured with the existing 108 hand labels (no 300-label round first).
+- Provisional eval rerun (108 labels, 48 queries, judged@10 ≈ 6% → direction, not proof): nDCG@10 vector_strip_doc
+  **0.268** · dashboard_fixed 0.229 · vector 0.225 · rrf 0.184 · rrf_strip_doc 0.182. By type: role — vector 0.378,
+  strip_doc 0.356; descriptive — strip_doc 0.192, vector 0.172. → retriever = `vector_strip_doc`.
+- New `genai/brief_retrieval.py`: embed a profile query (Voyage `input_type` query) and this week's new complete-board
+  jobs (HTML stripped, first 4,000 chars, `input_type` document — the exact eval recipe, checked by a test), cosine top 5,
+  then **passage retrieval**: each top job's JD split into sections (`chunk_text`), the section closest to the query
+  becomes its excerpt. Voyage over plain HTTPS (no package in the Lambda). Logs method, query, candidates, similarities,
+  tokens, overlap with the old match_score top 5.
+- `genai/text_utils.py`: `strip_html` + `chunk_text` moved out of `eval/common.py` (re-exported there) so eval and brief
+  share one recipe. `brief_facts`: candidates query (new this week, still open, Greenhouse/Remotive, with description)
+  replaces the match_score top-5 query; ranking in Python (retriever, or match_score fallback). Fixed on the way: an empty
+  match_score would have reached the facts as NaN (invalid JSON); similarities as float32 noise (0.503000020980835)
+  would have failed the exact-number check.
+- `weekly_brief`: prompt `brief-v2-rag` ("Worth a look" = what the role involves, from its passage), `--retrieval
+  vector|match_score`, `--query`; log gains `retrieval`. Lambda: RAG by default, event `{"retrieval": "match_score"}` /
+  `{"query": ...}`. brief.tf: IAM `secretsmanager:GetSecretValue` on `jobpulse/voyage_key_dev*` only (plan 0 add / 1 change
+  / 0 destroy); zip + deploy.yml include the two new modules. Tests: 24 brief tests (+8), full suite 171 passed.
+- **Live local run (week 2026-10-30 → 11-05):** 541 candidates, 391,181 Voyage tokens (free tier), 27 passages embedded;
+  retrieval kept 3 of the match_score top 5 (in: Databricks Senior Forward Deployed Engineer 0.503 — a customer-facing
+  field role, match 19; Pinterest Batch Processing Platform 0.484; out: Databricks AI SWE, Dropbox backend). Brief
+  faithful on the first attempt, 3,742 tokens in / 291 out, **$0.0046**. Excerpts are now "What you'll do" / requirements
+  sections instead of company boilerplate.
+
+### Not done
+- IAM change not applied, code not committed / pushed, Lambda not yet running the RAG version (S3 still has the v1 brief
+  for 2026-11-05). Relevance of the brief's own picks not labeled yet (precision@5 per week = the next measurement).

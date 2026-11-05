@@ -16,6 +16,8 @@ from datetime import date, timedelta
 
 import pandas as pd
 
+from genai.text_utils import strip_html
+
 SILVER = "jobpulse_silver_dev.silver_jobs"
 ENRICH = "jobpulse_gold_dev.enrichment_scores"   # snapshot_date is varchar here, date in silver
 
@@ -43,6 +45,7 @@ MIN_SKILL_JOBS = 30      # a skill needs this many jobs this week to be called r
 # has a sampling wobble of about ±0.8 pp week to week (2 × standard error), so smaller moves are noise.
 MIN_MOVE_PP = 2.0
 EXCERPT_CHARS = 600
+TOP_K = 5
 
 
 def week_bounds(week_end: date) -> dict[str, date]:
@@ -120,21 +123,31 @@ def _sql(w: dict[str, date]) -> dict[str, str]:
                          WHERE snapshot_date = {d['end']} AND role_family = 'DATA'
                            AND company_name IS NOT NULL AND lower(company_name) <> 'unknown'
                          GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 8""",
-        "matches": f"""WITH p AS (SELECT DISTINCT job_id FROM {SILVER}
+        # Candidates for "Worth a look": still open on the last day, not seen the week before, complete boards only
+        # (Adzuna/Arbeitnow rotate, and their descriptions are short snippets). Ranked in Python: by the retriever
+        # (genai/brief_retrieval.py, RAG) or, without one, by match_score (the pre-RAG pick).
+        "candidates": f"""WITH p AS (SELECT DISTINCT job_id FROM {SILVER}
                          WHERE snapshot_date BETWEEN {d['prev_start']} AND {d['prev_end']})
-                       SELECT e.job_id, s.title, s.company_name AS company, s.country, s.apply_url,
-                         CAST(round(e.match_score) AS integer) AS match_score,
-                         substr(regexp_replace(s.description, '<[^>]+>', ' '), 1, {EXCERPT_CHARS}) AS excerpt
-                       FROM {ENRICH} e JOIN {SILVER} s
-                         ON s.job_id = e.job_id AND s.snapshot_date = {d['end']}
-                       LEFT JOIN p ON p.job_id = e.job_id
-                       WHERE e.snapshot_date = {s['end']} AND p.job_id IS NULL
-                       ORDER BY e.match_score DESC, e.job_id LIMIT 5""",
+                       SELECT s.job_id, s.title, s.company_name AS company, s.country, s.apply_url, s.description,
+                         CAST(round(e.match_score) AS integer) AS match_score
+                       FROM {SILVER} s
+                       LEFT JOIN p ON p.job_id = s.job_id
+                       LEFT JOIN {ENRICH} e ON e.job_id = s.job_id AND e.snapshot_date = {s['end']}
+                       WHERE s.snapshot_date = {d['end']} AND p.job_id IS NULL AND s.source IN ({complete})
+                         AND s.description IS NOT NULL""",
     }
 
 
-def build_facts(run_query: Callable[[str], pd.DataFrame], week_end: date) -> tuple[dict, list[dict]]:
-    """Returns (facts, job_texts). job_texts holds third-party JD excerpts — untrusted, kept out of facts."""
+def pick_by_match_score(cand: pd.DataFrame, k: int = TOP_K) -> pd.DataFrame:
+    """The pre-RAG pick: top K by match_score (the same for every query), opening EXCERPT_CHARS of the JD."""
+    top = cand.sort_values(["match_score", "job_id"], ascending=[False, True], na_position="last").head(k)
+    return top.assign(excerpt=[strip_html(x)[:EXCERPT_CHARS] for x in top["description"]])
+
+
+def build_facts(run_query: Callable[[str], pd.DataFrame], week_end: date,
+                retriever=None) -> tuple[dict, list[dict]]:
+    """Returns (facts, job_texts). job_texts holds third-party JD excerpts — untrusted, kept out of facts.
+    retriever: genai.brief_retrieval.Retriever (RAG) or None (top K by match_score)."""
     w = week_bounds(week_end)
     q = {name: run_query(sql) for name, sql in _sql(w).items()}
 
@@ -159,14 +172,21 @@ def build_facts(run_query: Callable[[str], pd.DataFrame], week_end: date) -> tup
                   "change_pct": pct_change(int(row.get(now, 0)), int(row.get(ago, 0)))} if roles_ok else {})}
              for fam, row in r.sort_values(now, ascending=False).iterrows()]
 
-    m = q["matches"].astype(object).where(q["matches"].notna(), None)   # NaN is not valid JSON
+    cand = q["candidates"].drop_duplicates("job_id")
+    picked = retriever(cand) if retriever is not None else pick_by_match_score(cand)
+    keep = ["job_id", "title", "company", "country", "apply_url", "match_score"] + (
+        ["similarity"] if "similarity" in picked else [])
+    m = picked[keep + ["excerpt"]].astype(object).where(picked[keep + ["excerpt"]].notna(), None)  # NaN → null
     facts = {
         "week": {k: str(v) for k, v in w.items()},
         "postings": postings,
         "roles": {"week_over_week_comparable": roles_ok, "rows": roles},
         "skills": skill_movers(q["skills"]),
         "top_data_companies": q["data_companies"].astype({"data_jobs": int}).to_dict("records"),
-        "top_new_matches": m.drop(columns=["excerpt"]).astype({"match_score": int}).to_dict("records"),
+        "top_new_matches": [{**r, "match_score": None if pd.isna(r["match_score"]) else int(r["match_score"])}
+                            for r in m.drop(columns=["excerpt"]).to_dict("records")],   # CSV gives 61.0 / NaN
+        "top_new_matches_how": {"picked_by": getattr(retriever, "method", "match_score"),
+                                "query": getattr(retriever, "query", None), "candidates": int(len(cand))},
         "data_notes": STATIC_NOTES + [note for d, f, note in KNOWN_BREAKS
                                       if w["prev_start"] < date.fromisoformat(d) <= w["end"]],
     }

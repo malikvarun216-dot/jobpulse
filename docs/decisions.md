@@ -807,3 +807,16 @@
   UNVERIFIED banner, then the run fails loudly; 2 automatic retries would re-pay for the same result. Stale data (latest
   snapshot > 2 days old) stops the run before any LLM spend.
 - Trade-off: no absence alarm — if the rule is disabled nothing emails. Acceptable for a weekly read-only report.
+
+## Brief "Worth a look" by retrieval, not match_score (Chat 32 part 3, 2026-11-05)
+- **What:** RAG — a profile query retrieves this week's new jobs (cosine on Voyage vectors), then the closest JD section
+  of each top job goes into the prompt. Before: top 5 by match_score (same for every query) + the JD's first 600 chars.
+- **Recipe = eval method `vector_strip_doc`** (best nDCG@10 0.268 on the 108 hand labels vs 0.225 nightly vectors,
+  0.229 dashboard_fixed, 0.184 RRF). Provisional (judged@10 ≈ 6%); Varun chose to go ahead on 108 labels.
+- **Embed in the Lambda, not the nightly vectors:** the nightly vectors are raw HTML without `input_type` (the weaker
+  recipe); the brief only needs ~550 new jobs a week (~0.4M tokens, free tier). Cost: the Lambda reads the Voyage secret.
+- **Plain NumPy cosine, no vector database:** 541 vectors × 1,024 dims is a 2 MB matrix — a database adds nothing here.
+- **One profile query, no BM25 fusion:** RRF scored lower on the labels (0.184) and would add a dependency.
+- **Passage retrieval** (best section per job) instead of the opening 600 chars: the opening is usually company boilerplate.
+- Known weakness: similarity favours a customer-facing Databricks "Forward Deployed Engineer" (match_score 19) whose JD
+  is full of data-engineering words. Measure precision@5 of the picks over a few weeks before adding a match_score floor.

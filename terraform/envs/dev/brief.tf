@@ -30,6 +30,14 @@ data "archive_file" "brief_zip" {
     filename = "genai/brief_facts.py"
   }
   source {
+    content  = file("${path.module}/../../../genai/brief_retrieval.py")
+    filename = "genai/brief_retrieval.py"
+  }
+  source {
+    content  = file("${path.module}/../../../genai/text_utils.py")
+    filename = "genai/text_utils.py"
+  }
+  source {
     content  = file("${path.module}/../../../dashboard/streamlit/athena_client.py")
     filename = "athena_client.py"
   }
@@ -60,6 +68,13 @@ data "aws_iam_policy_document" "brief_permissions" {
       "arn:aws:bedrock:${var.aws_region}:${local.account_id}:inference-profile/${local.brief_model}",
       "arn:aws:bedrock:*::foundation-model/amazon.nova-pro-v1:0",
     ]
+  }
+
+  # RAG retrieval (Chat 32): the Voyage key, to embed this week's new jobs + the profile query. This one secret only.
+  statement {
+    sid       = "VoyageKey"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = ["arn:aws:secretsmanager:${var.aws_region}:${local.account_id}:secret:jobpulse/voyage_key_dev*"]
   }
 
   statement {

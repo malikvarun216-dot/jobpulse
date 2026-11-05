@@ -7,6 +7,9 @@ import os
 import sys
 from datetime import date
 
+import json
+
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -34,9 +37,16 @@ def fake_tables() -> dict[str, pd.DataFrame]:
         "roles": pd.DataFrame([(NOW, "DATA", 110), (AGO, "DATA", 100)], columns=["d", "role_family", "jobs"]),
         "skills": pd.DataFrame(skills, columns=["wk", "skill", "company", "n", "total"]),
         "data_companies": pd.DataFrame({"company": ["acme"], "data_jobs": [12]}),
-        "matches": pd.DataFrame([{"job_id": "greenhouse-acme-123", "title": "Data Engineer", "company": "acme",
-                                  "country": None, "apply_url": "https://acme.example/jobs/123",
-                                  "match_score": 61, "excerpt": "Build   pipelines\nwith Spark."}]),
+        # Candidates: new this week on complete boards. match_score as Athena's CSV gives it (float, may be empty).
+        "candidates": pd.DataFrame([
+            {"job_id": "greenhouse-acme-123", "title": "Data Engineer", "company": "acme", "country": None,
+             "apply_url": "https://acme.example/jobs/123", "match_score": 61.0,
+             "description": "<p>Build   pipelines</p>with Spark."},
+            {"job_id": "greenhouse-beta-7", "title": "Sales Lead", "company": "beta", "country": "US",
+             "apply_url": "https://beta.example/7", "match_score": 12.0, "description": "<p>Sell things.</p>"},
+            {"job_id": "remotive-9", "title": "Recruiter", "company": "gamma", "country": "remote",
+             "apply_url": "https://gamma.example/9", "match_score": None, "description": "Hire people."},
+        ]),
     }
 
 
@@ -78,7 +88,7 @@ def test_excerpts_kept_out_of_facts(facts_and_texts):
     facts, texts = facts_and_texts
     assert "excerpt" not in facts["top_new_matches"][0]
     assert facts["top_new_matches"][0]["country"] is None    # NaN would be invalid JSON
-    assert texts == [{"job_id": "greenhouse-acme-123", "excerpt": "Build pipelines with Spark."}]
+    assert texts[0] == {"job_id": "greenhouse-acme-123", "excerpt": "Build pipelines with Spark."}
     assert facts["roles"]["week_over_week_comparable"] is True
 
 
@@ -223,3 +233,99 @@ def test_lambda_injection_run_uses_suffixed_files(lambda_query):
                            s3, today=date(2026, 11, 4))
     assert out["injection_followed"] is False
     assert {k.rsplit("/", 1)[1] for _, k in s3.objects} == {"facts.json", "brief_inject.md", "llm_log_inject.json"}
+
+
+# ---------------------------------------------------------------------------
+# RAG retrieval (Chat 32) — fake embedder: one dimension per topic word, so similarities are predictable
+# ---------------------------------------------------------------------------
+
+from genai import brief_retrieval as br  # noqa: E402
+from genai.text_utils import strip_html  # noqa: E402
+
+TOPICS = ["pipeline", "spark", "sell", "hire", "kafka"]
+
+
+def fake_embed(texts, input_type):
+    """Vector = counts of each topic word; the query mentions pipelines + spark + kafka."""
+    vecs = np.array([[t.lower().count(w) + 0.01 for w in TOPICS] for t in texts], dtype=np.float32)
+    fake_embed.calls.append((input_type, len(texts)))
+    return vecs, 10 * len(texts)
+
+
+fake_embed.calls = []
+QUERY = "data engineer building spark pipeline with kafka"
+
+
+def test_retriever_ranks_by_query_not_match_score():
+    cand = fake_tables()["candidates"]
+    cand.loc[1, "match_score"] = 99.0                      # the sales job wins on match_score...
+    r = br.Retriever(fake_embed, query=QUERY, k=2)
+    picked = r(cand)
+    assert picked["job_id"].tolist()[0] == "greenhouse-acme-123"   # ...but the query picks the pipeline job
+    assert picked["similarity"].iloc[0] > picked["similarity"].iloc[1]
+    assert r.log["candidates"] == 3 and r.log["k"] == 2 and r.log["embed_tokens"] > 0
+    assert 0 <= r.log["overlap_with_match_score_top_k"] <= 2      # shared ids with the old top-2
+
+
+def test_retriever_picks_the_closest_passage():
+    desc = ("<h3>About us</h3><p>" + "We are a fun company. " * 30 + "</p>"
+            "<h3>Responsibilities</h3><p>" + "Build Spark pipeline jobs on Kafka. " * 20 + "</p>"
+            "<h3>Benefits</h3><p>" + "Free lunch and gym. " * 30 + "</p>")
+    cand = pd.DataFrame([{"job_id": "j1", "title": "DE", "company": "x", "country": None, "apply_url": "u",
+                          "match_score": 50.0, "description": desc}])
+    picked = br.Retriever(fake_embed, query=QUERY, k=1)(cand)
+    assert "Spark pipeline" in picked["excerpt"].iloc[0]
+    assert "fun company" not in picked["excerpt"].iloc[0]          # not the opening boilerplate (the v1 excerpt)
+    assert len(picked["excerpt"].iloc[0]) <= br.EXCERPT_CHARS
+
+
+def test_retriever_embeds_documents_and_query_with_their_input_types():
+    fake_embed.calls.clear()
+    br.Retriever(fake_embed, query=QUERY, k=1)(fake_tables()["candidates"])
+    assert fake_embed.calls[0] == ("query", 1)
+    assert fake_embed.calls[1] == ("document", 3)
+    assert all(t == "document" for t, _ in fake_embed.calls[2:])  # passages
+
+
+def test_doc_text_is_the_measured_eval_recipe():
+    from eval.search import variant_texts                         # eval method vector_strip_doc
+    desc = "<p>Build &amp; run <b>Spark</b></p>" + "x" * 5000
+    assert br.doc_text(desc) == variant_texts("t", desc, "strip_doc")[0]
+    assert br.doc_text(None) == "" and strip_html("<p>a</p>b") == "a\nb"
+
+
+def test_facts_with_retriever_record_how_jobs_were_picked(monkeypatch):
+    tables = fake_tables()
+    monkeypatch.setattr(bf, "_sql", lambda w: {name: name for name in tables})
+    r = br.Retriever(fake_embed, query=QUERY, k=2)
+    facts, texts = bf.build_facts(lambda name: tables[name], WEEK_END, r)
+    how = facts["top_new_matches_how"]
+    assert how == {"picked_by": "vector_strip_doc", "query": QUERY, "candidates": 3}
+    top = facts["top_new_matches"][0]
+    assert top["job_id"] == "greenhouse-acme-123" and isinstance(top["similarity"], float)
+    assert top["similarity"] == round(top["similarity"], 3)          # no float32 noise for the checker
+    assert top["match_score"] == 61                                # int, not 61.0 from the CSV
+    assert texts[0]["job_id"] == top["job_id"] and "excerpt" not in top
+
+
+def test_without_retriever_the_v1_pick_is_kept(facts_and_texts):
+    facts, _ = facts_and_texts
+    assert facts["top_new_matches_how"]["picked_by"] == "match_score"
+    assert [m["job_id"] for m in facts["top_new_matches"]][:2] == ["greenhouse-acme-123", "greenhouse-beta-7"]
+    assert facts["top_new_matches"][2]["match_score"] is None      # empty match_score stays null, sorts last
+
+
+def test_lambda_logs_retrieval(lambda_query):
+    from genai import brief_lambda
+    s3 = FakeS3()
+    out = brief_lambda.run({}, lambda_query, FakeClient(["Complete boards list 900 open jobs."]), s3,
+                           today=date(2026, 11, 4), retriever=br.Retriever(fake_embed, query=QUERY, k=2))
+    assert out["retrieval"]["method"] == "vector_strip_doc" and out["retrieved_job_ids"][0] == "greenhouse-acme-123"
+    log = json.loads(s3.objects[(wb.GOLD_BUCKET, f"briefs/week_end={NOW}/llm_log.json")][0])
+    assert log["retrieval"]["retrieved"][0]["job_id"] == "greenhouse-acme-123"
+    assert log["prompt_version"] == "brief-v2-rag"
+
+
+def test_match_score_event_skips_voyage():
+    from genai import brief_lambda
+    assert brief_lambda.make_retriever({"retrieval": "match_score"}, secrets_client=None) is None

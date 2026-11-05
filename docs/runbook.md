@@ -403,6 +403,10 @@ All local, `.venv\Scripts\python.exe`, data in `C:\Users\malik\jobpulse_lab_data
   traceback: "older than 2 days" = nightly pipeline not landing silver (§1), "faithfulness" = read `llm_log.json` in S3,
   `AccessDenied` = brief.tf IAM (Athena/Glue/S3/Bedrock statement named in the error), `Throttling` = quotas above.
   No automatic retries (by design) — rerun with the manual invoke.
+- **RAG retrieval (Chat 32 part 3):** `AccessDeniedException ... secretsmanager` in the brief Lambda = brief.tf
+  `VoyageKey` statement not applied. Voyage `401` = secret value wrong (must be JSON `{"VOYAGE_API_KEY": ...}`);
+  `429` / timeout = retried once after 5 s, then the run fails (alarm) — rerun manually, or run without Voyage:
+  payload `{"retrieval": "match_score"}` (v1 pick). The retrieval details are in `llm_log.json` → `retrieval`.
 - `ResourceNotFoundException` in CI "Deploy weekly brief Lambda" = the function was never created: `terraform apply` first.
 - Nova Pro quotas after the Support case (2026-11-06): 25 requests/min, 2M tokens/min, 230.4M tokens/day — a brief
   is ~3,600 tokens, so even the 25 RPM is far above need. Lower than AWS defaults; ask again only if scheduling many runs.

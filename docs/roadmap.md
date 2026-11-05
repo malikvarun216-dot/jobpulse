@@ -28,7 +28,7 @@ Ground rules for every chat:
 | 29 | Vector stores on AWS: pgvector (RDS) vs S3 Vectors, by eval | 🟡 part 1 local (2026-10-29): Docker pgvector loaded + benchmarked vs NumPy · RDS / S3 Vectors after labels |
 | 30 | Embeddings as a real pipeline (incremental, versioned, freshness) | |
 | 31 | Evaluate the LLM extraction (is the LLM worth it?) | |
-| 32 | Grounded generation: weekly AI brief | 🟡 part 1 (2026-11-03): facts + Bedrock (Opus 5.5) + faithfulness check + injection test built, dry run on real data · Claude refused on this account → switched to **Amazon Nova Pro** (Converse API) Nov 5; quotas raised by AWS Support → **first live brief Nov 6: faithful first try, $0.0043; injection test passed (1 run)** · **part 2 (Nov 5): weekly Lambda + EventBridge (Mon 08:30 IST) + error alarm in Terraform, plan 9 to add** · dashboard tab + prompt fix next |
+| 32 | Grounded generation: weekly AI brief | 🟡 part 1 (2026-11-03): facts + Bedrock (Opus 5.5) + faithfulness check + injection test built, dry run on real data · Claude refused on this account → switched to **Amazon Nova Pro** (Converse API) Nov 5; quotas raised by AWS Support → **first live brief Nov 6: faithful first try, $0.0043; injection test passed (1 run)** · **part 2 (Nov 5): weekly Lambda + EventBridge (Mon 08:30 IST) + error alarm in Terraform, applied; first Lambda run faithful, $0.0043** · **part 3 (Nov 5): RAG — vector retrieval (vector_strip_doc, nDCG 0.268 on 108 labels) + passage per job; live local run faithful, $0.0046** · dashboard tab + data_notes prompt fix next |
 | 33 | Narrative + resume | |
 
 ---
@@ -232,7 +232,9 @@ Notebook on ~20 real JDs from the exported silver data:
   → brief tab in the dashboard. Measure: faithful on the first attempt (per week), repair rate, $ per brief.
 - **Part 2 progress (2026-11-05):** schedule built (`genai/brief_lambda.py`, `terraform/envs/dev/brief.tf`, deploy.yml
   step) — IAM is `bedrock:InvokeModel` on the Nova Pro apac profile. Next: dashboard "Weekly brief" tab (reads
-  `briefs/` from S3) → prompt fix (use `data_notes`, say what roles involve), measured over several Mondays.
+  `briefs/` from S3) → prompt fix (use `data_notes`), measured over several Mondays.
+- **Part 3 (2026-11-05): RAG** — `genai/brief_retrieval.py` (profile query → this week's new jobs → top 5 → best
+  passage each). Next measurement: label the 5 picks each Monday (precision@5), compare with the match_score pick.
 
 ## Chat 33 — Narrative + resume
 

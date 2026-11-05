@@ -115,7 +115,8 @@ jobs:
       - name: Deploy weekly brief Lambda
         run: |
           mkdir -p build/brief/genai
-          cp genai/__init__.py genai/brief_lambda.py genai/weekly_brief.py genai/brief_facts.py build/brief/genai/
+          cp genai/__init__.py genai/brief_lambda.py genai/weekly_brief.py genai/brief_facts.py \
+             genai/brief_retrieval.py genai/text_utils.py build/brief/genai/
           cp dashboard/streamlit/athena_client.py build/brief/
           (cd build/brief && zip -r ../../weekly_brief.zip .)
           aws lambda update-function-code \

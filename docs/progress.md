@@ -1559,3 +1559,24 @@ Find the real causes of the Aug–Sep failures, fix them, turn the quality check
 
 ### Not done
 - Schedule (Lambda + EventBridge weekly, IAM on the one model) and the dashboard tab — part 2. Not uploaded to S3 yet.
+
+## Chat 32 part 2 — brief on a weekly schedule (2026-11-05)
+
+- Night check: last 3 Step Functions runs SUCCEEDED (Nov 3–5), `jobpulse-sfn-no-success-26h-dev` OK.
+- `genai/weekly_brief.py`: `main()` split into `latest_snapshot` → `prepare` → `write_brief` → `upload` (CLI unchanged;
+  `--upload` now uses `put_object` with a content type, so `brief.md` opens as text in the S3 console).
+- New `genai/brief_lambda.py`: same steps in Lambda. Raises (→ alarm) on: latest snapshot older than 2 days (before any
+  LLM spend), worst case over the $0.50 cap, unfaithful brief (uploaded first, with the UNVERIFIED banner), injection
+  followed. Event `{"week_end": ...}` / `{"inject_test": true}` for manual runs. One JSON summary line per run.
+- New `terraform/envs/dev/brief.tf` (plan: **9 to add, 0 change, 0 destroy**): Lambda `jobpulse-weekly-brief-dev`
+  (Python 3.12, 512 MB, 300 s, AWS SDK for pandas layer v24), own IAM role (Bedrock `InvokeModel` on the Nova Pro apac
+  profile + model only; Athena on the `jobpulse-dev` workgroup; Glue catalog read on silver/gold; S3 read silver/gold,
+  write only `athena-results/*` and `briefs/*`), log group 90 days, async retries 0, EventBridge `cron(0 3 ? * MON *)`
+  (Mon 08:30 IST), Lambda `Errors` ≥ 1 alarm → SNS.
+- `deploy.yml`: builds `weekly_brief.zip` (genai/ + `athena_client.py` at the root) and updates the function code.
+- Tests: 4 new Lambda tests (fake Athena / Bedrock / S3) → 16 brief tests; full suite 163 passed. `terraform validate` OK.
+
+### Not done
+- Not applied, not committed, not invoked in AWS. Order matters: apply **before** the push (CI's update-function-code
+  fails if the function does not exist yet). Dashboard "Weekly brief" tab and the prompt fix (data_notes, what roles
+  involve) — next.

@@ -395,5 +395,14 @@ All local, `.venv\Scripts\python.exe`, data in `C:\Users\malik\jobpulse_lab_data
   ap-south-1, model Nova Pro (cross-region), ask for the defaults; the RPM and tokens/day quotas are not self-adjustable.
 - `AccessDeniedException: anthropic.claude-* is not available for this account` with the use case form already on file =
   account-level restriction (same zeroed account); Amazon models (Nova, Titan) are the ones to try first.
+- **Scheduled run (Chat 32 part 2):** Lambda `jobpulse-weekly-brief-dev`, EventBridge `jobpulse-weekly-brief-dev-schedule`
+  `cron(0 3 ? * MON *)` = Monday 08:30 IST → `s3://jobpulse-gold-dev/briefs/week_end=<d>/` (facts.json, brief.md,
+  llm_log.json). Manual run: `aws lambda invoke --function-name jobpulse-weekly-brief-dev --payload '{}'
+  --cli-binary-format raw-in-base64-out out.json` (add `"week_end"` or `"inject_test": true` to the payload).
+- Alarm `jobpulse-weekly-brief-dev-errors` fired → `/aws/lambda/jobpulse-weekly-brief-dev`, last JSON line + the
+  traceback: "older than 2 days" = nightly pipeline not landing silver (§1), "faithfulness" = read `llm_log.json` in S3,
+  `AccessDenied` = brief.tf IAM (Athena/Glue/S3/Bedrock statement named in the error), `Throttling` = quotas above.
+  No automatic retries (by design) — rerun with the manual invoke.
+- `ResourceNotFoundException` in CI "Deploy weekly brief Lambda" = the function was never created: `terraform apply` first.
 - Nova Pro quotas after the Support case (2026-11-06): 25 requests/min, 2M tokens/min, 230.4M tokens/day — a brief
   is ~3,600 tokens, so even the 25 RPM is far above need. Lower than AWS defaults; ask again only if scheduling many runs.

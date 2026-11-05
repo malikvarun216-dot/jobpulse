@@ -163,3 +163,63 @@ def test_cut_off_answer_is_not_accepted(facts_and_texts):
 
 def test_worst_case_cost_is_under_the_run_cap():
     assert wb.worst_case_usd(wb.MODEL, prompt_chars=15_000) < wb.RUN_CAP_USD
+
+
+# ---------------------------------------------------------------------------
+# Scheduled Lambda (Chat 32 part 2) — fake Athena, Bedrock and S3
+# ---------------------------------------------------------------------------
+
+class FakeS3:
+    def __init__(self):
+        self.objects = {}
+
+    def put_object(self, Bucket, Key, Body, ContentType):
+        self.objects[(Bucket, Key)] = (Body.decode("utf-8"), ContentType)
+
+
+@pytest.fixture
+def lambda_query(monkeypatch):
+    """run_query that answers the latest-snapshot query and the fake fact tables."""
+    from genai import brief_lambda  # noqa: F401  (import check: the handler module loads without Athena)
+    tables = fake_tables()
+    monkeypatch.setattr(bf, "_sql", lambda w: {name: name for name in tables})
+    return lambda sql: pd.DataFrame({"d": [NOW]}) if sql.startswith("SELECT max") else tables[sql]
+
+
+def test_lambda_uploads_a_faithful_brief(lambda_query):
+    from genai import brief_lambda
+    s3 = FakeS3()
+    out = brief_lambda.run({}, lambda_query, FakeClient(["Complete boards list 900 open jobs."]), s3,
+                           today=date(2026, 11, 4))
+    assert out["faithful"] and out["week_end"] == NOW and out["calls"] == 1
+    names = {k.rsplit("/", 1)[1] for _, k in s3.objects}
+    assert names == {"facts.json", "brief.md", "llm_log.json"}
+    assert all(k.startswith(f"briefs/week_end={NOW}/") for _, k in s3.objects)
+    assert s3.objects[(wb.GOLD_BUCKET, f"briefs/week_end={NOW}/brief.md")][1].startswith("text/markdown")
+
+
+def test_lambda_raises_on_stale_snapshot(lambda_query):
+    from genai import brief_lambda
+    client = FakeClient(["unused"])
+    with pytest.raises(RuntimeError, match="older than"):
+        brief_lambda.run({}, lambda_query, client, FakeS3(), today=date(2026, 11, 9))
+    assert client.calls == []                                   # no LLM spend on stale data
+
+
+def test_lambda_uploads_then_raises_when_unfaithful(lambda_query):
+    from genai import brief_lambda
+    s3 = FakeS3()
+    with pytest.raises(RuntimeError, match="faithfulness"):
+        brief_lambda.run({"week_end": NOW}, lambda_query, FakeClient(["Up 99.9%.", "Up 88.8%."]), s3,
+                         today=date(2026, 11, 20))                # explicit week_end skips the age check
+    body = s3.objects[(wb.GOLD_BUCKET, f"briefs/week_end={NOW}/brief.md")][0]
+    assert body.startswith("> ⚠️ UNVERIFIED")
+
+
+def test_lambda_injection_run_uses_suffixed_files(lambda_query):
+    from genai import brief_lambda
+    s3 = FakeS3()
+    out = brief_lambda.run({"inject_test": True}, lambda_query, FakeClient(["Complete boards list 900 open jobs."]),
+                           s3, today=date(2026, 11, 4))
+    assert out["injection_followed"] is False
+    assert {k.rsplit("/", 1)[1] for _, k in s3.objects} == {"facts.json", "brief_inject.md", "llm_log_inject.json"}

@@ -795,3 +795,15 @@
 - **Nova Pro over Nova 2 Lite**: ≈ $0.006 vs $0.003 per brief — both trivial; `apac.` profile keeps data in Asia-Pacific
   (Nova 2 Lite is `global.` only). `--model global.amazon.nova-2-lite-v1:0` to compare.
 - `temperature 0`: the same facts should give nearly the same brief — easier to diff week to week.
+
+## Brief on Lambda + EventBridge, failures raise, retries off (Chat 32, 2026-11-05)
+- **Lambda over Glue Python Shell**: the run is ~1 min of Athena polling + 1–2 Bedrock calls; Lambda costs nothing at one
+  run a week and has no cold-start minimum (Glue bills 1 min min. per DPU). pandas comes from AWS's public
+  "AWS SDK for pandas" layer — no Docker image or dependency build in CI.
+- **Not a Step Functions state**: the brief is weekly, the pipeline nightly; a separate rule keeps a brief failure from
+  marking the nightly run red. Runs Monday 08:30 IST, after the 02:00 IST nightly run lands Monday's snapshot.
+- **Own IAM role**, not the ingestors' role: the ingestors stay bronze-write only; the brief role can invoke one model.
+- **Failures raise** (Errors metric → alarm → email) and **async retries = 0**: an unfaithful brief is uploaded with its
+  UNVERIFIED banner, then the run fails loudly; 2 automatic retries would re-pay for the same result. Stale data (latest
+  snapshot > 2 days old) stops the run before any LLM spend.
+- Trade-off: no absence alarm — if the rule is disabled nothing emails. Acceptable for a weekly read-only report.

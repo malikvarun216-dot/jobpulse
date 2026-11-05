@@ -15,6 +15,8 @@ Run (repo root):
     python -m genai.weekly_brief --dry_run            # facts + prompt + cost estimate, no LLM call
     python -m genai.weekly_brief                      # real call (≈ $0.006 on Nova Pro)
     python -m genai.weekly_brief --inject_test        # same, first JD excerpt replaced by an attack
+
+Scheduled run (Chat 32 part 2): genai/brief_lambda.py calls prepare → write_brief → upload every Monday.
 """
 
 from __future__ import annotations
@@ -40,6 +42,7 @@ PRICES = {"apac.amazon.nova-pro-v1:0": (0.94, 3.76), "apac.amazon.nova-lite-v1:0
           "global.amazon.nova-2-lite-v1:0": (0.35, 2.95)}
 OUT_DIR = Path(r"C:\Users\malik\jobpulse_lab_data\briefs")
 GOLD_BUCKET = "jobpulse-gold-dev"
+BRIEF_PREFIX = "briefs"
 REGION = "ap-south-1"
 
 SYSTEM = """You write a short weekly job-market brief for one reader: a data engineer in India looking at \
@@ -187,31 +190,68 @@ def render(text: str, facts: dict, bad: list[str]) -> str:
             f"_Week {facts['week']['start']} → {facts['week']['end']} · prompt {PROMPT_VERSION}_\n")
 
 
+def latest_snapshot(run_query) -> date:
+    return date.fromisoformat(str(run_query(f"SELECT max(snapshot_date) AS d FROM {SILVER}")["d"][0]))
+
+
+def prepare(run_query, week_end: date, inject_test: bool = False) -> tuple[dict, list[dict], str]:
+    """Athena → (facts, job_texts, user message). With inject_test the first JD excerpt becomes the attack."""
+    facts, job_texts = build_facts(run_query, week_end)
+    if inject_test and job_texts:
+        job_texts[0]["excerpt"] = INJECTION_TEXT
+    return facts, job_texts, user_message(facts, job_texts)
+
+
+def write_brief(client, model: str, facts: dict, job_texts: list[dict], user: str, week_end: date,
+                inject_test: bool = False) -> tuple[dict[str, str], dict]:
+    """LLM call + check → ({file name: body}, log). An injection run's files get a suffix so they never
+    overwrite the real run's."""
+    text, bad, calls = generate(client, model, user, facts)
+    log = {"prompt_version": PROMPT_VERSION, "week_end": str(week_end), "requested_model": model,
+           "temperature": TEMPERATURE, "retrieved_job_ids": [j["job_id"] for j in job_texts],
+           "inject_test": inject_test, "injection_followed": injection_followed(text) if inject_test else None,
+           "faithful": not bad, "violations": bad, "calls": calls,
+           "usd_est_total": round(sum(c["usd_est"] for c in calls), 5), "response": text}
+    suffix = "_inject" if inject_test else ""
+    return {f"brief{suffix}.md": render(text, facts, bad), f"llm_log{suffix}.json": json.dumps(log, indent=1)}, log
+
+
+def upload(s3, week_end: date, files: dict[str, str]) -> list[str]:
+    """files → s3://GOLD_BUCKET/briefs/week_end=<d>/<name>. Same key every rerun of a week = idempotent."""
+    keys = []
+    for name, body in files.items():
+        key = f"{BRIEF_PREFIX}/week_end={week_end}/{name}"
+        ctype = "text/markdown; charset=utf-8" if name.endswith(".md") else "application/json"
+        s3.put_object(Bucket=GOLD_BUCKET, Key=key, Body=body.encode("utf-8"), ContentType=ctype)
+        keys.append(key)
+    return keys
+
+
+def facts_file(facts: dict) -> str:
+    return json.dumps(facts, indent=1, ensure_ascii=False)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--week_end", help="YYYY-MM-DD; default = latest silver snapshot")
     ap.add_argument("--model", default=MODEL)
     ap.add_argument("--dry_run", action="store_true")
     ap.add_argument("--inject_test", action="store_true")
-    ap.add_argument("--upload", action="store_true", help=f"also write to s3://{GOLD_BUCKET}/briefs/")
+    ap.add_argument("--upload", action="store_true", help=f"also write to s3://{GOLD_BUCKET}/{BRIEF_PREFIX}/")
     args = ap.parse_args()
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "dashboard" / "streamlit"))
     from athena_client import run_query
 
-    week_end = (date.fromisoformat(args.week_end) if args.week_end else
-                date.fromisoformat(str(run_query(f"SELECT max(snapshot_date) AS d FROM {SILVER}")["d"][0])))
-    facts, job_texts = build_facts(run_query, week_end)
-    if args.inject_test and job_texts:
-        job_texts[0]["excerpt"] = INJECTION_TEXT
-    user = user_message(facts, job_texts)
+    week_end = date.fromisoformat(args.week_end) if args.week_end else latest_snapshot(run_query)
+    facts, job_texts, user = prepare(run_query, week_end, args.inject_test)
     worst = worst_case_usd(args.model, len(SYSTEM) + len(user))
     print(f"[brief] week_end={week_end} prompt={len(SYSTEM) + len(user):,} chars worst case ${worst:.3f}")
 
     out = OUT_DIR / str(week_end)
     out.mkdir(parents=True, exist_ok=True)
-    (out / "facts.json").write_text(json.dumps(facts, indent=1, ensure_ascii=False), encoding="utf-8")
-    suffix = "_inject" if args.inject_test else ""   # an injection run never overwrites the real run's files
+    (out / "facts.json").write_text(facts_file(facts), encoding="utf-8")
+    suffix = "_inject" if args.inject_test else ""
     (out / f"prompt{suffix}.txt").write_text(SYSTEM + "\n\n=====\n\n" + user, encoding="utf-8")
     if args.dry_run:
         print(f"[brief] dry run - wrote {out / 'facts.json'} and prompt.txt, no LLM call")
@@ -220,21 +260,13 @@ def main() -> int:
         print(f"[brief] STOP: worst case ${worst:.3f} > cap ${RUN_CAP_USD:.2f}")
         return 1
 
-    text, bad, calls = generate(bedrock_client(REGION), args.model, user, facts)
-    log = {"prompt_version": PROMPT_VERSION, "week_end": str(week_end), "requested_model": args.model,
-           "temperature": TEMPERATURE, "retrieved_job_ids": [j["job_id"] for j in job_texts],
-           "inject_test": args.inject_test, "injection_followed": injection_followed(text) if args.inject_test else None,
-           "faithful": not bad, "violations": bad, "calls": calls,
-           "usd_est_total": round(sum(c["usd_est"] for c in calls), 5), "response": text}
-    files ={f"brief{suffix}.md": render(text, facts, bad), f"llm_log{suffix}.json": json.dumps(log, indent=1)}
+    files, log = write_brief(bedrock_client(REGION), args.model, facts, job_texts, user, week_end, args.inject_test)
     for name, body in files.items():
         (out / name).write_text(body, encoding="utf-8")
     if args.upload:
-        s3 = boto3.client("s3", region_name=REGION)
-        for name in ["facts.json", *files]:
-            s3.upload_file(str(out / name), GOLD_BUCKET, f"briefs/week_end={week_end}/{name}")
-    print(f"[brief] faithful={not bad} calls={len(calls)} ${log['usd_est_total']:.4f} -> {out}")
-    return 0 if not bad else 1
+        upload(boto3.client("s3", region_name=REGION), week_end, {"facts.json": facts_file(facts), **files})
+    print(f"[brief] faithful={log['faithful']} calls={len(log['calls'])} ${log['usd_est_total']:.4f} -> {out}")
+    return 0 if log["faithful"] else 1
 
 
 if __name__ == "__main__":

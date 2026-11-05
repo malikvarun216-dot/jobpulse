@@ -1,6 +1,6 @@
 # JobPulse Roadmap — Data + AI track (Chat 24 onward)
 
-Last updated: **Chat 27 part 2 (2026-10-18)**. Update this file at the end of every chat: tick the chat, adjust the next one.
+Last updated: **Chat 32 part 1 (2026-11-03)**. Update this file at the end of every chat: tick the chat, adjust the next one.
 
 ## Why this roadmap exists
 
@@ -28,7 +28,7 @@ Ground rules for every chat:
 | 29 | Vector stores on AWS: pgvector (RDS) vs S3 Vectors, by eval | 🟡 part 1 local (2026-10-29): Docker pgvector loaded + benchmarked vs NumPy · RDS / S3 Vectors after labels |
 | 30 | Embeddings as a real pipeline (incremental, versioned, freshness) | |
 | 31 | Evaluate the LLM extraction (is the LLM worth it?) | |
-| 32 | Grounded generation: weekly AI brief | |
+| 32 | Grounded generation: weekly AI brief | 🟡 part 1 (2026-11-03): facts + Bedrock (Opus 5.5) + faithfulness check + injection test built, dry run on real data · Claude refused on this account → switched to **Amazon Nova Pro** (Converse API) Nov 5; quotas raised by AWS Support → **first live brief Nov 6: faithful first try, $0.0043; injection test passed (1 run)** · schedule + dashboard = part 2 |
 | 33 | Narrative + resume | |
 
 ---
@@ -226,6 +226,10 @@ Notebook on ~20 real JDs from the exported silver data:
 - Automated faithfulness check: every number in the brief must match the facts JSON.
 - JD text treated as untrusted (prompt-injection test JD).
 - Every LLM call logged: prompt version, retrieved ids, response, tokens, latency, $.
+- **Part 1 done (2026-11-03):** all four built (`genai/brief_facts.py`, `genai/weekly_brief.py`); dry run on Nov 3 facts.
+- **Part 2:** first live runs (normal + `--inject_test`; Varun accepts the Bedrock terms first) → weekly schedule
+  (Lambda or Glue Python Shell + EventBridge `cron(0 3 ? * MON *)`, IAM `bedrock-mantle:CreateInference` on the one model)
+  → brief tab in the dashboard. Measure: faithful on the first attempt (per week), repair rate, $ per brief.
 
 ## Chat 33 — Narrative + resume
 

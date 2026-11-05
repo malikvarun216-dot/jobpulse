@@ -372,3 +372,28 @@ All local, `.venv\Scripts\python.exe`, data in `C:\Users\malik\jobpulse_lab_data
 - Claude key: `ANTHROPIC_API_KEY` if set, else Secrets Manager `jobpulse/anthropic_key_dev`. Spend prints at the end of each
   run ("Actual cost"); `--max-usd` (default 2) blocks bigger submits.
 
+## 26. Weekly brief (Chat 32)
+
+- Dry run (Athena scans only): `python -m genai.weekly_brief --dry_run` → `C:\Users\malik\jobpulse_lab_data\briefs\<week_end>\`
+  `facts.json` + `prompt.txt`.
+- Live: `python -m genai.weekly_brief` (add `--upload` for `s3://jobpulse-gold-dev/briefs/week_end=<d>/`). Injection test:
+  `--inject_test` → `brief_inject.md` + `llm_log_inject.json`; `injection_followed: true` = the model obeyed the attack (fail).
+- Access / agreement / model-access error on the first call → Bedrock console (ap-south-1) → the Claude model → accept the
+  offer. Check from the CLI: `aws bedrock get-foundation-model-availability --model-id anthropic.claude-opus-5-5` →
+  `agreementAvailability.status` must not be `NOT_AVAILABLE`.
+- Exit code 1 + "UNVERIFIED" at the top of `brief.md` = the faithfulness check still failed after the repair turn; the
+  violations are in `llm_log.json`. Usually a number the model computed itself (a difference or a sum) — add that number to
+  the facts if it is worth saying, rather than loosening the check.
+- A trend that looks too big: read `data_notes` in `facts.json`. Silver partitions are rewritten for ~7 days after their
+  date, so a code change relabels the last week too — add a `KNOWN_BREAKS` entry in `genai/brief_facts.py` for any change
+  to a column the brief compares.
+- `HIVE_INVALID_METADATA ... duplicate columns` on `jobpulse_silver_dev.jobs` — an April orphan table; use `silver_jobs`.
+- `ThrottlingException: Too many tokens per day` on the **first** call (Chat 32b) = the account's Bedrock quota is 0,
+  not real usage. Check: `aws service-quotas list-service-quotas --service-code bedrock --region ap-south-1 --query
+  "Quotas[?contains(QuotaName,'Nova Pro')].[QuotaName,Value]"` — compare with `list-aws-default-service-quotas` (defaults
+  500 RPM / 2M TPM / 1.44B tokens/day). Fix: AWS Support → Create case → *Service limit increase* → Bedrock, region
+  ap-south-1, model Nova Pro (cross-region), ask for the defaults; the RPM and tokens/day quotas are not self-adjustable.
+- `AccessDeniedException: anthropic.claude-* is not available for this account` with the use case form already on file =
+  account-level restriction (same zeroed account); Amazon models (Nova, Titan) are the ones to try first.
+- Nova Pro quotas after the Support case (2026-11-06): 25 requests/min, 2M tokens/min, 230.4M tokens/day — a brief
+  is ~3,600 tokens, so even the 25 RPM is far above need. Lower than AWS defaults; ask again only if scheduling many runs.

@@ -573,3 +573,34 @@ Newest first. Chat 23 entries were reconstructed from AWS history (Step Function
 - Fix: whole-word match (`\bkeyword\b`), title rules before category/tags.
 - Prevention: unit tests for the substring cases; role changes measured on a real silver day (before/after per family + samples).
 - Lesson: short keywords in substring matching are a classifier bug waiting to happen — match words, and sample the output.
+
+## [2026-11-03] — "Data jobs +50%" that was a code change
+- What happened: silver DATA postings jumped 285 → 423 between Oct 23 and Oct 24 (Greenhouse 262 → 393 at the same row count).
+- What I thought: the Oct 30 role_family deploy — but the jump sat 6 days before the deploy.
+- Root cause: each nightly Glue run rewrites the trailing ~7 silver partitions from bronze, so the Oct 30 deploy relabelled
+  snapshots back to Oct 24 (S3 LastModified: Oct 23 partition written before the deploy, Oct 24 after).
+- Fix: `brief_facts.KNOWN_BREAKS` — the brief does not compare role families across a labelling break.
+- Prevention: every change to a compared column adds a `KNOWN_BREAKS` entry (runbook §26).
+- Lesson: a grounded LLM faithfully repeats a wrong fact — check the facts before the prose.
+
+## [2026-11-03] — Top skill "go" and a Databricks-shaped market
+- What happened: the first facts said `go` was the top skill (13.5%) and lakehouse / unity catalog were in ~20% of jobs;
+  "new this week" (12,235) was larger than open postings (6,620).
+- What I thought: Go and Databricks are hot; lots of hiring.
+- Root cause: the rule extractor's whole-word match hits the English word "go" (1,483 jobs, 64 companies); 914 of ~920
+  lakehouse / unity catalog jobs are Databricks's own job-ad template (Databricks = 965 of 4,859 complete-board jobs).
+  Adzuna and Arbeitnow return rotating slices, so their job_ids look new every day.
+- Fix: ambiguous skills dropped, top company per skill in the facts, 2 pp minimum move, new jobs + skills from complete
+  boards (Greenhouse, Remotive) only.
+- Prevention: Chat 31 evaluates the extractor per skill; the brief's `data_notes` carry each caveat.
+- Lesson: pick the right population before anything narrates it.
+
+## [2026-11-05] — Bedrock said yes to the model and no to every token
+- What happened: Claude on Bedrock refused ("not available for this account") after the use case form; Amazon Nova accepted
+  the request and threw `Too many tokens per day` on the first call ever.
+- What I thought: Marketplace / India billing entity blocks third-party models; then that Nova had a tiny daily limit.
+- Root cause: every Bedrock Nova quota on the account is **0** (RPM, TPM, tokens/day) — AWS defaults are 500 / 2M / 1.44B.
+  New or low-history accounts get zeroed Bedrock quotas until AWS Support raises them; the Claude refusal fits the same cause.
+- Fix: Support case for a service limit increase (pending). Code already on Nova + Converse, tested with a fake client.
+- Prevention: runbook §26 — check `service-quotas` against the defaults before debugging model access or prompts.
+- Lesson: "access granted" and "capacity granted" are two different switches; read both before blaming the code.

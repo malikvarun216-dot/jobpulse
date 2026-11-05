@@ -760,7 +760,7 @@
   Oct 14 silver: Other 59% → 58%, DATA 263 → 455, 23 / 24 "data engineer" titles DATA, 173 bogus Design labels removed.
 - New labels apply from the deploy night on; old silver keeps old labels (no backfill — trend charts by role show a step).
 
-## Bedrock: test it where it is cheap to switch (Chat 28, 2026-10-30) — planned
+## Bedrock: test it where it is cheap to switch (Chat 28, 2026-10-30) — brief built Chat 32
 - **Chat 32 brief on Claude via Bedrock** (`bedrock-runtime`, IAM role auth): new code, so no migration; no API-key secret
   (the Chat 26 outage was a secret-handling bug); CloudWatch metrics and one AWS bill. Check ap-south-1 model availability /
   cross-region inference profile and enable model access first (console, Varun).
@@ -772,3 +772,26 @@
 - Chat 31 uses it for the two jobs S3 JSON does badly: the LLM extraction cache (key must include model + prompt version)
   and the daily budget (atomic conditional counter instead of read-modify-write). Single table, on-demand, TTL.
 - Not for: vectors (decided Chat 15) or the nightly "already embedded?" check (one Parquet read beats ~8K lookups).
+
+## Weekly brief: facts first, then a checked LLM (Chat 32, 2026-11-03) — model superseded 2026-11-05, see below
+- **Claude via the Bedrock Messages-API endpoint** (`AnthropicBedrockMantle`), not the older `Converse` / `InvokeModel`:
+  same request shape as the eval judge, IAM credentials (no secret). `ap-south-1` offers only the **global** endpoint for
+  Claude 5.x — a request may run in another region (regional endpoints cost +10% and are not offered in Mumbai).
+- **Opus 5.5, effort medium**: one call a week, ≈ $0.05–0.10; Sonnet / Haiku via `--model` if we want to compare.
+- **SQL computes every number; the LLM only words them.** A regex check rejects any number / date / job_id / URL not in the
+  facts (one repair turn). Considered: structured JSON output with fact ids — stronger, but harder to read and explain;
+  revisit if the check fails often. Known gap: numbers written as words ("five") are not caught.
+- **JD text is untrusted**: separate `<job_postings>` block with `<` `>` stripped, the model has no tools, apply links come
+  from code. Measured with `--inject_test`.
+- **Population before prose**: headline numbers from complete boards (Greenhouse, Remotive); `KNOWN_BREAKS` blocks
+  comparisons across pipeline changes; skill moves below 2 pp are noise at ~4,800 jobs a week.
+
+## Brief on Amazon Nova Pro via the Converse API (Chat 32, 2026-11-05)
+- Anthropic models on Bedrock are refused on this account ("not available for this account"); Amazon's own models are not
+  sold through Marketplace and show `AVAILABLE`. Options: Claude API directly (works, but back to an API key), wait on AWS,
+  or Nova on Bedrock. **Chose Nova** — the point of this chat is learning Bedrock itself.
+- **Converse API**, not the Anthropic SDK: one request shape for every Bedrock model (Nova, Titan, Llama, Claude…),
+  switching model = changing `modelId`. Trade-off: no Claude-only features (effort, refusal fallback middleware).
+- **Nova Pro over Nova 2 Lite**: ≈ $0.006 vs $0.003 per brief — both trivial; `apac.` profile keeps data in Asia-Pacific
+  (Nova 2 Lite is `global.` only). `--model global.amazon.nova-2-lite-v1:0` to compare.
+- `temperature 0`: the same facts should give nearly the same brief — easier to diff week to week.

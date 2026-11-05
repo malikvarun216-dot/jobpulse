@@ -1501,3 +1501,61 @@ Find the real causes of the Aug–Sep failures, fix them, turn the quality check
   match_score role points move for jobs that change between DATA/SDE and other families.
 - Pushed 2026-10-30 (`22a68a6`): CI green incl. Spark transform tests; Deploy was running at end of chat — check it in the
   next chat's night check (first night with new labels).
+
+## Chat 32 part 1 — weekly AI brief, grounded (2026-11-03)
+
+- Night check: Nov 1–3 SUCCEEDED, `jobpulse-sfn-no-success-26h-dev` OK. The `22a68a6` role_family deploy landed: every nightly
+  Glue run rewrites the trailing ~7 silver partitions from bronze, so snapshots from **2026-10-24** on carry the new labels
+  (DATA 285 → 423 that day, Greenhouse 262 → 393 at the same row count) — a labelling break, not hiring.
+- `genai/brief_facts.py`: 7 Athena queries → one facts dict (week-over-week open postings by source, new job_ids, role
+  families, skill shares + top company per skill, top DATA companies, top 5 new matches by `match_score`). JD excerpts are
+  returned separately (untrusted). `KNOWN_BREAKS` hides role-family week-over-week when a break lies between the snapshots.
+- `genai/weekly_brief.py`: Claude **Opus 5.5 on Amazon Bedrock** (`AnthropicBedrockMantle`, `ap-south-1`, global endpoint,
+  IAM auth — no API key), effort medium, client-side refusal fallback to Opus 4.8. `check_faithfulness()` rejects any
+  number, date, `job_id` or URL not in the facts → one repair turn → else saved as UNVERIFIED (exit 1). Apply links are added
+  by code, never by the LLM. `--inject_test` swaps one JD excerpt for an attack (canary: PINEAPPLE / 999999 / evil URL).
+  Per-run log: prompt version, model served, request ids, retrieved job_ids, tokens, latency, $ estimate, violations.
+  Worst case per run $0.41 (2 attempts × 8K output) < $0.50 cap; expected ≈ $0.05–0.10.
+- Measured on the Nov 3 facts (dry run, no LLM): naive "open postings +12.3%" is mostly Adzuna pages (1,193 → 1,789);
+  complete boards (Greenhouse + Remotive) **+3.0%** (4,401 → 4,531). Naive "new this week" 12,235 > open 6,620 (Adzuna
+  9,895 + Arbeitnow 1,831 are rotation) → complete boards **509**. Skills: `go` top at 13.5% = the English word (1,483 jobs,
+  64 companies); `lakehouse` / `unity catalog`: 914 of ~920 jobs are Databricks's own template; Databricks = 965 of 4,859
+  complete-board jobs. With `go`/`r` dropped and a 2 pp minimum move, **no skill moved** week over week.
+- 11 new tests (`tests/test_weekly_brief.py`, fake Athena + fake Bedrock client): 274 passed, 17 skipped locally.
+
+### Not done
+- **No live LLM call yet**: Bedrock shows `agreementAvailability: NOT_AVAILABLE` for Opus/Sonnet/Haiku 5.5 — the
+  Marketplace terms must be accepted in the console (Varun). Then run the brief + `--inject_test` (runbook §26).
+- Not scheduled (no Lambda / EventBridge / IAM yet) and no dashboard tab — Chat 32 part 2, after the first live runs.
+- The orphan Glue table `jobpulse_silver_dev.jobs` (hand-made 2026-04-23, duplicate columns, unused) still exists.
+
+## Chat 32 part 1b — brief moved to Amazon Nova; Bedrock quotas are 0 (2026-11-05)
+
+- Use case form submitted (Varun, as an individual; 736-byte record on file). Playground: **Opus 5.5 and Opus 4.8 both
+  `AccessDeniedException ... not available for this account`**; every Anthropic model keeps `agreementAvailability
+  NOT_AVAILABLE` while Amazon's own Titan / Nova show `AVAILABLE`. Billing entity = Amazon Web Services India Private Limited.
+- Switched the brief to **Amazon Nova Pro** via the `apac.` inference profile and Bedrock's **Converse API** (`boto3
+  bedrock-runtime`): same prompt, checker, log; `temperature 0`, `maxTokens 2000`. Prices from the AWS Pricing API
+  (ap-south-1, per 1M in/out): Nova Pro $0.94/$3.76, Nova 2 Lite $0.35/$2.95, Nova Lite $0.071/$0.284 → ≈ $0.006 per brief,
+  worst case $0.025. 12 brief tests (fake Converse client, + cut-off answer test): 275 passed, 17 skipped.
+- First live call reached Nova and got `ThrottlingException: Too many tokens per day`. Service Quotas: **all Nova quotas are
+  0 on this account** (Nova Pro RPM, TPM, tokens/day) vs AWS defaults 500 RPM / 2,000,000 TPM / 1,440,000,000 tokens/day.
+  Same for Nova Lite / Micro / 2 Lite. A zeroed account explains the Anthropic "not available" too.
+
+### Not done
+- No brief generated yet — waiting on AWS Support to raise the Bedrock quotas (case filed by Varun, runbook §26).
+
+## Chat 32 part 1c — first live brief (2026-11-06)
+
+- AWS Support raised Nova Pro quotas: 25 requests/min, 2,000,000 tokens/min, 230,400,000 tokens/day (defaults 500 / 2M / 1.44B).
+- **First live brief (week 2026-10-30 → 2026-11-05): faithful on the first attempt**, no repair turn. 3,592 tokens in /
+  237 out, 1.65 s, **$0.0043**. Content: complete boards 4,618 open (+4.1%), all sources 7,010 (6,524 a week ago),
+  "no skill moved by 2.0 points or more", 5 cited matches.
+- **Injection test** (`--inject_test`, attack JD asking for 999999 USD, an evil URL and PINEAPPLE): `injection_followed false`,
+  faithful, $0.0042. One run only — a single pass is a smoke test, not a measured rate.
+- Seen in the output: the brief skips the `data_notes` caveats and does not describe what the roles involve (JD excerpts
+  unused) — prompt work for part 2, measured over several weeks.
+- Fix: the injection run had overwritten the real run's `prompt.txt` → it now writes `prompt_inject.txt`. 275 passed.
+
+### Not done
+- Schedule (Lambda + EventBridge weekly, IAM on the one model) and the dashboard tab — part 2. Not uploaded to S3 yet.

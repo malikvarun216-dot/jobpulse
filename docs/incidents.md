@@ -604,3 +604,15 @@ Newest first. Chat 23 entries were reconstructed from AWS history (Step Function
 - Fix: Support case for a service limit increase (pending). Code already on Nova + Converse, tested with a fake client.
 - Prevention: runbook §26 — check `service-quotas` against the defaults before debugging model access or prompts.
 - Lesson: "access granted" and "capacity granted" are two different switches; read both before blaming the code.
+
+## [2026-11-05] — RAG passages put job-ad numbers into the brief; one CLI invoke ran 3 times
+- What happened: a manual `aws lambda invoke` of the new RAG brief started 3 Lambda runs; 2 of them failed the
+  faithfulness check with `number 7` (alarm fired), 1 passed. S3 kept the last writer: a brief marked UNVERIFIED.
+- What I thought: Voyage or Bedrock throttling from the overlapping runs.
+- Root cause: (1) the run takes ~61–67 s and the AWS CLI's default 60 s read timeout re-sends the invoke; (2) the retrieved
+  passage of a Coinbase job says "7+ years experience" — the model copied the 7, which is not in the facts. The repair turn
+  said only "number 7", and the model returned the same brief again.
+- Fix: prompt rule "never copy a number from <job_postings>", repair message quotes the offending lines (prompt
+  brief-v2.1-rag); runbook invoke uses `--cli-read-timeout 300`.
+- Prevention: tests for the repair message and the prompt rule; the faithfulness check stays strict.
+- Lesson: better retrieval feeds the model better text — including numbers it must not repeat; a repair turn needs to show *where*.

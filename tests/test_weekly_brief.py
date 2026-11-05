@@ -323,9 +323,21 @@ def test_lambda_logs_retrieval(lambda_query):
     assert out["retrieval"]["method"] == "vector_strip_doc" and out["retrieved_job_ids"][0] == "greenhouse-acme-123"
     log = json.loads(s3.objects[(wb.GOLD_BUCKET, f"briefs/week_end={NOW}/llm_log.json")][0])
     assert log["retrieval"]["retrieved"][0]["job_id"] == "greenhouse-acme-123"
-    assert log["prompt_version"] == "brief-v2-rag"
+    assert log["prompt_version"] == wb.PROMPT_VERSION == "brief-v2.1-rag"
 
 
 def test_match_score_event_skips_voyage():
     from genai import brief_lambda
     assert brief_lambda.make_retriever({"retrieval": "match_score"}, secrets_client=None) is None
+
+
+def test_repair_message_quotes_the_offending_line():
+    text = "## Market\nJobs rose.\n- Senior DE, coinbase: 7+ years experience, SQL [job:x]\n- Other 17 things"
+    msg = wb.repair_message(text, ["number 7"])
+    assert "> - Senior DE, coinbase: 7+ years experience, SQL [job:x]" in msg
+    assert "Other 17" not in msg                       # 17 is not the number 7
+    assert "words" in msg
+
+
+def test_prompt_forbids_numbers_from_passages():
+    assert "never copy a number from <job_postings>" in wb.SYSTEM

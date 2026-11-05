@@ -1612,6 +1612,18 @@ Find the real causes of the Aug–Sep failures, fix them, turn the quality check
   faithful on the first attempt, 3,742 tokens in / 291 out, **$0.0046**. Excerpts are now "What you'll do" / requirements
   sections instead of company boilerplate.
 
+- **Applied + pushed `56bd334`** (IAM 0/1/0; CI #36 green, Deploy #33 updated the Lambda 17:57 UTC, 18,843-byte zip).
+  Lambda RAG run: faithful, 1 call, **$0.0049**, 66.9 s (embedding 541 jobs dominates; 243 MB of 512 MB used).
+  Near-miss: the AWS CLI's 60 s read timeout re-sent the manual invoke → 3 runs from one command. Runbook §26 now uses
+  `--cli-read-timeout 300`; EventBridge (async) is unaffected.
+- **Of those 3 runs, 2 FAILED the faithfulness check** (`number 7`, alarm → ALARM): the retrieved Coinbase passage says
+  "7+ years experience" and the model copied the 7; the repair turn returned the identical brief (294 tokens twice) because
+  it only said "number 7". New with RAG — the v1 excerpt was boilerplate with no numbers.
+- Fix (prompt `brief-v2.1-rag`): rule "never copy a number from <job_postings>; describe the work in words" + the repair
+  message quotes the offending lines (`repair_message`). Check kept strict (the injection test relies on it). 2 new tests
+  (26 brief tests). Two live local runs: faithful first try ($0.0049); first try failed → **repair fixed it** ($0.0098).
+  Same input, different first answers at temperature 0 — Bedrock is not deterministic.
+
 ### Not done
-- IAM change not applied, code not committed / pushed, Lambda not yet running the RAG version (S3 still has the v1 brief
+- (was: not applied / not pushed — done above) (S3 still has the v1 brief
   for 2026-11-05). Relevance of the brief's own picks not labeled yet (precision@5 per week = the next measurement).

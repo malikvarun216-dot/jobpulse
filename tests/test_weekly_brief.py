@@ -323,7 +323,7 @@ def test_lambda_logs_retrieval(lambda_query):
     assert out["retrieval"]["method"] == "vector_strip_doc" and out["retrieved_job_ids"][0] == "greenhouse-acme-123"
     log = json.loads(s3.objects[(wb.GOLD_BUCKET, f"briefs/week_end={NOW}/llm_log.json")][0])
     assert log["retrieval"]["retrieved"][0]["job_id"] == "greenhouse-acme-123"
-    assert log["prompt_version"] == wb.PROMPT_VERSION == "brief-v2.1-rag"
+    assert log["prompt_version"] == wb.PROMPT_VERSION == "brief-v2.2-rag"
 
 
 def test_match_score_event_skips_voyage():
@@ -340,4 +340,109 @@ def test_repair_message_quotes_the_offending_line():
 
 
 def test_prompt_forbids_numbers_from_passages():
-    assert "never copy a number from <job_postings>" in wb.SYSTEM
+    assert "Never copy a number from <job_postings>" in wb.SYSTEM
+
+
+# ---------------------------------------------------------------------------
+# Chat 32 part 4 — duties passage, rotating-source caveat, one-company skills, data notes footer
+# ---------------------------------------------------------------------------
+
+from genai.text_utils import duties_section  # noqa: E402
+
+DUTIES_JD = ("About us\nWe are a fun company. " * 3 + "\nWhat you’ll do:\n" + "Build Spark pipelines on Kafka. " * 5
+             + "\nWhat You'll Bring\n" + "Five years of SQL. " * 10 + "\nBenefits\nFree lunch.")
+
+
+def test_duties_section_stops_at_the_requirements_heading():
+    out = duties_section(DUTIES_JD)
+    assert out.startswith("Build Spark pipelines") and "SQL" not in out and "fun company" not in out
+
+
+def test_duties_section_skips_lookalike_headings_and_short_bodies():
+    jd = "The community you will join:\n" + "Our team is great. " * 10 + "\nRequirements\nSQL"
+    assert duties_section(jd) == ""                           # "you will" in a team-intro heading is not duties
+    assert duties_section("What you'll do\nCode.\nRequirements\nSQL") == ""   # < 80 chars: fall back
+    assert duties_section(None) == ""
+
+
+def test_retriever_uses_the_duties_section_and_embeds_no_chunks_for_it():
+    cand = pd.DataFrame([{"job_id": "j1", "title": "DE", "company": "x", "country": None, "apply_url": "u",
+                          "match_score": 50.0, "description": DUTIES_JD.replace("\n", "<br>")}])
+    fake_embed.calls.clear()
+    r = br.Retriever(fake_embed, query=QUERY, k=1)
+    picked = r(cand)
+    assert picked["excerpt"].iloc[0].startswith("Build Spark pipelines")
+    assert r.log["passages"] == {"duties_section": 1, "closest_chunk": 0} and r.log["chunks_embedded"] == 0
+    assert len(fake_embed.calls) == 2                         # query + documents only
+
+
+def test_rotating_source_number_needs_its_caveat(facts_and_texts):
+    facts = facts_and_texts[0]
+    assert wb.rotating_numbers(facts) == {2400.0, 2000.0, 1500.0, 1200.0, 3000.0}
+    assert wb.check_faithfulness("All sources list 2400 open jobs.", facts) == ["caveat 2400"]
+    ok = "All sources list 2400 open jobs, but Adzuna returns a rotating slice of pages."
+    assert wb.check_faithfulness(ok, facts) == []
+    assert wb.check_faithfulness("Complete boards list 900 open jobs.", facts) == []   # complete-board count
+
+
+def test_repair_message_explains_the_caveat():
+    msg = wb.repair_message("## Market\nAll sources list 2400 open jobs.", ["caveat 2400"])
+    assert "> All sources list 2400 open jobs." in msg and "rotating slice of pages" in msg
+
+
+def test_one_company_skills_are_decided_in_code(facts_and_texts):
+    skills = facts_and_texts[0]["skills"]
+    # lakehouse: 250 of 250 jobs at databricks; python 300 of 300 at acme (one company in the fake data too)
+    assert {"skill": "lakehouse", "company": "databricks"} in skills["one_company_skills"]
+    assert all(s["skill"] != "sql" for s in skills["one_company_skills"])    # sql: acme 150 of 200 = 75% < 80%
+    assert "one_company_skills" in wb.SYSTEM
+
+
+def test_render_appends_the_data_notes(facts_and_texts):
+    facts = facts_and_texts[0]
+    md = wb.render("Brief text.", facts, [])
+    assert "**Data notes**" in md and facts["data_notes"][0] in md
+    assert md.index("Brief text.") < md.index("**Data notes**")
+
+
+# ---------------------------------------------------------------------------
+# Dashboard brief reader (dashboard/streamlit/brief_store.py) — fake S3
+# ---------------------------------------------------------------------------
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "dashboard", "streamlit"))
+import brief_store  # noqa: E402
+
+
+class ListingS3:
+    def __init__(self, objects):
+        self.objects = objects                                   # key -> str
+
+    def list_objects_v2(self, Bucket, Prefix, Delimiter=None, ContinuationToken=None):
+        keys = sorted(k for k in self.objects if k.startswith(Prefix))
+        if Delimiter:
+            folders = sorted({Prefix + k[len(Prefix):].split(Delimiter)[0] + Delimiter for k in keys
+                              if Delimiter in k[len(Prefix):]})
+            return {"CommonPrefixes": [{"Prefix": f} for f in folders], "IsTruncated": False}
+        return {"Contents": [{"Key": k} for k in keys]}
+
+    def get_object(self, Bucket, Key):
+        import io
+        return {"Body": io.BytesIO(self.objects[Key].encode("utf-8"))}
+
+
+def test_brief_store_lists_weeks_newest_first_and_loads_files():
+    log = {"faithful": True, "usd_est_total": 0.0046, "prompt_version": "brief-v2.2-rag",
+           "calls": [{"model": wb.MODEL, "latency_s": 1.6}],
+           "retrieval": {"method": "vector_strip_doc", "candidates": 541, "passages": {"duties_section": 5}}}
+    s3 = ListingS3({"briefs/week_end=2026-11-05/brief.md": "# Brief", "briefs/week_end=2026-11-05/llm_log.json":
+                    json.dumps(log), "briefs/week_end=2026-11-09/brief.md": "# Next", "briefs/other.txt": "x"})
+    assert brief_store.list_weeks(s3, "b") == ["2026-11-09", "2026-11-05"]
+    files = brief_store.load_week(s3, "b", "2026-11-05")
+    assert files["brief.md"] == "# Brief" and files["llm_log.json"]["faithful"] is True
+    s = brief_store.run_summary(files["llm_log.json"])
+    assert (s["faithful"], s["attempts"], s["model"], s["candidates"]) == (True, 1, wb.MODEL, 541)
+    assert "facts.json" not in brief_store.load_week(s3, "b", "2026-11-09")   # missing file = absent, no error
+
+
+def test_brief_headings_shift_down_for_the_dashboard():
+    assert brief_store.for_display("# Brief\n## Market\nUp 4.1%. #1 pick") == "### Brief\n#### Market\nUp 4.1%. #1 pick"

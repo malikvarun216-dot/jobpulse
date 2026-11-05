@@ -415,3 +415,15 @@ All local, `.venv\Scripts\python.exe`, data in `C:\Users\malik\jobpulse_lab_data
 - `ResourceNotFoundException` in CI "Deploy weekly brief Lambda" = the function was never created: `terraform apply` first.
 - Nova Pro quotas after the Support case (2026-11-06): 25 requests/min, 2M tokens/min, 230.4M tokens/day — a brief
   is ~3,600 tokens, so even the 25 RPM is far above need. Lower than AWS defaults; ask again only if scheduling many runs.
+- **Prompt v2.2 (Chat 32 part 4):** `faithfulness check: ['caveat N']` = the brief printed a rotating-source count
+  (all_sources total, Adzuna/Arbeitnow row) on a line without "pages" / "rotating" / "slice" / "fetched" / "market size".
+  The repair turn explains it; if it persists, read `llm_log.json` → `response`. A new rotating source = it is not in
+  `COMPLETE_SOURCES` (`genai/brief_facts.py`), so the rule covers it automatically.
+- "Worth a look" describes requirements instead of the work → `llm_log.json` → `retrieval.passages`: `closest_chunk > 0`
+  means those JDs had no heading `duties_section()` recognises (`genai/text_utils.py` `_DUTIES` / `_NOT_DUTIES`). Add
+  the heading word to the right regex + a test; never loosen the stop list without re-measuring on a week of JDs.
+- **Dashboard "Weekly brief" tab:** reads `s3://jobpulse-gold-dev/briefs/` with your local AWS credentials. "No briefs"
+  = no `week_end=` folder (Lambda not run yet) or wrong `GOLD_BUCKET`; "Could not list" = credentials/region (set
+  `AWS_DEFAULT_REGION=ap-south-1`). A new Monday brief appears after ≤ 10 min (cache) or **Refresh data**.
+  After editing `brief_store.py`, restart Streamlit — it reloads `app.py` on save, not imported modules.
+  `ModuleNotFoundError: plotly` = lab `.venv` without dashboard deps → `pip install -r dashboard/streamlit/requirements.txt`.

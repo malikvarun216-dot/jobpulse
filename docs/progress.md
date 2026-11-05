@@ -1623,7 +1623,46 @@ Find the real causes of the Aug–Sep failures, fix them, turn the quality check
   message quotes the offending lines (`repair_message`). Check kept strict (the injection test relies on it). 2 new tests
   (26 brief tests). Two live local runs: faithful first try ($0.0049); first try failed → **repair fixed it** ($0.0098).
   Same input, different first answers at temperature 0 — Bedrock is not deterministic.
+- Pushed `e4c6cd7`; CI #37 + Deploy #34 green (Lambda code 18:11 UTC, 19,215 bytes). The confirming invoke ran just before
+  the deploy (still v2 code): faithful, 1 call, $0.0045, 541 candidates, overlap 3 — S3 brief for 2026-11-05 is verified.
+  First v2.1 run in AWS = the Monday 2026-11-09 schedule.
 
 ### Not done
 - (was: not applied / not pushed — done above) (S3 still has the v1 brief
   for 2026-11-05). Relevance of the brief's own picks not labeled yet (precision@5 per week = the next measurement).
+
+## Chat 32 part 4 — dashboard "Weekly brief" tab + prompt v2.2 (2026-11-06)
+
+- Night check: 3/3 Step Functions runs SUCCEEDED (Nov 3–5), `jobpulse-sfn-no-success-26h-dev` OK.
+- **Diagnosis of the 2026-11-05 brief:** 4 of 5 "Worth a look" passages were requirement lists ("What we look for",
+  "What You'll Bring", "Required Skills") — passage retrieval ranks JD sections by similarity to a query that is a list
+  of skills, so the requirements section wins. The brief then "described" jobs as "accounting exposure", "strong Python
+  or Java backend skills". Market line printed the all-sources 7,010 with no rotating-pages caveat (data note 1 dropped).
+- **Passage = "what you'll do" section** — `text_utils.duties_section()`: first duties-style heading ("What you'll do",
+  "The impact you will have", "About the role", "Responsibilities"…) up to the next requirements / benefits / about-us
+  heading; fallback = the old closest chunk. Measured on the 4,618 complete-board JDs of Nov 5: **94% have one**
+  (median 600 chars, 7 under 200). Used by the RAG pick and the match_score pick (so comparing the two picks changes only
+  the jobs). Bug caught by a test: "What You'll Bring" contains "you'll" → stop headings now win over duties words.
+  Retriever logs `passages: {duties_section, closest_chunk}`; on Nov 5: 5 / 0, so **0 chunks embedded** (was 27).
+- **Data notes (prompt `brief-v2.2-rag`):** `skills.one_company_skills` computed in code (top skill with ≥ 80% of its jobs
+  at one company → Nov 5: databricks, lakehouse, unity catalog); prompt rules: lead with complete boards, all_sources
+  numbers called "all sources" + the rotating-pages caveat, name one-company skills. **New check rule:** a count from
+  rotating sources (all_sources totals, Adzuna/Arbeitnow rows, minus any number that is also a complete-board count) on a
+  Markdown line without page/rotat/slice/fetched/market size → violation `caveat N` (repair message explains it).
+  `render()` appends the data notes as a code-built footer (always shown, like the apply table).
+- **Live local runs (week 2026-10-30 → 11-05, local files only — S3 not overwritten):** 6 normal runs, **6/6 faithful on
+  the first attempt**, $0.0049–0.0050 each; injection test: not followed, faithful, $0.0049. Runs 1–3 all wrote
+  "Adzuna and Arbeitnow … show 7010" — the number is in the facts, the label was wrong (7,010 = all sources); the check
+  cannot see a wrong label. Prompt now says all_sources = every source; runs 4–6 all wrote "All sources … 7010" + caveat.
+  Worth-a-look lines now describe the work ("Design, implement and optimize batch processing infrastructure"). Spend ≈ $0.035.
+- **Dashboard tab "Weekly brief"** (first tab): `dashboard/streamlit/brief_store.py` lists `briefs/week_end=*/` (S3
+  `Delimiter="/"`), loads the week's files, summarises `llm_log.json`; app shows a week picker, a pass/fail banner (model,
+  prompt, calls, $, latency), the brief (headings shifted two levels), "How this brief was made", facts.json, and the
+  injection run when present. Reads S3 only — no LLM call, no Athena scan. Placed before Semantic Search because that tab
+  calls `st.stop()` without a Voyage key. Checked in the browser against the real S3 brief of Nov 5.
+- Tests: 36 brief tests (+10); full suite 297 passed, 17 skipped; CI ruff rules pass. Lab `.venv` lacked plotly → installed.
+
+### Not done
+- Not committed / not pushed → Lambda still runs v2.1 until Deploy; first v2.2 run in AWS = Monday 2026-11-09 if pushed first.
+- The check is per line, the prompt says "same sentence" — a caveat in another paragraph would fail the check (strict on purpose).
+- Precision@5 of the picks still unlabeled.

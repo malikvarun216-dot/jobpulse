@@ -47,3 +47,39 @@ def chunk_text(text: str, max_chars: int = 1500, min_chars: int = 300) -> list[s
     if cur.strip():
         chunks.append(cur)
     return chunks or [""]
+
+
+# Chat 32 part 4: the weekly brief's passage = what the person would DO in the role. Ranking chunks by similarity to
+# the profile query (a list of skills) picked the requirements list for 4 of 5 jobs on 2026-11-05.
+# On the 4,618 complete-board JDs of 2026-11-05, 94% have a heading these rules find ("What you'll do" 1,800,
+# "The impact you will have" 626, "What is the role" 379, "About the role", "Responsibilities", ...).
+_DUTIES = re.compile(r"responsibilit|what you('ll| will) (do|work on|be doing)|you will|you'll|in this role|the role"
+                     r"|day[- ]to[- ]day|your impact|the impact you|impact you will|duties|your mission", re.I)
+_NOT_DUTIES = re.compile(r"requirement|qualification|what you('ll| will)? bring|what we('re| are)? look|who you are"
+                         r"|about you|you bring|benefit|perks|we offer|nice to have|bonus|skills|compensation|salary"
+                         r"|\bpay\b|minimum|preferred|experience|about us|equal opportunit|communit|ideal candidate"
+                         r"|where you('ll| will) work|report to|learn|love it|find at|location", re.I)
+
+
+def _is_heading(line: str, pattern: re.Pattern) -> bool:
+    return len(line) < 80 and bool(pattern.search(line))
+
+
+def duties_section(text: str, max_chars: int = 600, min_chars: int = 80) -> str:
+    """The body of the first "what you'll do"-style section of a stripped JD, up to the next requirements /
+    benefits / about-us heading; "" when the JD has none (the caller falls back to another passage)."""
+    lines = (text or "").replace("’", "'").split("\n")      # Greenhouse often uses ’ in "you’ll"
+    for i, line in enumerate(lines):
+        if not _is_heading(line, _DUTIES) or _NOT_DUTIES.search(line):
+            continue
+        body: list[str] = []
+        for nxt in lines[i + 1:]:
+            if _is_heading(nxt, _NOT_DUTIES):          # "What You'll Bring" has "you'll" too: stop words win
+                break
+            body.append(nxt)
+            if sum(map(len, body)) >= max_chars:
+                break
+        out = " ".join(" ".join(body).split())
+        if len(out) >= min_chars:
+            return out[:max_chars]
+    return ""

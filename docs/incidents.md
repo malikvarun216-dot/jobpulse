@@ -616,3 +616,14 @@ Newest first. Chat 23 entries were reconstructed from AWS history (Step Function
   brief-v2.1-rag); runbook invoke uses `--cli-read-timeout 300`.
 - Prevention: tests for the repair message and the prompt rule; the faithfulness check stays strict.
 - Lesson: better retrieval feeds the model better text — including numbers it must not repeat; a repair turn needs to show *where*.
+
+## [2026-11-06] — The brief described jobs by their requirements
+- What happened: "Worth a look" lines said "accounting exposure and deep data modeling", "strong Python or Java backend
+  development skills" — what the ad asks for, not what the job is.
+- What I thought: the prompt wording ("what the role involves") was too loose.
+- Root cause: passage retrieval picked the JD section closest to the profile query — and the query is a list of skills,
+  so the requirements section wins (4 of 5 jobs on 2026-11-05). The model could only describe what it was given.
+- Fix: passage = the "what you'll do" section found by heading rules (94% of JDs), closest chunk only as fallback; a
+  heading test caught "What You'll Bring" being read as a duties heading (it contains "you'll").
+- Prevention: tests on real-shaped JDs; the retriever logs how many passages were duties sections.
+- Lesson: in RAG, check what was retrieved before tuning the prompt — the generator cannot fix the wrong passage.

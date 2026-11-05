@@ -820,3 +820,22 @@
 - **Passage retrieval** (best section per job) instead of the opening 600 chars: the opening is usually company boilerplate.
 - Known weakness: similarity favours a customer-facing Databricks "Forward Deployed Engineer" (match_score 19) whose JD
   is full of data-engineering words. Measure precision@5 of the picks over a few weeks before adding a match_score floor.
+
+## Brief passage = the JD's "what you'll do" section (Chat 32 part 4, 2026-11-06)
+- **What:** `text_utils.duties_section()` — heading rules find the duties section; closest-to-query chunk only as fallback.
+- **Why:** "Worth a look" should say what the person would do. Similarity to a skills-list query picks the requirements
+  section (4 of 5 on Nov 5). Rules found a duties section in 94% of 4,618 JDs; no embedding needed for those (27 → 0 chunks).
+- **Not chosen:** a second "duties" query for passage retrieval (one more embedding call, still fuzzy); sending two
+  passages (longer prompt, more numbers to copy).
+- Trade-off: regex headings are English-only and template-dependent; the fallback keeps the old behaviour.
+
+## Data notes enforced in code, not only asked for (Chat 32 part 4, 2026-11-06)
+- `one_company_skills` decided in code (≥ 80% of a skill's jobs at one company), not by the model reading "close to".
+- A rotating-source count without its caveat on the same line fails the faithfulness check (`caveat N`) → repair turn.
+- The data notes are also printed by code under the brief, so the reader sees them even if the model drops one.
+- Limit: the check sees numbers, not labels — "Adzuna and Arbeitnow show 7010" (an all-sources number) passed; fixed in
+  the prompt and verified on 3 runs, not enforced.
+
+## Dashboard brief tab reads S3, never calls the LLM (Chat 32 part 4, 2026-11-06)
+- One brief per week is written by the Lambda; the dashboard only displays it (and its log and facts). Opening the
+  dashboard costs no tokens and shows exactly the text that passed (or failed) the check.

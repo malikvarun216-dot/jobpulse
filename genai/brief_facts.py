@@ -16,7 +16,7 @@ from datetime import date, timedelta
 
 import pandas as pd
 
-from genai.text_utils import strip_html
+from genai.text_utils import duties_section, strip_html
 
 SILVER = "jobpulse_silver_dev.silver_jobs"
 ENRICH = "jobpulse_gold_dev.enrichment_scores"   # snapshot_date is varchar here, date in silver
@@ -37,9 +37,12 @@ STATIC_NOTES = [
      "not market size. New-job counts and skills use only complete company boards (Greenhouse, Remotive)."),
     ("Skills come from the rule-based extractor (LLM extraction is off), counted per distinct job; "
      "'go' and 'r' are left out because the rules match the English words."),
-    ("A skill whose jobs mostly come from one company (top_company_jobs close to jobs) reflects that "
+    ("Skills in skills.one_company_skills get most of their jobs from one company, so they reflect that "
      "company's job-ad template, not the market."),
 ]
+# A top skill is "one company's template" when that company has at least this share of its jobs
+# (2026-11-05: lakehouse 975 of 982 and unity catalog 975 of 979 jobs were Databricks).
+ONE_COMPANY_SHARE = 0.8
 MIN_SKILL_JOBS = 30      # a skill needs this many jobs this week to be called rising / falling
 # ...and a share move of at least this many percentage points. With ~4,800 jobs a week, a 20% share
 # has a sampling wobble of about ±0.8 pp week to week (2 × standard error), so smaller moves are noise.
@@ -85,8 +88,12 @@ def skill_movers(rows: pd.DataFrame, top_n: int = 5) -> dict:
                  "top_company": top_co["company"].get(s), "top_company_jobs": int(top_co["n"].get(s, 0))}
                 for s, r in df.iterrows()]
 
+    top = rec(wide.sort_values("this", ascending=False).head(10))
     return {"jobs_this_week": int(totals.get("this", 0)), "jobs_prev_week": int(totals.get("prev", 0)),
-            "top": rec(wide.sort_values("this", ascending=False).head(10)),
+            "top": top,
+            # Decided in code, not left to the LLM's reading of "close to" (Chat 32 part 4)
+            "one_company_skills": [{"skill": t["skill"], "company": t["top_company"]} for t in top
+                                   if t["jobs"] and t["top_company_jobs"] >= ONE_COMPANY_SHARE * t["jobs"]],
             "min_move_pp": MIN_MOVE_PP,
             "rising": rec(big[big["change_pp"] >= MIN_MOVE_PP].sort_values("change_pp", ascending=False).head(top_n)),
             "falling": rec(big[big["change_pp"] <= -MIN_MOVE_PP].sort_values("change_pp").head(top_n))}
@@ -139,9 +146,11 @@ def _sql(w: dict[str, date]) -> dict[str, str]:
 
 
 def pick_by_match_score(cand: pd.DataFrame, k: int = TOP_K) -> pd.DataFrame:
-    """The pre-RAG pick: top K by match_score (the same for every query), opening EXCERPT_CHARS of the JD."""
+    """The pre-RAG pick: top K by match_score (the same for every query). Passage = the "what you'll do" section,
+    like the RAG pick (so a comparison of the two picks changes only which jobs), else the opening of the JD."""
     top = cand.sort_values(["match_score", "job_id"], ascending=[False, True], na_position="last").head(k)
-    return top.assign(excerpt=[strip_html(x)[:EXCERPT_CHARS] for x in top["description"]])
+    texts = [strip_html(x) for x in top["description"]]
+    return top.assign(excerpt=[duties_section(t, EXCERPT_CHARS) or t[:EXCERPT_CHARS] for t in texts])
 
 
 def build_facts(run_query: Callable[[str], pd.DataFrame], week_end: date,

@@ -4,8 +4,8 @@ Retrieval for the weekly brief (Chat 32 RAG): which of this week's new jobs go i
 RAG = Retrieve → Augment → Generate:
   1. Retrieve jobs:     embed PROFILE_QUERY (input_type "query") and every candidate job (input_type "document"),
                         rank by cosine similarity, keep the top K.
-  2. Retrieve passages: split each top job's JD into sections (chunk_text) and keep the section closest to the
-                        query — "what the role involves", not the company's boilerplate opening paragraph.
+  2. Pick passages:     each top job's "what you'll do" section (text_utils.duties_section, Chat 32 part 4); for a JD
+                        without one, split it into sections (chunk_text) and keep the one closest to the query.
   3. Augment/generate:  weekly_brief.py puts those passages in <job_postings>; the model cites [job:<id>].
 
 The job recipe is exactly eval method `vector_strip_doc` (HTML stripped, first 4,000 chars, Voyage input_type):
@@ -25,7 +25,7 @@ from collections.abc import Callable
 import numpy as np
 import pandas as pd
 
-from genai.text_utils import chunk_text, strip_html
+from genai.text_utils import chunk_text, duties_section, strip_html
 
 EMBEDDING_MODEL = "voyage-4-lite"      # same model as the nightly vectors and the eval
 VOYAGE_URL = "https://api.voyageai.com/v1/embeddings"
@@ -106,22 +106,28 @@ class Retriever:
         # Python floats rounded after the float32 → float cast: 0.503, not 0.503000020980835 (the checker compares exactly)
         picked = cand.iloc[top].assign(similarity=[round(float(x), 3) for x in sims[top]]).reset_index(drop=True)
 
-        # Passage retrieval: the JD section closest to the query, for the prompt
-        chunks = [chunk_text(strip_html(d)) for d in picked["description"]]
+        # Passage: the JD's "what you'll do" section when it has one (94% do); otherwise the section closest to the
+        # query. Closest-to-query alone picked the requirements list (the query is a list of skills) — Chat 32 part 4.
+        texts = [strip_html(d) for d in picked["description"]]
+        excerpts = [duties_section(t, EXCERPT_CHARS) for t in texts]
+        missing = [i for i, e in enumerate(excerpts) if not e]
+        chunks = [chunk_text(texts[i]) for i in missing]
         flat = [c for cs in chunks for c in cs]
-        cvecs, c_tokens = self.embed(flat, "document")
-        csims = cosine(qvec[0], cvecs)
-        excerpts, pos = [], 0
-        for cs in chunks:
-            best = int(np.argmax(csims[pos:pos + len(cs)]))
-            excerpts.append(" ".join(cs[best].split())[:EXCERPT_CHARS])
-            pos += len(cs)
+        c_tokens = 0
+        if flat:
+            cvecs, c_tokens = self.embed(flat, "document")
+            csims, pos = cosine(qvec[0], cvecs), 0
+            for i, cs in zip(missing, chunks):
+                best = int(np.argmax(csims[pos:pos + len(cs)]))
+                excerpts[i] = " ".join(cs[best].split())[:EXCERPT_CHARS]
+                pos += len(cs)
         picked["excerpt"] = excerpts
 
         by_match = cand.sort_values(["match_score", "job_id"], ascending=[False, True], na_position="last")
         self.log = {"method": self.method, "model": EMBEDDING_MODEL, "query": self.query, "candidates": len(cand),
                     "k": self.k, "retrieved": [{"job_id": j, "similarity": float(s)}
                                                for j, s in zip(picked["job_id"], picked["similarity"])],
+                    "passages": {"duties_section": len(picked) - len(missing), "closest_chunk": len(missing)},
                     "chunks_embedded": len(flat), "embed_tokens": q_tokens + d_tokens + c_tokens,
                     # same K by the old pick (query-independent match_score): how much retrieval changed the list
                     "overlap_with_match_score_top_k": len(set(picked["job_id"]) & set(by_match["job_id"].head(self.k)))}

@@ -10,6 +10,7 @@ import plotly.express as px
 import streamlit as st
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+import brief_store
 from athena_client import run_query
 
 st.set_page_config(page_title="JobPulse", layout="wide", page_icon="📊")
@@ -110,6 +111,16 @@ def load_jobs() -> pd.DataFrame:
     return df
 
 
+@st.cache_data(ttl=600)
+def brief_weeks() -> list:
+    return brief_store.list_weeks(boto3.client("s3", region_name=AWS_REGION), GOLD_BUCKET)
+
+
+@st.cache_data(ttl=600)
+def brief_files(week_end: str) -> dict:
+    return brief_store.load_week(boto3.client("s3", region_name=AWS_REGION), GOLD_BUCKET, week_end)
+
+
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 
 st.sidebar.title("JobPulse")
@@ -117,6 +128,8 @@ st.sidebar.caption("Job market intelligence dashboard")
 
 if st.sidebar.button("Refresh data"):
     load_jobs.clear()
+    brief_weeks.clear()
+    brief_files.clear()
     st.rerun()
 
 df_all = load_jobs()
@@ -155,7 +168,56 @@ st.sidebar.markdown(f"**{len(df)} jobs** shown")
 
 st.title("JobPulse — Job Market Intelligence")
 
-tab_browse, tab_semantic = st.tabs(["Browse Jobs", "Semantic Search"])
+tab_brief, tab_browse, tab_semantic = st.tabs(["Weekly brief", "Browse Jobs", "Semantic Search"])
+
+# ── Tab 0: Weekly brief (Chat 32 part 4) ──────────────────────────────────────
+# Reads what the Monday Lambda wrote to S3 — no LLM call and no Athena scan from the dashboard.
+# Must stay above the Semantic Search tab: that tab calls st.stop() when VOYAGE_API_KEY is missing,
+# which ends the whole script, so any tab written after it would render empty.
+
+with tab_brief:
+    try:
+        weeks = brief_weeks()
+    except Exception as exc:
+        weeks = []
+        st.error(f"Could not list s3://{GOLD_BUCKET}/{brief_store.PREFIX}: {exc}")
+    if not weeks:
+        st.info(f"No briefs in s3://{GOLD_BUCKET}/{brief_store.PREFIX} yet - the Lambda writes one every Monday.")
+    else:
+        week = st.selectbox("Week ending", weeks, index=0)
+        files = brief_files(week)
+        log = files.get("llm_log.json")
+        if log:
+            s = brief_store.run_summary(log)
+            line = (f"{s['model']} · prompt {s['prompt_version']} · {s['attempts']} call(s) · "
+                    f"${s['usd'] or 0:.4f} · {s['latency_s']} s")
+            if s["faithful"]:
+                st.success(f"✅ Passed the faithfulness check — {line}")
+            else:
+                st.error(f"⚠️ Failed the faithfulness check: {'; '.join(s['violations'])} — {line}")
+        if "brief.md" in files:
+            st.markdown(brief_store.for_display(files["brief.md"]))
+        else:
+            st.warning(f"No brief.md for week_end={week}.")
+
+        if log:
+            with st.expander("How this brief was made"):
+                st.markdown(
+                    f"- **Jobs picked by:** `{s['picked_by']}` from {s['candidates']} new complete-board jobs\n"
+                    f"- **Profile query:** {s['query']}\n"
+                    f"- **Same jobs as the match_score top 5:** {s['overlap_with_match_score_top_k']}\n"
+                    f"- **Passages:** {s['passages'] or 'not logged (before prompt v2.2)'}")
+        if "facts.json" in files:
+            with st.expander("Facts the model was given (facts.json)"):
+                st.json(files["facts.json"], expanded=False)
+        inject = files.get("llm_log_inject.json")
+        if inject:
+            with st.expander("Prompt-injection test run"):
+                ok = not inject.get("injection_followed")
+                st.write(("✅ The model ignored the attack text." if ok else "❌ The model followed the attack text.")
+                         + f" Faithful: {inject.get('faithful')}.")
+                if "brief_inject.md" in files:
+                    st.markdown(brief_store.for_display(files["brief_inject.md"]))
 
 # ── Tab 1: Browse Jobs ────────────────────────────────────────────────────────
 

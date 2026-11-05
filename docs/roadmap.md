@@ -28,7 +28,7 @@ Ground rules for every chat:
 | 29 | Vector stores on AWS: pgvector (RDS) vs S3 Vectors, by eval | 🟡 part 1 local (2026-10-29): Docker pgvector loaded + benchmarked vs NumPy · RDS / S3 Vectors after labels |
 | 30 | Embeddings as a real pipeline (incremental, versioned, freshness) | |
 | 31 | Evaluate the LLM extraction (is the LLM worth it?) | |
-| 32 | Grounded generation: weekly AI brief | 🟡 part 1 (2026-11-03): facts + Bedrock (Opus 5.5) + faithfulness check + injection test built, dry run on real data · Claude refused on this account → switched to **Amazon Nova Pro** (Converse API) Nov 5; quotas raised by AWS Support → **first live brief Nov 6: faithful first try, $0.0043; injection test passed (1 run)** · **part 2 (Nov 5): weekly Lambda + EventBridge (Mon 08:30 IST) + error alarm in Terraform, applied; first Lambda run faithful, $0.0043** · **part 3 (Nov 5): RAG — vector retrieval (vector_strip_doc, nDCG 0.268 on 108 labels) + passage per job; live local run faithful, $0.0046** · dashboard tab + data_notes prompt fix next |
+| 32 | Grounded generation: weekly AI brief | 🟡 part 1 (2026-11-03): facts + Bedrock (Opus 5.5) + faithfulness check + injection test built, dry run on real data · Claude refused on this account → switched to **Amazon Nova Pro** (Converse API) Nov 5; quotas raised by AWS Support → **first live brief Nov 6: faithful first try, $0.0043; injection test passed (1 run)** · **part 2 (Nov 5): weekly Lambda + EventBridge (Mon 08:30 IST) + error alarm in Terraform, applied; first Lambda run faithful, $0.0043** · **part 3 (Nov 5): RAG — vector retrieval (vector_strip_doc, nDCG 0.268 on 108 labels) + passage per job; live local run faithful, $0.0046** · **part 4 (Nov 6): dashboard "Weekly brief" tab (reads S3) + prompt v2.2 (duties passage, data-notes caveat checked, one-company skills): 6/6 live runs faithful first try** |
 | 33 | Narrative + resume | |
 
 ---
@@ -235,6 +235,10 @@ Notebook on ~20 real JDs from the exported silver data:
   `briefs/` from S3) → prompt fix (use `data_notes`), measured over several Mondays.
 - **Part 3 (2026-11-05): RAG** — `genai/brief_retrieval.py` (profile query → this week's new jobs → top 5 → best
   passage each). Next measurement: label the 5 picks each Monday (precision@5), compare with the match_score pick.
+- **Part 4 (2026-11-06):** dashboard tab (`dashboard/streamlit/brief_store.py`) + prompt `brief-v2.2-rag`: passage =
+  "what you'll do" section (94% of JDs), `one_company_skills` in code, rotating-source caveat enforced by the check,
+  data notes printed under the brief. 6/6 live runs faithful first try. Next: watch the Monday runs (first-try rate),
+  label the picks (precision@5).
 
 ## Chat 33 — Narrative + resume
 

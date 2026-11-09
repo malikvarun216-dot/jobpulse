@@ -52,7 +52,7 @@ resource "aws_lambda_function" "remotive" {
 }
 
 # Adzuna — paid free-tier API (app_id + app_key from developer.adzuna.com)
-# Covers 12 countries; salary_min/salary_max fields improve match scoring. No Cloudflare on api.adzuna.com.
+# Covers 7 countries (COUNTRIES in ingest_adzuna.py); salary_min/salary_max fields improve match scoring. No Cloudflare on api.adzuna.com.
 data "archive_file" "adzuna_zip" {
   type        = "zip"
   source_file = "${path.module}/../../../ingestion/sources/adzuna/ingest_adzuna.py"
@@ -66,7 +66,7 @@ resource "aws_lambda_function" "adzuna" {
   handler          = "ingest_adzuna.lambda_handler"
   runtime          = "python3.12"
   role             = aws_iam_role.lambda_exec.arn
-  timeout          = 300 # 12 countries × 6 pages × ~0.5s/req ≈ 36s; 300s is safe headroom
+  timeout          = 300 # 7 countries × 6 pages × ~0.5s/req ≈ 21s; 300s is safe headroom
   memory_size      = 256
 
   environment {

@@ -111,6 +111,19 @@ jobs:
             --zip-file fileb://ingest_greenhouse.zip \
             --region ${{ env.AWS_REGION }}
 
+      # Chat 32 part 2. Same layout as terraform brief.tf: genai/ package + athena_client.py at the zip root
+      - name: Deploy weekly brief Lambda
+        run: |
+          mkdir -p build/brief/genai
+          cp genai/__init__.py genai/brief_lambda.py genai/weekly_brief.py genai/brief_facts.py \
+             genai/brief_retrieval.py genai/text_utils.py build/brief/genai/
+          cp dashboard/streamlit/athena_client.py build/brief/
+          (cd build/brief && zip -r ../../weekly_brief.zip .)
+          aws lambda update-function-code \
+            --function-name jobpulse-weekly-brief-${{ env.ENV }} \
+            --zip-file fileb://weekly_brief.zip \
+            --region ${{ env.AWS_REGION }}
+
       - name: Upload Glue scripts
         run: |
           aws s3 cp spark/jobs/bronze_to_silver.py \
@@ -145,6 +158,6 @@ jobs:
 
       - name: Deploy summary
         run: |
-          echo "Lambdas: remotive, arbeitnow, adzuna, greenhouse"
+          echo "Lambdas: remotive, arbeitnow, adzuna, greenhouse, weekly-brief"
           echo "Glue scripts: bronze_to_silver, dbt_runner, ge_runner, enrichment_runner, embedding_runner"
           echo "Packages: genai_package.zip, dbt_project.zip, user_profile.yml"

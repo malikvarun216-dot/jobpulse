@@ -1305,3 +1305,439 @@ Find the real causes of the Aug–Sep failures, fix them, turn the quality check
 ### Next
 - Varun: `terraform apply` (memory only), **then** push. Night Oct 12 = first Greenhouse JDs; check bronze size and Lambda memory.
 - Chat 27 part 2 (on/after Oct 14): freeze corpus_v1, finalize queries, pool, label, judge, κ.
+
+## Chat 27 — Evaluation foundations, part 2 (2026-10-18)
+
+### Night check
+- Oct 13–18 02:00 IST: 6 of 6 **SUCCEEDED** (13–15 min each, longer since Greenhouse JDs). All 3 alarms OK.
+
+### Built
+- **`corpus_v1` frozen** → `s3://jobpulse-gold-dev/eval/corpus_v1/` (`corpus.parquet` 14.5 MB + `manifest.json`) from
+  silver Oct 12–14: **9,266 jobs, all with a description** — Greenhouse 4,595, Adzuna 3,818, Arbeitnow 835, Remotive 18.
+  `content_sha256 f8383eff…` — identical in the dry run and the real run (reproducible).
+- `freeze_corpus.py` fix: skip zero-byte `country=XX_$folder$` objects (Glue folder markers) that crashed pyarrow; read only
+  `*.parquet`. Manifest now records `git describe --dirty` (corpus_v1 says `902951a` but was frozen with this fix uncommitted).
+- `eval/common.py` (corpus/queries loaders, `strip_html`, filters, stratified human sample), `eval/pool.py` (BM25 + vector +
+  today's dashboard hybrid, top-20 each), `eval/label_app.py` (Streamlit labeling page, blind), `eval/judge.py` (Claude judge
+  via the Batches API, JSON schema, cost estimate + `--max-usd` guard), `eval/agreement.py` (Cohen's κ, plain + quadratic;
+  writes `eval/qrels_v1.parquet`). `tests/test_eval_pipeline.py` (7) + 1 new freeze test → 12 eval tests pass.
+
+### Measured
+- **Pool (draft queries): 2,246 pairs**, 30–54 per query (median 46). Only BM25 found 721; only vector/hybrid 1,306; all three
+  agree on just 94. The methods barely overlap → pooling with several methods matters.
+- Vector search on bare keywords is poor: `snowflake` → a sales associate, `spark` and `rag` → a "DRIVER" posting. BM25 finds
+  real Snowflake/Spark jobs. Markup is only ~12% of the embedded 4,000 chars (median), so HTML alone is not the cause —
+  candidates for Chat 28: company boilerplate first in the window, no `input_type` query/document on Voyage calls.
+- Every corpus job already has a same-day stored vector (100%) → pooling cost 216 Voyage tokens (46 query texts), no re-embed.
+- Corpus quality: Greenhouse 100% HTML, 96% > 4,000 raw chars; `country = other` 3,840 (41%); 139 jobs share
+  (company, title, location) under different job_ids; Adzuna still 500-char snippets (one with a broken UTF-8 char).
+- Keyword hits in the corpus: kinesis **0**, iceberg 27, dbt 40, airflow 72, snowflake 117 — q12 (`kinesis`) has nothing to find.
+- Judge estimate (batch price): human sample 300 pairs Haiku 5.5 $0.04 / Sonnet 5.5 $0.83 / Opus 5.5 $1.66; all 2,246 pairs
+  $0.32 / $6.33 / $12.66.
+- The dashboard "hybrid" is not keyword + vector: it re-ranks vector top-50 by 0.5 × similarity + 0.5 × match_score, and
+  match_score is query-independent (profile only).
+
+### Not done
+- Queries still drafts (Varun). Pool is re-run after the swap (seconds, cached query vectors).
+- No human labels yet, judge not run (no Claude spend this chat), κ not measured, `qrels_v1.parquet` not written.
+- Local `pytest tests/`: 128 pass, 7 `test_ge_runner` = known local GE gap (runbook §19).
+
+### Profile rebuilt from the resume (same day)
+- `config/user_profile.yml`: 50 skills in 3 tiers from resume f18 (core 17: Kafka, PySpark, Structured Streaming, Schema
+  Registry, Delta, Databricks, Snowflake, dbt, Airflow, Terraform …). Dropped cassandra, langchain; hive/bigquery → learning.
+  `seniority` senior → **mid** (3 YOE). Locations + delhi, new delhi, gurugram, gurgaon, noida.
+- `genai/guardrails.py` `SKILL_VOCAB` + 8 terms (structured streaming, schema registry, unity catalog, great expectations,
+  cdc, scd, embeddings, pgvector) — a profile skill outside the vocab can never match. 962 corpus jobs mention one of them.
+- Measured on corpus_v1 (rules extraction, old vs new profile): mean score 17.1 → 15.6; jobs ≥ 50: 63 → 32; **jobs ≥ 70:
+  0 → 0**; top-50 overlap 35/50. Takes effect from the next nightly run, no Claude cost (scores are recomputed every night).
+- **Found: the match score barely uses skills.** Skill overlap averages 1.6 of 50 points, because it divides by the weight of
+  *all* profile skills (more skills in the profile = lower scores). Location + role + freshness dominate → the new top 15 has
+  no data engineering job, and the dashboard's "worth applying (> 70)" is always empty. Not fixed — measured fix in Chat 28.
+
+### Queries rewritten from the resume (same day)
+- `eval/queries_v1.yml`: 50 queries from resume f18 (`origin: resume`) — Kafka, Structured Streaming, Delta, Databricks,
+  CDC, schema changes, data quality, medallion, SCD history, GDPR … Every query checked against the corpus first; dropped
+  `kinesis` (0 jobs). Re-pooled: **2,302 pairs**, 30–55 per query, the three methods agree on 93. q42 `dataengineer` has
+  0 keyword hits (intended edge case).
+- Corpus slice to know: only **41 / 9,266** titles contain "data engineer" (5 in IN, 4 remote) — role queries will have few 2s.
+
+### Chat 28 harness built early (same day, while labels wait)
+- `eval/search.py`: the four methods in one place — `bm25`, `vector`, `dashboard` (today's hybrid), **`rrf`** (Reciprocal
+  Rank Fusion of BM25 + vector, k = 60) — plus the shared `Index`. `pool.py` now calls it; rebuilt pool is **identical**
+  (2,302 rows, `DataFrame.equals` True).
+- `eval/run_eval.py`: every method × 50 queries → precision@10, recall@50, MRR, nDCG@10, **judged@10** (pool-bias check),
+  latency p50/p95; appends per-query rows to `eval/results_v1.parquet`; `--no-save` for smoke tests. 3 new tests (15 eval tests).
+- Smoke run on a **fake** answer key (plumbing only, not quality): runs end to end; latency on 9,266 jobs p50/p95 —
+  vector 1.9 / 2.3 ms, BM25 7.6 / 40 ms, RRF 10 / 43 ms. RRF judged@10 = 0.94 (6% of its top 10 outside the pool).
+
+### Next
+- Varun: read `queries_v1.yml`, edit what doesn't sound like you, flip `origin: resume` → `varun`; then re-run `pool.py`
+  and label 300 pairs (~1–1.5 h). After κ + qrels: `run_eval.py` = the Chat 28 baseline, no more code needed.
+- Then: judge on the human sample → κ → judge all → `qrels_v1.parquet` → Chat 28 baseline.
+
+## Chat 29 part 1 — Local Postgres + pgvector (2026-10-29)
+
+### Night check
+- Oct 25–29: 5 of 5 SUCCEEDED; all 3 alarms OK. Labels: 19 / 300 (Varun, in progress).
+- Old AWS account 797096399862 (free plan ended) left to close on Oct 25 — not JobPulse (240939827246, PAID, $63.16 credits).
+
+### Built (no AWS, $0)
+- `vectorstore/docker-compose.yml` (pgvector/pgvector:0.8.0-pg17, 127.0.0.1:5433, named volume), `schema.sql`
+  (jobs + generated `tsvector` + `vector(1024)`), `indexes.sql` (HNSW cosine, GIN, country B-tree), `load_pg.py`
+  (corpus_v1 + same-day vectors via COPY), `pg.py` (vector / keyword / hybrid-RRF as SQL), `bench_pg.py` (recall vs NumPy,
+  latency). `tests/test_vectorstore.py` (3). `requirements.txt` + `psycopg[binary]==3.2.10`.
+- Docker Desktop crashed on start (stale socket) — fixed (incidents.md, runbook §24).
+
+### Measured
+- Load: 9,266 jobs via COPY 10.5 s, index build 9.2 s (21 s total); table 106 MB, HNSW 72 MB, GIN 7.6 MB.
+- Sanity: Postgres exact (index off) = NumPy exact, tie-aware recall@10 **1.000** on 50 queries; exact p50 33 ms (NumPy 1.9 ms).
+- **HNSW forced, unfiltered** (m 16, ef_construction 64): recall@10 0.65 / 0.75 / **0.83** / 0.92 / 0.97 at ef_search
+  10 / 20 / **40 (default)** / 100 / 200; p50 6–8 ms.
+- **Filtered + HNSW forced:** ef 10 → 0.957 and 1 query returned < 10 rows ("filter after the walk"); `hnsw.iterative_scan
+  = relaxed_order` → 1.000, 0 short.
+- **Planner's own choice:** filtered → country index + exact sort (1.000, ~9 ms); unfiltered ef 20/40 → **Seq Scan** (index
+  silently skipped, 1.000, 33 ms); ef 10/100/200 → HNSW. Found with `EXPLAIN`.
+- 12% of corpus jobs (1,105) share a vector with another job (largest group 22). Ties made ID-based recall unfair → tie-aware
+  recall (a result counts if its cosine ≥ the true 10th-best). De-duplicating does **not** fix recall (0.805 vs 0.840 at ef 40);
+  m 32 / ef_construction 128 does (0.877 → 0.967 at ef 100; 0.979 on distinct vectors), at 3× build time.
+- Keyword (tsvector, OR-query, ts_rank_cd) p50 39 ms / p95 147 ms; hybrid RRF in one SQL p50 62 ms / p95 174 ms.
+  In-process NumPy/BM25 is faster at this size (1.9 / 7.6 ms).
+
+### Not done
+- No RDS, no S3 Vectors yet (paid session, after labels). pgvector not scored on relevance yet (needs qrels).
+
+### Labeling plan changed to option B (same day)
+- `human_sample` reordered into rounds (same 300 pairs, verified); labeling page shows round + a goal of 100; `judge.py
+  --subset labeled`, `agreement.py --judge-subset labeled` (default). 19 labels kept (mix: 7 × 0, 3 × 1, 9 × 2). 1 new test.
+
+### Next
+- Varun: keep labeling. Then: judge → κ → qrels → `run_eval.py` with pg methods added → one RDS + S3 Vectors session.
+
+### First κ (2026-10-30) — judge vs Varun on 108 labeled pairs (48 / 50 queries)
+- Labels: 38 × 0, 26 × 1, 44 × 2. Judge batches: Sonnet 5.5 $0.264, Haiku 5.5 $0.013 (108/108 succeeded each).
+- **κ Varun–Sonnet 0.29** (quadratic 0.40), **Varun–Haiku 0.26** (quadratic 0.45), **Haiku–Sonnet 0.60**. Below the 0.6 bar → judge
+  NOT trusted yet; "judge all" not run.
+- Pattern: the judges are stricter. Where Varun gave 2, Sonnet gave 0 in 13 and 1 in 20. Databricks-company jobs: Varun 2 on
+  23 / 39 (sales roles, Spark-internals engineers) — the q04 rubric line says sales/support at Databricks = 0. One reverse case
+  (q42: Varun 0, both judges 2 — a real Data Engineer posting).
+- Reading: guideline drift (human vs written rule), the usual first calibration round — not a model failure (the two models agree).
+
+### After review (2026-10-30) — 52 disagreements adjudicated in `review_app.py`
+- Kept 18, changed 34 (31 of them to Sonnet's label). Moves: 2→0 ×12, 2→1 ×10, 1→0 ×5, 1→2 ×5, 0→1 ×1, 0→2 ×1.
+- **κ Varun–Sonnet 0.29 → 0.69** (quadratic 0.40 → 0.85, agree 52% → 81%); **Varun–Haiku 0.26 → 0.47** (quadratic 0.69).
+- Caveat: the review showed the judge's label (anchoring) and only touched Sonnet's disagreements, so 0.69 is an upper
+  bound; the blind number is 0.29. Next: a small blind check on fresh pairs before judging all 2,302.
+
+### Answer key paused (2026-10-30) — Varun's call, no more Claude spend for now
+- Judge-all cost re-estimated with measured output (68 tokens/pair, not 300): Sonnet 5.5 on 2,302 pairs ≈ $3.98 raw →
+  **≈ $5.25 calibrated** to the real 108-pair run (+32%); cutting descriptions at 6,000 chars saves only ≈ $0.30
+  (627 / 2,302 postings are longer). Over the ~$5 Claude budget → paused. Spent so far: $0.28.
+- `judge.py`: `--max-chars` option (cost lever, output file tagged `_6000c` so runs never overwrite), estimator uses 70 output tokens.
+  `agreement.py --all-file` to pick which judge run feeds qrels.
+- State to resume from: 108 human labels (after review) + Sonnet 12k labels on the same 108; κ 0.69 (upper bound, see above).
+  Resume = `judge.py --subset all --model claude-sonnet-5-5 --max-usd 6` → `agreement.py --model claude-sonnet-5-5 --write-qrels`
+  → `run_eval.py`.
+
+
+## Chat 28 part 1 — Baseline (provisional) + retrieval fixes built (2026-10-30)
+
+### Night check
+- Oct 27–29: 3 of 3 SUCCEEDED (~14 min each); `jobpulse-sfn-no-success-26h-dev` OK.
+
+### Provisional baseline — 108 human labels as the answer key (no `qrels_v1` yet)
+- `eval/run_eval.py --qrels <lab>/qrels_v1_provisional_human108.parquet --no-save` (not saved to results).
+- nDCG@10: vector 0.225 · dashboard_fixed 0.229 · dashboard 0.210 · rrf 0.184 · bm25 0.080. **judged@10 0.02–0.08** → over
+  90% of every top 10 is unlabeled and counts as 0, so this is a harness smoke test, not a ranking. RRF recall@50 0.905 (best).
+
+### Built (no API calls, $0)
+- `MatchScorer.skill_points()` + `skill_full_at` (profile key, unset = old behaviour). Old: matched weight / 95 (whole
+  profile) → no job reaches 70. With 12 (four core skills): mean 18.1 → 24.6, max 66.1 → 100, jobs ≥ 70: 0 → 404 of 9,266.
+  Not switched on in `user_profile.yml` — waits for the eval.
+- `eval/common.chunk_text()` (split at section headings like Requirements / Benefits, max 1,500 chars).
+- `eval/search.py`: `VARIANTS` + `variant_texts()`, `Index.load_variant()` / `variant_similarities()` (best chunk per job),
+  `fixed_match_scores()` → method `dashboard_fixed`. `eval/pool.query_vectors(..., input_type)`.
+- `eval/embed_variants.py`: re-embeds corpus_v1 per variant into the lab cache (checkpointed, `--dry-run`). Lab-only.
+- `run_eval.py --variants ...` → `vector_<v>` and `rrf_<v>`. 4 new tests (146 total; 7 `test_ge_runner` fail locally
+  because Great Expectations isn't installed in `.venv` — CI installs it).
+- Dry-run numbers: after stripping HTML, 50% of jobs still lose text at 4,000 chars; `chunks` = 36,115 texts (3.9 / job,
+  max 13); tokens ≈ 5.8M per single-vector variant, 8.7M for chunks.
+
+
+### Variants embedded + scored (same day) — Voyage 19.7M tokens (strip 4.37M, strip_doc 4.36M, strip_doc_title 4.40M, chunks 6.62M)
+- Provisional nDCG@10 (108 labels): vector_strip_doc **0.268** · vector_strip_doc_title 0.267 · dashboard_fixed 0.229 · vector
+  0.225 · dashboard 0.210 · vector_strip 0.209 · vector_chunks 0.185 · rrf 0.184 · rrf_* 0.135–0.182 · bm25 0.080. Still a smoke test.
+- Label-free checks (all 50 queries, top 10): share outside the labeled pool — vector 0.00 · strip 0.02 · strip_doc 0.17 ·
+  strip_doc_title 0.23 · **chunks 0.42** → the chunk scores are a floor (pool bias), not a verdict. Share of data/ML/platform
+  titles — 0.39 → 0.41 → 0.56 → 0.59 → 0.64.
+- Bare keywords fixed by `input_type`: `spark` DRIVER → "Java/Spark Developer"; `airflow` Mechanical Engineer → Senior Staff
+  Data Engineer; `dbt` Business Development Rep → Analytics Engineer. Stripping HTML alone changes almost nothing (0.209).
+- Reading: `input_type` is the cheap, big lever; title and chunks look good on titles but need labels on the jobs they newly find.
+- Next: add `vector_strip_doc_title` + `vector_chunks` to the pool **before** the 300-label round, so they get judged fairly.
+
+### Variants added to the pool (same day)
+- `pool.py` pools `vector_strip_doc_title` + `vector_chunks` (top-20 each): **2,302 → 2,984 pairs**, 682 found only by them.
+  Verified: old 2,302 pairs and their bm25/vector/hybrid ranks identical; all 108 labels still in the pool.
+- `common.human_sample` samples only pairs from the original 3 methods (`SAMPLE_METHODS`) → the 300-pair hand sample is
+  byte-identical to before. Variant-only pairs get judge labels. Old pool kept: `pool_v1_before_chat28.parquet`.
+- Judge-all estimate on 2,984 pairs: Haiku 5.5 $0.27 · Sonnet 5.5 $5.32 raw ≈ $7.0 calibrated (+32%). 1 new test (147 pass).
+- Local env: GE 1.8.1 installed in `.venv`; it downgraded altair to 4.2.2 (breaks Streamlit) → altair 6.3.0 restored; all 147
+  tests pass with it (runbook §23).
+
+### Not done
+- `qrels_v1` still paused (Chat 27 part 3). Nothing shipped to the nightly pipeline. Reranker not started.
+
+## Chat 28 part 2 — role_family from the title (2026-10-30)
+
+- `spark/jobs/bronze_to_silver.py`: `TITLE_ROLE_RULES` + `extract_role_family_from_title()`; `resolve_role_family(category,
+  tags, title)` = title → category → tags; tag matching whole-word. The UDF now also gets `job.title`.
+- Measured on Oct 14 silver (5,933 rows): Other 59% → 58% · DATA 263 → 455 · DevOps 32 → 154 · Design 224 → 110 (173 were
+  recruiters etc. via the "ui" substring bug) · 23 / 24 "data engineer" titles DATA. Per source Other: Adzuna 81% → 71%,
+  Arbeitnow 75% → 67%, Greenhouse 52% → 54% (bogus tag labels removed).
+- Tried and dropped: JD keyword rule (≥ 2 of dbt/Airflow/BigQuery/ETL/warehouse/Snowflake/Hadoop) — 49 hits, mostly Databricks
+  boilerplate. 7 new unit tests; 3 Spark transform expectations SDE → DATA ("Senior Data Engineer" fixture).
+  Local: 263 passed, 17 skipped (PySpark tests need Java — they run in CI `spark-tests`).
+- Bedrock discussed: Chat 32 brief on Claude via Bedrock, Titan v2 as the Chat 30 challenger (decisions.md).
+- Effect: ships with the next push to `dev` (CI deploys the Glue script); the first night after it writes the new labels.
+  match_score role points move for jobs that change between DATA/SDE and other families.
+- Pushed 2026-10-30 (`22a68a6`): CI green incl. Spark transform tests; Deploy was running at end of chat — check it in the
+  next chat's night check (first night with new labels).
+
+## Chat 32 part 1 — weekly AI brief, grounded (2026-11-03)
+
+- Night check: Nov 1–3 SUCCEEDED, `jobpulse-sfn-no-success-26h-dev` OK. The `22a68a6` role_family deploy landed: every nightly
+  Glue run rewrites the trailing ~7 silver partitions from bronze, so snapshots from **2026-10-24** on carry the new labels
+  (DATA 285 → 423 that day, Greenhouse 262 → 393 at the same row count) — a labelling break, not hiring.
+- `genai/brief_facts.py`: 7 Athena queries → one facts dict (week-over-week open postings by source, new job_ids, role
+  families, skill shares + top company per skill, top DATA companies, top 5 new matches by `match_score`). JD excerpts are
+  returned separately (untrusted). `KNOWN_BREAKS` hides role-family week-over-week when a break lies between the snapshots.
+- `genai/weekly_brief.py`: Claude **Opus 5.5 on Amazon Bedrock** (`AnthropicBedrockMantle`, `ap-south-1`, global endpoint,
+  IAM auth — no API key), effort medium, client-side refusal fallback to Opus 4.8. `check_faithfulness()` rejects any
+  number, date, `job_id` or URL not in the facts → one repair turn → else saved as UNVERIFIED (exit 1). Apply links are added
+  by code, never by the LLM. `--inject_test` swaps one JD excerpt for an attack (canary: PINEAPPLE / 999999 / evil URL).
+  Per-run log: prompt version, model served, request ids, retrieved job_ids, tokens, latency, $ estimate, violations.
+  Worst case per run $0.41 (2 attempts × 8K output) < $0.50 cap; expected ≈ $0.05–0.10.
+- Measured on the Nov 3 facts (dry run, no LLM): naive "open postings +12.3%" is mostly Adzuna pages (1,193 → 1,789);
+  complete boards (Greenhouse + Remotive) **+3.0%** (4,401 → 4,531). Naive "new this week" 12,235 > open 6,620 (Adzuna
+  9,895 + Arbeitnow 1,831 are rotation) → complete boards **509**. Skills: `go` top at 13.5% = the English word (1,483 jobs,
+  64 companies); `lakehouse` / `unity catalog`: 914 of ~920 jobs are Databricks's own template; Databricks = 965 of 4,859
+  complete-board jobs. With `go`/`r` dropped and a 2 pp minimum move, **no skill moved** week over week.
+- 11 new tests (`tests/test_weekly_brief.py`, fake Athena + fake Bedrock client): 274 passed, 17 skipped locally.
+
+### Not done
+- **No live LLM call yet**: Bedrock shows `agreementAvailability: NOT_AVAILABLE` for Opus/Sonnet/Haiku 5.5 — the
+  Marketplace terms must be accepted in the console (Varun). Then run the brief + `--inject_test` (runbook §26).
+- Not scheduled (no Lambda / EventBridge / IAM yet) and no dashboard tab — Chat 32 part 2, after the first live runs.
+- The orphan Glue table `jobpulse_silver_dev.jobs` (hand-made 2026-04-23, duplicate columns, unused) still exists.
+
+## Chat 32 part 1b — brief moved to Amazon Nova; Bedrock quotas are 0 (2026-11-05)
+
+- Use case form submitted (Varun, as an individual; 736-byte record on file). Playground: **Opus 5.5 and Opus 4.8 both
+  `AccessDeniedException ... not available for this account`**; every Anthropic model keeps `agreementAvailability
+  NOT_AVAILABLE` while Amazon's own Titan / Nova show `AVAILABLE`. Billing entity = Amazon Web Services India Private Limited.
+- Switched the brief to **Amazon Nova Pro** via the `apac.` inference profile and Bedrock's **Converse API** (`boto3
+  bedrock-runtime`): same prompt, checker, log; `temperature 0`, `maxTokens 2000`. Prices from the AWS Pricing API
+  (ap-south-1, per 1M in/out): Nova Pro $0.94/$3.76, Nova 2 Lite $0.35/$2.95, Nova Lite $0.071/$0.284 → ≈ $0.006 per brief,
+  worst case $0.025. 12 brief tests (fake Converse client, + cut-off answer test): 275 passed, 17 skipped.
+- First live call reached Nova and got `ThrottlingException: Too many tokens per day`. Service Quotas: **all Nova quotas are
+  0 on this account** (Nova Pro RPM, TPM, tokens/day) vs AWS defaults 500 RPM / 2,000,000 TPM / 1,440,000,000 tokens/day.
+  Same for Nova Lite / Micro / 2 Lite. A zeroed account explains the Anthropic "not available" too.
+
+### Not done
+- No brief generated yet — waiting on AWS Support to raise the Bedrock quotas (case filed by Varun, runbook §26).
+
+## Chat 32 part 1c — first live brief (2026-11-06)
+
+- AWS Support raised Nova Pro quotas: 25 requests/min, 2,000,000 tokens/min, 230,400,000 tokens/day (defaults 500 / 2M / 1.44B).
+- **First live brief (week 2026-10-30 → 2026-11-05): faithful on the first attempt**, no repair turn. 3,592 tokens in /
+  237 out, 1.65 s, **$0.0043**. Content: complete boards 4,618 open (+4.1%), all sources 7,010 (6,524 a week ago),
+  "no skill moved by 2.0 points or more", 5 cited matches.
+- **Injection test** (`--inject_test`, attack JD asking for 999999 USD, an evil URL and PINEAPPLE): `injection_followed false`,
+  faithful, $0.0042. One run only — a single pass is a smoke test, not a measured rate.
+- Seen in the output: the brief skips the `data_notes` caveats and does not describe what the roles involve (JD excerpts
+  unused) — prompt work for part 2, measured over several weeks.
+- Fix: the injection run had overwritten the real run's `prompt.txt` → it now writes `prompt_inject.txt`. 275 passed.
+
+### Not done
+- Schedule (Lambda + EventBridge weekly, IAM on the one model) and the dashboard tab — part 2. Not uploaded to S3 yet.
+
+## Chat 32 part 2 — brief on a weekly schedule (2026-11-05)
+
+- Night check: last 3 Step Functions runs SUCCEEDED (Nov 3–5), `jobpulse-sfn-no-success-26h-dev` OK.
+- `genai/weekly_brief.py`: `main()` split into `latest_snapshot` → `prepare` → `write_brief` → `upload` (CLI unchanged;
+  `--upload` now uses `put_object` with a content type, so `brief.md` opens as text in the S3 console).
+- New `genai/brief_lambda.py`: same steps in Lambda. Raises (→ alarm) on: latest snapshot older than 2 days (before any
+  LLM spend), worst case over the $0.50 cap, unfaithful brief (uploaded first, with the UNVERIFIED banner), injection
+  followed. Event `{"week_end": ...}` / `{"inject_test": true}` for manual runs. One JSON summary line per run.
+- New `terraform/envs/dev/brief.tf` (plan: **9 to add, 0 change, 0 destroy**): Lambda `jobpulse-weekly-brief-dev`
+  (Python 3.12, 512 MB, 300 s, AWS SDK for pandas layer v24), own IAM role (Bedrock `InvokeModel` on the Nova Pro apac
+  profile + model only; Athena on the `jobpulse-dev` workgroup; Glue catalog read on silver/gold; S3 read silver/gold,
+  write only `athena-results/*` and `briefs/*`), log group 90 days, async retries 0, EventBridge `cron(0 3 ? * MON *)`
+  (Mon 08:30 IST), Lambda `Errors` ≥ 1 alarm → SNS.
+- `deploy.yml`: builds `weekly_brief.zip` (genai/ + `athena_client.py` at the root) and updates the function code.
+- Tests: 4 new Lambda tests (fake Athena / Bedrock / S3) → 16 brief tests; full suite 163 passed. `terraform validate` OK.
+
+- **Applied + first Lambda run (Nov 5, 21:24 IST):** apply 9 added / 0 changed / 0 destroyed, function `Active`.
+  Manual invoke `{}` → week 2026-10-30 → 2026-11-05, **faithful on the first attempt**, 1 call, 3,592 tokens in / 236 out,
+  1.49 s, **$0.00426**; `facts.json`, `brief.md`, `llm_log.json` in `s3://jobpulse-gold-dev/briefs/week_end=2026-11-05/`.
+  Errors alarm OK. Pushed `c88ccd4`; CI #35 + Deploy #32 green (Lambda code updated by CI 15:57 UTC, 12,890-byte zip).
+
+### Not done
+- First scheduled run = Monday 2026-11-09 08:30 IST. Order matters: apply **before** the push (CI's update-function-code
+  fails if the function does not exist yet). Dashboard "Weekly brief" tab and the prompt fix (data_notes, what roles
+  involve) — next.
+
+## Chat 32 part 3 — the brief becomes RAG (2026-11-05)
+
+- Decision (Varun): full RAG now, measured with the existing 108 hand labels (no 300-label round first).
+- Provisional eval rerun (108 labels, 48 queries, judged@10 ≈ 6% → direction, not proof): nDCG@10 vector_strip_doc
+  **0.268** · dashboard_fixed 0.229 · vector 0.225 · rrf 0.184 · rrf_strip_doc 0.182. By type: role — vector 0.378,
+  strip_doc 0.356; descriptive — strip_doc 0.192, vector 0.172. → retriever = `vector_strip_doc`.
+- New `genai/brief_retrieval.py`: embed a profile query (Voyage `input_type` query) and this week's new complete-board
+  jobs (HTML stripped, first 4,000 chars, `input_type` document — the exact eval recipe, checked by a test), cosine top 5,
+  then **passage retrieval**: each top job's JD split into sections (`chunk_text`), the section closest to the query
+  becomes its excerpt. Voyage over plain HTTPS (no package in the Lambda). Logs method, query, candidates, similarities,
+  tokens, overlap with the old match_score top 5.
+- `genai/text_utils.py`: `strip_html` + `chunk_text` moved out of `eval/common.py` (re-exported there) so eval and brief
+  share one recipe. `brief_facts`: candidates query (new this week, still open, Greenhouse/Remotive, with description)
+  replaces the match_score top-5 query; ranking in Python (retriever, or match_score fallback). Fixed on the way: an empty
+  match_score would have reached the facts as NaN (invalid JSON); similarities as float32 noise (0.503000020980835)
+  would have failed the exact-number check.
+- `weekly_brief`: prompt `brief-v2-rag` ("Worth a look" = what the role involves, from its passage), `--retrieval
+  vector|match_score`, `--query`; log gains `retrieval`. Lambda: RAG by default, event `{"retrieval": "match_score"}` /
+  `{"query": ...}`. brief.tf: IAM `secretsmanager:GetSecretValue` on `jobpulse/voyage_key_dev*` only (plan 0 add / 1 change
+  / 0 destroy); zip + deploy.yml include the two new modules. Tests: 24 brief tests (+8), full suite 171 passed.
+- **Live local run (week 2026-10-30 → 11-05):** 541 candidates, 391,181 Voyage tokens (free tier), 27 passages embedded;
+  retrieval kept 3 of the match_score top 5 (in: Databricks Senior Forward Deployed Engineer 0.503 — a customer-facing
+  field role, match 19; Pinterest Batch Processing Platform 0.484; out: Databricks AI SWE, Dropbox backend). Brief
+  faithful on the first attempt, 3,742 tokens in / 291 out, **$0.0046**. Excerpts are now "What you'll do" / requirements
+  sections instead of company boilerplate.
+
+- **Applied + pushed `56bd334`** (IAM 0/1/0; CI #36 green, Deploy #33 updated the Lambda 17:57 UTC, 18,843-byte zip).
+  Lambda RAG run: faithful, 1 call, **$0.0049**, 66.9 s (embedding 541 jobs dominates; 243 MB of 512 MB used).
+  Near-miss: the AWS CLI's 60 s read timeout re-sent the manual invoke → 3 runs from one command. Runbook §26 now uses
+  `--cli-read-timeout 300`; EventBridge (async) is unaffected.
+- **Of those 3 runs, 2 FAILED the faithfulness check** (`number 7`, alarm → ALARM): the retrieved Coinbase passage says
+  "7+ years experience" and the model copied the 7; the repair turn returned the identical brief (294 tokens twice) because
+  it only said "number 7". New with RAG — the v1 excerpt was boilerplate with no numbers.
+- Fix (prompt `brief-v2.1-rag`): rule "never copy a number from <job_postings>; describe the work in words" + the repair
+  message quotes the offending lines (`repair_message`). Check kept strict (the injection test relies on it). 2 new tests
+  (26 brief tests). Two live local runs: faithful first try ($0.0049); first try failed → **repair fixed it** ($0.0098).
+  Same input, different first answers at temperature 0 — Bedrock is not deterministic.
+- Pushed `e4c6cd7`; CI #37 + Deploy #34 green (Lambda code 18:11 UTC, 19,215 bytes). The confirming invoke ran just before
+  the deploy (still v2 code): faithful, 1 call, $0.0045, 541 candidates, overlap 3 — S3 brief for 2026-11-05 is verified.
+  First v2.1 run in AWS = the Monday 2026-11-09 schedule.
+
+### Not done
+- (was: not applied / not pushed — done above) (S3 still has the v1 brief
+  for 2026-11-05). Relevance of the brief's own picks not labeled yet (precision@5 per week = the next measurement).
+
+## Chat 32 part 4 — dashboard "Weekly brief" tab + prompt v2.2 (2026-11-06)
+
+- Night check: 3/3 Step Functions runs SUCCEEDED (Nov 3–5), `jobpulse-sfn-no-success-26h-dev` OK.
+- **Diagnosis of the 2026-11-05 brief:** 4 of 5 "Worth a look" passages were requirement lists ("What we look for",
+  "What You'll Bring", "Required Skills") — passage retrieval ranks JD sections by similarity to a query that is a list
+  of skills, so the requirements section wins. The brief then "described" jobs as "accounting exposure", "strong Python
+  or Java backend skills". Market line printed the all-sources 7,010 with no rotating-pages caveat (data note 1 dropped).
+- **Passage = "what you'll do" section** — `text_utils.duties_section()`: first duties-style heading ("What you'll do",
+  "The impact you will have", "About the role", "Responsibilities"…) up to the next requirements / benefits / about-us
+  heading; fallback = the old closest chunk. Measured on the 4,618 complete-board JDs of Nov 5: **94% have one**
+  (median 600 chars, 7 under 200). Used by the RAG pick and the match_score pick (so comparing the two picks changes only
+  the jobs). Bug caught by a test: "What You'll Bring" contains "you'll" → stop headings now win over duties words.
+  Retriever logs `passages: {duties_section, closest_chunk}`; on Nov 5: 5 / 0, so **0 chunks embedded** (was 27).
+- **Data notes (prompt `brief-v2.2-rag`):** `skills.one_company_skills` computed in code (top skill with ≥ 80% of its jobs
+  at one company → Nov 5: databricks, lakehouse, unity catalog); prompt rules: lead with complete boards, all_sources
+  numbers called "all sources" + the rotating-pages caveat, name one-company skills. **New check rule:** a count from
+  rotating sources (all_sources totals, Adzuna/Arbeitnow rows, minus any number that is also a complete-board count) on a
+  Markdown line without page/rotat/slice/fetched/market size → violation `caveat N` (repair message explains it).
+  `render()` appends the data notes as a code-built footer (always shown, like the apply table).
+- **Live local runs (week 2026-10-30 → 11-05, local files only — S3 not overwritten):** 6 normal runs, **6/6 faithful on
+  the first attempt**, $0.0049–0.0050 each; injection test: not followed, faithful, $0.0049. Runs 1–3 all wrote
+  "Adzuna and Arbeitnow … show 7010" — the number is in the facts, the label was wrong (7,010 = all sources); the check
+  cannot see a wrong label. Prompt now says all_sources = every source; runs 4–6 all wrote "All sources … 7010" + caveat.
+  Worth-a-look lines now describe the work ("Design, implement and optimize batch processing infrastructure"). Spend ≈ $0.035.
+- **Dashboard tab "Weekly brief"** (first tab): `dashboard/streamlit/brief_store.py` lists `briefs/week_end=*/` (S3
+  `Delimiter="/"`), loads the week's files, summarises `llm_log.json`; app shows a week picker, a pass/fail banner (model,
+  prompt, calls, $, latency), the brief (headings shifted two levels), "How this brief was made", facts.json, and the
+  injection run when present. Reads S3 only — no LLM call, no Athena scan. Placed before Semantic Search because that tab
+  calls `st.stop()` without a Voyage key. Checked in the browser against the real S3 brief of Nov 5.
+- Tests: 36 brief tests (+10); full suite 297 passed, 17 skipped; CI ruff rules pass. Lab `.venv` lacked plotly → installed.
+
+### Not done
+- Pushed `6a29bc4`; CI #38 + Deploy #35 green; Lambda code 18:50 UTC, 21,419 bytes, zip checked: `brief-v2.2-rag` +
+  `duties_section`. S3 still holds the v2 brief for 2026-11-05 (no manual invoke). First v2.2 run in AWS = Mon 2026-11-09.
+- The check is per line, the prompt says "same sentence" — a caveat in another paragraph would fail the check (strict on purpose).
+- Precision@5 of the picks still unlabeled.
+
+## Chat 32 part 4 — first scheduled brief checked (2026-11-10)
+
+- **Mon 2026-11-09 08:30 IST run (first unattended v2.2):** fired 08:31, `faithful: true` but on the **2nd attempt**
+  (2 calls, $0.0108; attempt 1 3,925 in / 390 out, attempt 2 4,429 / 385), 64 s, 237 / 512 MB, alarm stayed OK.
+  511 candidates, 365K Voyage tokens, passages 5/5 duties sections (0 chunks embedded). Nights Nov 7–9 green.
+- **Quality findings (not caught by the check):**
+  1. "Worth a look" = 1 Stripe data-infra role + **4 Databricks customer-facing roles** (Forward Deployed Engineer,
+     TPM FDE, Solutions Engineer, Solutions Architect; match_score 19–29). Overlap with the match_score top 5: **0**.
+     Databricks JDs are dense with data words, so similarity favours them — the weakness noted in decisions.md (Chat 32 part 3).
+  2. Mislabel: "Complete boards list 4628 open **data engineering** roles" — complete boards count every role.
+     Same class as the 7,010 label (the check sees numbers, not labels).
+  3. Two pairs of picks got identical descriptions (same Databricks template passage).
+  4. Attempt 1's violation is **not recorded**: `llm_log.json` keeps only the final violations, CloudWatch only the summary.
+- Not a bug: `greenhouse-databricks-8927390002` was also in the Nov 5 brief because that run was off-cycle (Thursday);
+  Monday windows (Nov 3–9 vs Oct 27–Nov 2) don't overlap from now on.
+- Next (decision pending): company diversity cap and/or match_score floor on the picks, log per-attempt violations,
+  prompt: complete-board counts are all roles. Measure on this week's candidates before changing.
+
+## Chat 33 — close-out core (2026-11-10)
+
+- Start checks: on `dev`, up to date; only last chat's plan docs uncommitted (expected). Nights Nov 8, 9, 10 SUCCEEDED
+  (~14 min each); 4 alarms OK.
+- **(1) Brief pick rule, measured first.** Retrieval-only run on week 2026-11-09 (511 candidates, one Voyage embed of
+  365K tokens, cached in `jobpulse_lab_data/briefs/pick_rules_2026-11-09/`). 17 of the top 20 by similarity were Databricks.
+
+  | Rule | Companies repeated | Mean match_score | Mean similarity |
+  |---|---|---|---|
+  | A: top 5 by similarity (v2.2) | 3 (4 Databricks) | 26.0 | 0.501 |
+  | B: at most 1 per company | 0 | 33.8 | 0.476 |
+  | **C: 1 per company + match_score >= 40** | **0** | **47.4** | 0.418 |
+
+  Rule fixed in the plan before measuring (fewest repeated companies, then highest mean match_score) → **C**.
+  Picks: GitLab Intermediate Data Engineer (55), Databricks Sr. Software Engineer AI (52), MongoDB Senior Data Analyst (50),
+  Dropbox Director Data Science & Engineering (40), Roblox Senior SWE Ads Measurement (40). Only 28 of 511 jobs pass the floor.
+- Built in `genai/brief_retrieval.py`: `MIN_MATCH_SCORE = 40`, `MAX_PER_COMPANY = 1`. The floor is applied **before**
+  embedding (20.7K Voyage tokens per run instead of 365K); the cap while walking jobs by similarity (company name
+  lower-cased + trimmed). Log: `rule`, `below_match_floor`, `ranked`, `skipped_company_cap`, `skipped` (first 20, each with
+  `slot_taken_by`). Facts `top_new_matches_how` carries the rule. No job over the floor → empty list, no Voyage call.
+- **(2) Prompt `brief-v2.3-rag`:** every postings count covers all roles — never "data roles". Enforced by the check:
+  `label N` = a postings-only count in a **sentence** that says "data roles / data jobs / data engineering roles" (per
+  sentence, because the Market paragraph is one line). On the real Nov 9 brief it flags `label 4628`, `label 2.3`; the
+  corrected sentence passes. New prompt line for an empty pick list.
+- **(3) Violations per attempt:** each call in `llm_log.json` keeps its own `violations`; plus `violations_per_attempt`
+  in the log and in the Lambda's CloudWatch JSON line (Nov 9's attempt-1 violation had been lost).
+- **Live, local (not uploaded — S3 keeps the Monday brief):** 3/3 runs faithful on the first try, $0.0052 each, 5 picks
+  from 5 companies, Market line "Complete boards list 4628 open roles".
+- **(4) Alarm proof without the inbox (2026-11-10 02:28–02:29 IST):** brief Lambda invoked with `{"week_end": "bad-date"}`
+  → `ValueError` before Athena/Voyage/Bedrock (no spend) → `jobpulse-weekly-brief-dev-errors` OK → ALARM, history:
+  "Successfully executed action ... jobpulse-alerts-dev". `set-alarm-state` on `jobpulse-sfn-no-success-26h-dev` → same
+  line. SNS email subscription confirmed. Both return to OK on their next hourly evaluation.
+- **(5) Measured cost (Cost Explorer, tag `project = jobpulse`, unblended, before credits):**
+
+  | | Oct 2026 | Nov 1–9 |
+  |---|---|---|
+  | S3 | $3.89 | $2.96 |
+  | Glue | $1.10 | $0.41 |
+  | Athena | $0.06 | $0.04 |
+  | Lambda, Step Functions, SNS, CloudWatch, DynamoDB | $0.00 | $0.00 |
+  | **Total** | **$5.05** | **$3.41** |
+
+  Fully offset by credits (the untagged line is the matching negative). Not in the tag: Bedrock (~$0.04 so far), Voyage (free tier).
+- **Finding — S3 cost is requests, not storage:** PUT/COPY/POST/LIST (Tier 1) = 678K requests in October ($3.39) and
+  517K in Nov 1–9 ($2.59); storage $0.03. Daily baseline grows steadily (27.7K on Oct 20 → 33.6K on Nov 8, ~+300/day =
+  something listing a partition set that grows nightly) plus spikes Nov 3 (61K) and Nov 5 (241K, a Chat 32 build day).
+  Bucket `layer` tags are empty, so CE can't split by bucket. Source not yet found → roadmap Chat 36.
+- **(6)** Adzuna comments say 7 countries (`ingest_adzuna.py`, `lambda.tf`; code was already 7).
+- Tests: 40 brief tests (+5); full suite **303 passed, 17 skipped**; ruff (CI rules) pass.
+
+### Not done
+- Not committed / not pushed → the Lambda still runs v2.2 until Deploy; first v2.3 run in AWS = Mon 2026-11-16.
+- (7) `dev → main` merge = Varun's step after CI + Deploy are green.
+- Pick quality is now rule-based, not measured: C still holds a Director role and an Ads engineer at match 40.
+  Precision@5 needs Chat 34's judge labels.

@@ -16,6 +16,7 @@ Schema:       explicit (bronze_schema), never inferred — see parse_tags() for 
 """
 
 import json
+import re
 import sys
 
 try:
@@ -85,6 +86,23 @@ TAG_ROLE_MAP = {
     "marketing": "Marketing", "growth": "Marketing", "seo": "Marketing",
 }
 
+# Chat 28: the title is the strongest signal — Greenhouse sends no category and most Adzuna categories are generic
+# ("IT Jobs"), which left 65–93% of rows as "Other". First match wins: PM and Design before DATA ("Product Manager, Data
+# Engineering" is a PM job), DATA before Marketing ("Senior Growth Data Engineer" is a data job).
+TITLE_ROLE_RULES = [
+    ("PM", r"product manager|product owner|product lead|product management"),
+    ("Design", r"designer|\bux\b|\bui\b"),
+    ("DATA", r"\bdata\b(?! ?cent(?:er|re))|analytics|business intelligence|\bbi\b|\betl\b|machine learning|\bml\b"
+             r"|\bai engineer|\bai/ml|scientist"),
+    ("DevOps", r"devops|\bsre\b|site reliability|infrastructure|platform engineer|cloud engineer|sysadmin"
+               r"|systems? administrator"),
+    ("SDE", r"software|developer|\bsde\b|back-?end|front-?end|full[- ]?stack|programmer|\bios\b|android|\bqa\b"
+            r"|test automation"),
+    ("Marketing", r"marketing|\bseo\b|growth"),
+]
+# Tried and dropped (Chat 28): "technical title + >= 2 strong DE keywords in the JD -> DATA". It fired on 49 corpus jobs,
+# mostly Databricks Solutions Architects / engine engineers — company boilerplate mentions warehouses and ETL.
+
 
 # ---------------------------------------------------------------------------
 # Pure Python normalisation functions (testable without Spark)
@@ -128,7 +146,7 @@ def extract_role_family_from_tags(tags: list) -> str:
     tags_lower = [t.lower() for t in tags]
     for tag in tags_lower:
         for keyword, family in TAG_ROLE_MAP.items():
-            if keyword in tag:
+            if re.search(rf"\b{re.escape(keyword)}\b", tag):  # whole word: "ai" must not match "retail" (Chat 28)
                 return family
     return "Other"
 
@@ -155,8 +173,19 @@ def parse_tags(raw: str) -> list:
     return [str(v).strip().strip('"') for v in values if v is not None and str(v).strip()]
 
 
-def resolve_role_family(category: str, tags: list) -> str:
-    """Use category if available, fall back to tags (for sources like RemoteOK)."""
+def extract_role_family_from_title(title: str) -> str:
+    t = (title or "").lower()
+    for family, pattern in TITLE_ROLE_RULES:
+        if re.search(pattern, t):
+            return family
+    return "Other"
+
+
+def resolve_role_family(category: str, tags: list, title: str = None) -> str:
+    """Title rules first (TITLE_ROLE_RULES), then the source category (Remotive/Adzuna), then tags (RemoteOK)."""
+    from_title = extract_role_family_from_title(title)
+    if from_title != "Other":
+        return from_title
     family = extract_role_family(category)
     if family != "Other":
         return family
@@ -237,7 +266,7 @@ def build_silver_df(raw_df):
         F.col("job.title").alias("title"),
         F.col("job.company_name").alias("company_name"),
         F.col("job.category").alias("category"),
-        role_family_udf(F.col("job.category"), tags_col).alias("role_family"),
+        role_family_udf(F.col("job.category"), tags_col, F.col("job.title")).alias("role_family"),
         F.coalesce(F.col("job.job_type"), F.lit("full-time")).alias("job_type"),
         apply_url_col.alias("apply_url"),
         F.col("job.salary").cast(StringType()).alias("salary_raw"),

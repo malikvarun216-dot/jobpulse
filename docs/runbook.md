@@ -167,6 +167,18 @@ Region: `ap-south-1`. Environment: `dev`. Last updated: Chat 25 (2026-10-08).
 - Test the email path without breaking anything:
   `aws cloudwatch set-alarm-state --alarm-name jobpulse-sfn-no-success-26h-dev --state-value ALARM --state-reason "test" --region ap-south-1`
   (it re-evaluates to the real state within minutes).
+- `jobpulse-weekly-brief-dev-errors` (Chat 32): any brief Lambda error in a 1-hour window → email; no OK email (it just
+  goes quiet after the hour). See §26.
+- **Prove an alarm without opening the inbox (Chat 33):** cause it (brief: invoke with a bad date — raises before any
+  spend; night: `set-alarm-state` above), then:
+  ```bash
+  aws lambda invoke --function-name jobpulse-weekly-brief-dev --cli-binary-format raw-in-base64-out --payload '{"week_end": "bad-date"}' --cli-read-timeout 300 out.json
+  aws cloudwatch describe-alarm-history --alarm-name jobpulse-weekly-brief-dev-errors --region ap-south-1 --max-items 4 --query "AlarmHistoryItems[].[Timestamp,HistoryItemType,HistorySummary]" --output text
+  ```
+  Pass = an `Action` row "Successfully executed action arn:aws:sns:...:jobpulse-alerts-dev" (≈ 1 min after the invoke).
+  "Failed to execute action" = SNS topic policy / topic deleted. Email delivery itself needs the subscription `Confirmed`
+  (`aws sns list-subscriptions` shows a full ARN, not `PendingConfirmation`).
+
 ## 13. Pause / resume the pipeline
 
 - **Pause:** set `state = "DISABLED"` on `aws_cloudwatch_event_rule.daily_ingest` (`terraform/envs/dev/eventbridge.tf`)
@@ -231,6 +243,16 @@ Region: `ap-south-1`. Environment: `dev`. Last updated: Chat 25 (2026-10-08).
 - Glue Python Shell at 1/16 DPU ≈ $0.03 per hour of runtime; Glue Spark G.1X × 2 ≈ $0.03 per 2-min run (approx.).
 - AWS Budgets (account-wide, shared with ledgerline): `ledgerline-monthly` $20 (50/80/100% + forecast), `ledgerline-daily-spike` $2/day, zero-spend $0.01.
 - Plan state: `aws freetier get-account-plan-state --region us-east-1`.
+- **JobPulse's own cost (Chat 33):** tag `project` is an active cost-allocation tag (since 2026-10-06). Each Cost Explorer
+  API call costs $0.01. Before credits: Oct $5.05, Nov 1–9 $3.41 (S3 ≈ 80%, Glue the rest).
+  ```bash
+  aws ce get-cost-and-usage --region us-east-1 --time-period Start=2026-11-01,End=2026-12-01 --granularity MONTHLY --metrics UnblendedCost --filter '{"Tags":{"Key":"project","Values":["jobpulse"]}}' --group-by Type=DIMENSION,Key=SERVICE
+  ```
+  Swap the group-by for `Type=DIMENSION,Key=USAGE_TYPE` to see *what* inside a service. The untagged group with a
+  negative amount = credits, not a refund of JobPulse.
+- **S3 cost = requests, not storage:** `APS3-Requests-Tier1` (PUT/COPY/POST/LIST, $0.005 per 1,000) was $3.39 of $3.89 in
+  October; storage $0.03. Baseline ~28K → 34K/day and growing; spikes on build days (Nov 5: 241K). Source not found yet
+  (roadmap Chat 36). Bucket `layer` tags are empty, so CE can't split by bucket.
 
 ## 16. Local checkout hygiene (before any session)
 
@@ -276,7 +298,7 @@ If a table still points at `athena-results/`: the workgroup is enforcing again (
   first cell prints `silver rows: 6,006 | rows with a vector: 1,544 | vector matrix: (1544, 1024)`.
   Rebuild from scratch:
   ```powershell
-  python -m venv .venv; .\.venv\Scripts\python.exe -m pip install "pyarrow==14.0.2" "numpy==1.26.4" pandas boto3 voyageai anthropic rank_bm25 pyyaml ipykernel nbclient; .\.venv\Scripts\python.exe -m ipykernel install --sys-prefix --name jobpulse-lab --display-name "JobPulse lab (.venv)"
+  python -m venv .venv; .\.venv\Scripts\python.exe -m pip install "pyarrow==14.0.2" "numpy==1.26.4" pandas boto3 voyageai anthropic rank_bm25 pyyaml streamlit ipykernel nbclient; .\.venv\Scripts\python.exe -m ipykernel install --sys-prefix --name jobpulse-lab --display-name "JobPulse lab (.venv)"
   ```
 - Keys come from Secrets Manager (`jobpulse/voyage_key_dev`, `jobpulse/anthropic_key_dev`, both JSON) — never set them as env vars.
 - `pytest tests` in this venv: `test_ge_runner.py` fails (7) because Great Expectations isn't installed there — the
@@ -315,3 +337,121 @@ If a table still points at `athena-results/`: the workgroup is enforcing again (
 - "already exists" = by design: a frozen corpus is never overwritten. New data → new `--version`.
 - Before freezing: the manifest's `by_source.greenhouse.with_description` must be > 0 — if it is 0, the dates predate the
   Chat 27 deploy.
+- `Parquet file size is 0 bytes` on a `..._$folder$` path = Glue folder markers (fixed Chat 27b: they are skipped).
+- `corpus_v1` (2026-10-18): 9,266 rows, `content_sha256 f8383eff…`. A re-run on the same dates must print the same hash.
+
+## 24. Local Postgres + pgvector (Chat 29)
+
+- Start: `docker compose -f vectorstore/docker-compose.yml up -d` (Docker Desktop must show **Engine running**). Stop: `… stop`.
+  Data lives in the `jobpulse_pg` volume; `load_pg.py` drops and reloads the table anyway (~21 s).
+- Connect: `docker exec -it jobpulse-pg psql -U jobpulse -d jobpulse`. Local-only password in the compose file; port bound to 127.0.0.1.
+- Load → measure: `.venv\Scripts\python.exe vectorstore\load_pg.py`, then `vectorstore\bench_pg.py` (writes
+  `pg_bench_v1.csv` in the lab data folder). The sanity line must say recall 1.000 — otherwise the load is wrong.
+- "Seq Scan" in `EXPLAIN` on a vector query = the planner skipped HNSW (normal at 9K rows). Benchmarks force the index separately.
+- Filtered HNSW returns fewer than k rows → `SET hnsw.iterative_scan = relaxed_order` (pgvector ≥ 0.8).
+- Docker Desktop "removing stale socket … cannot be accessed by the system": quit Docker, stop leftover `*docker*` processes,
+  `wsl --shutdown`, delete the `.sock` named in the error (or restart Windows), start again. Don't reset to factory defaults.
+
+## 25. role_family looks wrong
+- Rules: `spark/jobs/bronze_to_silver.py` → `TITLE_ROLE_RULES` (title, first match wins) → `ROLE_FAMILY_MAP` (category) →
+  `TAG_ROLE_MAP` (tags, whole word). Check a day locally: load `jobpulse_lab_data/silver_<date>/` with pandas and call
+  `resolve_role_family(category, list(tags), title)` per row; compare per-family counts and sample titles before/after.
+- Many "Other" rows are expected (non-tech jobs). A new rule needs a unit test in `spark/tests/` and a before/after on real data.
+
+## 23. Label the eval set (pool → human labels → judge → κ → qrels)
+
+All local, `.venv\Scripts\python.exe`, data in `C:\Users\malik\jobpulse_lab_data\`. Order matters:
+1. `eval/pool.py` — after any query change. Seconds; embeds only new query texts (Voyage key from Secrets Manager).
+   Since Chat 28 it also pools `vector_strip_doc_title` + `vector_chunks` (needs their `embed_variants.py` files;
+   `--variants` with no names = the old 3-method pool). The hand-label sample uses only the original 3 methods, so
+   adding methods never reshuffles it; variant-only pairs get judge labels. Old pool: `pool_v1_before_chat28.parquet`.
+   A query whose `bm25_rank` count is 0 has no keyword match at all (check it's intended).
+2. `.venv\Scripts\streamlit.exe run eval\label_app.py` — label against the query's `relevant_if` line, not "would I apply";
+   years/seniority count only when the query names a level (q26, q49). Labels go to `human_labels_v1.csv` (append-only; last label per
+   pair wins; "Undo last" removes the last line). The sample comes from the pool → finish queries + re-pool **before** labeling.
+   The sample is ordered in **rounds** (round 1 = 2 pairs per query = 100); the sidebar goal is 100 (option B).
+3. `eval/judge.py --subset labeled --model <id> --dry-run` (estimate; `labeled` = only pairs already labeled, `human` = all 300) → without `--dry-run` (submits a batch, polls each minute,
+   usually < 1 h). Window closed? `--collect <batch_id>` with the same `--subset/--model`. Statuses other than
+   `succeeded` (refusal, max_tokens, errored) come back with `label` = null and are left out of κ.
+   κ low? → `.venv\Scripts\streamlit.exe run eval\review_app.py`: the pairs where you and Sonnet disagree, biggest gap
+   first, with both judges' labels and reasons. Keep or change each; decisions go to `review_log_v1.csv`, changes are appended
+   to `human_labels_v1.csv`. Then re-run step 4. Report κ before AND after review (anchoring).
+4. `eval/agreement.py --model <id>` → κ + confusion table + every 0-vs-2 disagreement. κ ≥ ~0.6 → `judge.py --subset all`,
+   then `agreement.py --model <id> --write-qrels` → `eval/qrels_v1.parquet` (commit it).
+5. `eval/run_eval.py [--methods ...] [--note "what changed"]` → summary table + nDCG by query type; appends to
+   `eval/results_v1.parquet` (commit it). "No answer key" = step 4 not done. Smoke test without saving: `--qrels <file> --no-save`.
+   judged@10 well below 1.0 → that method surfaces unlabeled jobs; label them (judge them) before calling it a win.
+6. Embedding variants (Chat 28): `eval/embed_variants.py --variant <strip|strip_doc|strip_doc_title|chunks> --dry-run`
+   (texts + ≈tokens, free) → same without `--dry-run` (Voyage spend; resumes from its checkpoint after an error) →
+   `run_eval.py --variants <names>` adds `vector_<v>` / `rrf_<v>`. "vectors don't cover the corpus" = the embed run
+   stopped early — re-run it, it skips what's done. Variants are lab-only; nothing changes in the nightly pipeline.
+   Local `pytest` fails in `test_ge_runner` with `no attribute 'get_context'` = Great Expectations not installed in
+   `.venv` (the empty root `great_expectations/` folder is imported instead). Install `great-expectations==1.8.1`, then
+   `pip install altair==6.3.0` again — GE pulls altair 4.2.2, which breaks Streamlit; GE's altair<5 pin is only for
+   Data Docs (unused), so `pip check`'s warning about it is expected.
+   `UnicodeEncodeError: 'charmap'` on a print = a non-ASCII sign (≈, →) in a script's output on the Windows console —
+   use ASCII in prints, or set `$env:PYTHONIOENCODING = "utf-8"`.
+- Claude key: `ANTHROPIC_API_KEY` if set, else Secrets Manager `jobpulse/anthropic_key_dev`. Spend prints at the end of each
+  run ("Actual cost"); `--max-usd` (default 2) blocks bigger submits.
+
+## 26. Weekly brief (Chat 32)
+
+- Dry run (Athena scans only): `python -m genai.weekly_brief --dry_run` → `C:\Users\malik\jobpulse_lab_data\briefs\<week_end>\`
+  `facts.json` + `prompt.txt`.
+- Live: `python -m genai.weekly_brief` (add `--upload` for `s3://jobpulse-gold-dev/briefs/week_end=<d>/`). Injection test:
+  `--inject_test` → `brief_inject.md` + `llm_log_inject.json`; `injection_followed: true` = the model obeyed the attack (fail).
+- Access / agreement / model-access error on the first call → Bedrock console (ap-south-1) → the Claude model → accept the
+  offer. Check from the CLI: `aws bedrock get-foundation-model-availability --model-id anthropic.claude-opus-5-5` →
+  `agreementAvailability.status` must not be `NOT_AVAILABLE`.
+- Exit code 1 + "UNVERIFIED" at the top of `brief.md` = the faithfulness check still failed after the repair turn; the
+  violations are in `llm_log.json`. Usually a number the model computed itself (a difference or a sum) — add that number to
+  the facts if it is worth saying, rather than loosening the check.
+- A trend that looks too big: read `data_notes` in `facts.json`. Silver partitions are rewritten for ~7 days after their
+  date, so a code change relabels the last week too — add a `KNOWN_BREAKS` entry in `genai/brief_facts.py` for any change
+  to a column the brief compares.
+- `HIVE_INVALID_METADATA ... duplicate columns` on `jobpulse_silver_dev.jobs` — an April orphan table; use `silver_jobs`.
+- `ThrottlingException: Too many tokens per day` on the **first** call (Chat 32b) = the account's Bedrock quota is 0,
+  not real usage. Check: `aws service-quotas list-service-quotas --service-code bedrock --region ap-south-1 --query
+  "Quotas[?contains(QuotaName,'Nova Pro')].[QuotaName,Value]"` — compare with `list-aws-default-service-quotas` (defaults
+  500 RPM / 2M TPM / 1.44B tokens/day). Fix: AWS Support → Create case → *Service limit increase* → Bedrock, region
+  ap-south-1, model Nova Pro (cross-region), ask for the defaults; the RPM and tokens/day quotas are not self-adjustable.
+- `AccessDeniedException: anthropic.claude-* is not available for this account` with the use case form already on file =
+  account-level restriction (same zeroed account); Amazon models (Nova, Titan) are the ones to try first.
+- **Scheduled run (Chat 32 part 2):** Lambda `jobpulse-weekly-brief-dev`, EventBridge `jobpulse-weekly-brief-dev-schedule`
+  `cron(0 3 ? * MON *)` = Monday 08:30 IST → `s3://jobpulse-gold-dev/briefs/week_end=<d>/` (facts.json, brief.md,
+  llm_log.json). Manual run: `aws lambda invoke --function-name jobpulse-weekly-brief-dev --payload '{}'
+  --cli-binary-format raw-in-base64-out --cli-read-timeout 300 out.json` (add `"week_end"` or `"inject_test": true`).
+  **Keep `--cli-read-timeout 300`:** a RAG run takes ~61–67 s; the CLI's default 60 s read timeout makes it re-send the
+  invoke (Chat 32: one command → 3 runs). Harmless (same S3 keys) but each costs ≈ $0.005. EventBridge runs are async, unaffected.
+- Alarm `jobpulse-weekly-brief-dev-errors` fired → `/aws/lambda/jobpulse-weekly-brief-dev`, last JSON line + the
+  traceback: "older than 2 days" = nightly pipeline not landing silver (§1), "faithfulness" = read `llm_log.json` in S3,
+  `AccessDenied` = brief.tf IAM (Athena/Glue/S3/Bedrock statement named in the error), `Throttling` = quotas above.
+  No automatic retries (by design) — rerun with the manual invoke.
+- **RAG retrieval (Chat 32 part 3):** `AccessDeniedException ... secretsmanager` in the brief Lambda = brief.tf
+  `VoyageKey` statement not applied. Voyage `401` = secret value wrong (must be JSON `{"VOYAGE_API_KEY": ...}`);
+  `429` / timeout = retried once after 5 s, then the run fails (alarm) — rerun manually, or run without Voyage:
+  payload `{"retrieval": "match_score"}` (v1 pick). The retrieval details are in `llm_log.json` → `retrieval`.
+- `faithfulness check: ['number N']` with RAG: usually a number copied from a retrieved passage ("7+ years"). The prompt
+  forbids it (v2.1) and the repair turn quotes the line; if it keeps happening, read `llm_log.json` → `response`.
+  Bedrock is not deterministic at temperature 0 — one failing run among passing ones is expected, a pattern is not.
+- `ResourceNotFoundException` in CI "Deploy weekly brief Lambda" = the function was never created: `terraform apply` first.
+- Nova Pro quotas after the Support case (2026-11-06): 25 requests/min, 2M tokens/min, 230.4M tokens/day — a brief
+  is ~3,600 tokens, so even the 25 RPM is far above need. Lower than AWS defaults; ask again only if scheduling many runs.
+- **Prompt v2.2 (Chat 32 part 4):** `faithfulness check: ['caveat N']` = the brief printed a rotating-source count
+  (all_sources total, Adzuna/Arbeitnow row) on a line without "pages" / "rotating" / "slice" / "fetched" / "market size".
+  The repair turn explains it; if it persists, read `llm_log.json` → `response`. A new rotating source = it is not in
+  `COMPLETE_SOURCES` (`genai/brief_facts.py`), so the rule covers it automatically.
+- "Worth a look" describes requirements instead of the work → `llm_log.json` → `retrieval.passages`: `closest_chunk > 0`
+  means those JDs had no heading `duties_section()` recognises (`genai/text_utils.py` `_DUTIES` / `_NOT_DUTIES`). Add
+  the heading word to the right regex + a test; never loosen the stop list without re-measuring on a week of JDs.
+- **Dashboard "Weekly brief" tab:** reads `s3://jobpulse-gold-dev/briefs/` with your local AWS credentials. "No briefs"
+  = no `week_end=` folder (Lambda not run yet) or wrong `GOLD_BUCKET`; "Could not list" = credentials/region (set
+  `AWS_DEFAULT_REGION=ap-south-1`). A new Monday brief appears after ≤ 10 min (cache) or **Refresh data**.
+  After editing `brief_store.py`, restart Streamlit — it reloads `app.py` on save, not imported modules.
+  `ModuleNotFoundError: plotly` = lab `.venv` without dashboard deps → `pip install -r dashboard/streamlit/requirements.txt`.
+- **Prompt v2.3 + pick rule (Chat 33):** `faithfulness check: ['label N']` = a postings count (all roles) called "data
+  roles / data jobs / data engineering roles" in the same sentence. The repair turn explains it.
+  "Worth a look" has fewer than 5 jobs or says none passed = fewer jobs with match_score >= 40 (`MIN_MATCH_SCORE` in
+  `genai/brief_retrieval.py`) this week — read `llm_log.json` → `retrieval.below_match_floor` / `ranked`. Not a bug.
+  A good job missing because its company already had one: `retrieval.skipped` (id, similarity, `slot_taken_by`).
+  Which attempt failed and why: `violations_per_attempt` (log and the CloudWatch JSON line); `calls[i].violations`.

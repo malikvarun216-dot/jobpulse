@@ -691,3 +691,173 @@
 - Pinned dates: the first three nights with Greenhouse JDs (Oct 12–14), not "a few weeks": Greenhouse returns every open
   job each night, so one night already holds ~4.5K full JDs.
 - Queries carry a `relevant_if` line — the rubric both the human labeler and the LLM judge read, so they judge the same thing.
+
+## Eval pooling, human sample and judge (Chat 27 part 2)
+- **Corpus keeps raw text** (HTML as in silver). Stripping/chunking is a retrieval choice Chat 28 measures; baking it into
+  the frozen corpus would decide it without a number. Readers (labeling page, judge) strip HTML at display time.
+- **Pool = top-20 of BM25 ∪ vector ∪ today's dashboard hybrid**, filter applied before ranking. BM25 keeps only score > 0
+  (a job with no query word is not a keyword hit). The hybrid is copied exactly (vector top-50, 0.5/0.5 with match_score,
+  match_score ≤ 0 dropped) because it is the baseline Chat 28 must beat. Vectors = the stored nightly ones (same model,
+  same 4,000-char cut as the dashboard) — no re-embed.
+- **Human sample = 6 pairs per query, 3 from any method's top-5 + 3 from the rest**, fixed seed. Random sampling would be
+  mostly 0s and say little about agreement on the 2s. Blind: the page hides which method found a job.
+- **Judge via the Message Batches API** (half price, async), JSON schema output (always parses), effort `low`, rubric in the
+  system prompt (cacheable), JD as `<job>` data with an explicit "ignore instructions in the posting" rule. JDs cut at
+  12,000 chars (flagged, 1 of 2,246). Model is chosen by κ on the human sample, not by price alone; `--max-usd` (default $2)
+  refuses a bigger run unless raised on purpose.
+- **qrels:** the human label wins where both exist; `label_source` column records who labeled each pair.
+
+## Profile from the resume, not by hand (Chat 27 part 2)
+- `user_profile.yml` tiers follow the resume: core = Jio work + project stacks, secondary = used, learning = "Familiar" +
+  roadmap. Skills not on the resume (cassandra, langchain) removed — the profile should rank jobs I can defend in an interview.
+- `seniority: mid` at 3 YOE. Trade-off: senior-titled jobs drop from full to half seniority points (10% weight).
+- New skills go into `SKILL_VOCAB` at the same time; a test-free rule is easy to break, so the profile file says it in a comment.
+- Scorer normalization left as is on purpose: changing it now would move scores without an eval to say it's better (Chat 28).
+
+## Eval scoring rules (Chat 28 harness, built in Chat 27b)
+- **Relevant = grade 2** for precision/recall/MRR (a "partly" job isn't one I'd apply to); nDCG uses all grades (gain 2^g − 1).
+- **Option B — 100 human labels, not 300 (2026-10-29):** κ on ~100 pairs (±~0.15) is enough to decide whether to trust the
+  judge; 300 only narrows the error. The sample is reordered into rounds (2 per query per round, 1 likely + 1 unlikely),
+  so stopping after round 1 covers all 50 queries. Same 300 pairs as before — only the order changed. Judge runs on the
+  pairs actually labeled (`--subset labeled`): ≈ $0.01 Haiku 5.5 / $0.28 Sonnet 5.5 for 100.
+- **Judge-all paused at ≈ $5 (2026-10-30):** Sonnet 5.5 is the only judge that passed κ (0.69 after review; Haiku 0.47),
+  and judging all 2,302 pairs costs ≈ $5 — the whole Claude budget. Not cutting descriptions to save $0.30: the κ check
+  was done at 12,000 chars, and a different setting would no longer be the validated judge. Cost estimates now use
+  measured output tokens (68), after the first estimate assumed 300 and overstated cost ~45%.
+- **κ too low (0.29) → adjudicate, don't just switch models (2026-10-30):** the two judges agree with each other (0.60),
+  so the gap is guideline drift, not model quality. Review the 52 disagreements with the rule + the judge's reason
+  (`review_app.py`), log every decision, and report κ before and after — the review can anchor me toward the judge.
+  If the review shows the RULE is wrong (not my label), change `relevant_if` and re-judge instead.
+- **Relevance ≠ personal fit:** a label answers "is this about what the query asks?", not "would I apply?". Years and
+  seniority count only when the query names a level (q26, q49); fit to me is the match score's job. Same rule in the
+  labeling page and the judge rubric, so human and judge measure the same thing (2026-10-19).
+- **Unlabeled = 0**, and every run reports **judged@10** so a method that wins by surfacing unlabeled jobs is visible, not hidden.
+- **RRF with k = 60** as the first real hybrid: rank-based, so BM25 scores and cosines never need a common scale; no weights
+  to tune (yet). Inputs: top-100 of each.
+- Methods live in `eval/search.py`, used by both pooling and scoring, so "the dashboard hybrid" means one thing.
+- Latency excludes query embedding (cached); each method recomputes its own scores so timings are comparable.
+
+## Vector store: learn on local Postgres first (Chat 29 part 1)
+- Local Docker Postgres + pgvector before RDS: same SQL, same index, $0, no "stopped RDS restarts after 7 days" trap.
+  RDS is for the AWS-only parts (VPC, IAM DB auth, cost) in one measured session.
+- Keyword search in Postgres = `tsvector` + GIN with an **OR** query (`plainto_tsquery` ANDs words; BM25 scores any overlap).
+- Hybrid = RRF in one SQL statement (two CTEs + FULL OUTER JOIN): one round trip, no score normalisation.
+- Recall is measured **tie-aware** because 12% of jobs share an identical vector; ID-based recall would punish correct answers.
+- At 9,266 jobs exact search needs no index (NumPy 1.9 ms, Postgres seq scan 33 ms). HNSW matters only at much larger
+  scale — and at default settings it misses ~17% of the true top 10 on this data, so if used: ef_search ≥ 100 or m = 32.
+- With a country filter, let the planner pre-filter (B-tree + exact sort); if HNSW must be used with filters, turn on
+  `hnsw.iterative_scan` or results can come back short.
+
+## role_family from the job title first (Chat 28, 2026-10-30)
+- Order: title rules (`TITLE_ROLE_RULES`) → source category → tags. Greenhouse sends no category and Adzuna's are generic
+  ("IT Jobs"), so the title is the only signal for most rows. First match wins: PM, Design → DATA → DevOps → SDE → Marketing
+  ("Product Manager, Data Engineering" = PM; "Senior Growth Data Engineer" = DATA).
+- **Dropped:** "technical title + ≥ 2 strong DE keywords in the JD → DATA". Measured on corpus_v1 it fired on 49 jobs, mostly
+  Databricks Solutions Architects and engine engineers — company boilerplate, the same trap as Spark. Title-only is simpler
+  and cleaner.
+- Tags match whole words now ("ai" no longer matches "Retail", "ui" no longer matches "Recruiting").
+- Not a goal: 0% "Other". Most remaining Other rows are non-tech (drivers, recruiters, accountants, sales). Measured on
+  Oct 14 silver: Other 59% → 58%, DATA 263 → 455, 23 / 24 "data engineer" titles DATA, 173 bogus Design labels removed.
+- New labels apply from the deploy night on; old silver keeps old labels (no backfill — trend charts by role show a step).
+
+## Bedrock: test it where it is cheap to switch (Chat 28, 2026-10-30) — brief built Chat 32
+- **Chat 32 brief on Claude via Bedrock** (`bedrock-runtime`, IAM role auth): new code, so no migration; no API-key secret
+  (the Chat 26 outage was a secret-handling bug); CloudWatch metrics and one AWS bill. Check ap-south-1 model availability /
+  cross-region inference profile and enable model access first (console, Varun).
+- **Chat 30: Titan Text Embeddings v2 as the challenger** to Voyage, scored with `run_eval.py` on the same corpus.
+- The label judge stays on the Anthropic Batches API: its κ was measured there; moving it means re-measuring agreement.
+
+## DynamoDB where a key-value store is the right tool (2026-11-03) — planned, Chat 31
+- Today DynamoDB is only the Terraform state lock (`jobpulse-tfstate-lock`, Chat 5) — configuration, not data work.
+- Chat 31 uses it for the two jobs S3 JSON does badly: the LLM extraction cache (key must include model + prompt version)
+  and the daily budget (atomic conditional counter instead of read-modify-write). Single table, on-demand, TTL.
+- Not for: vectors (decided Chat 15) or the nightly "already embedded?" check (one Parquet read beats ~8K lookups).
+
+## Weekly brief: facts first, then a checked LLM (Chat 32, 2026-11-03) — model superseded 2026-11-05, see below
+- **Claude via the Bedrock Messages-API endpoint** (`AnthropicBedrockMantle`), not the older `Converse` / `InvokeModel`:
+  same request shape as the eval judge, IAM credentials (no secret). `ap-south-1` offers only the **global** endpoint for
+  Claude 5.x — a request may run in another region (regional endpoints cost +10% and are not offered in Mumbai).
+- **Opus 5.5, effort medium**: one call a week, ≈ $0.05–0.10; Sonnet / Haiku via `--model` if we want to compare.
+- **SQL computes every number; the LLM only words them.** A regex check rejects any number / date / job_id / URL not in the
+  facts (one repair turn). Considered: structured JSON output with fact ids — stronger, but harder to read and explain;
+  revisit if the check fails often. Known gap: numbers written as words ("five") are not caught.
+- **JD text is untrusted**: separate `<job_postings>` block with `<` `>` stripped, the model has no tools, apply links come
+  from code. Measured with `--inject_test`.
+- **Population before prose**: headline numbers from complete boards (Greenhouse, Remotive); `KNOWN_BREAKS` blocks
+  comparisons across pipeline changes; skill moves below 2 pp are noise at ~4,800 jobs a week.
+
+## Brief on Amazon Nova Pro via the Converse API (Chat 32, 2026-11-05)
+- Anthropic models on Bedrock are refused on this account ("not available for this account"); Amazon's own models are not
+  sold through Marketplace and show `AVAILABLE`. Options: Claude API directly (works, but back to an API key), wait on AWS,
+  or Nova on Bedrock. **Chose Nova** — the point of this chat is learning Bedrock itself.
+- **Converse API**, not the Anthropic SDK: one request shape for every Bedrock model (Nova, Titan, Llama, Claude…),
+  switching model = changing `modelId`. Trade-off: no Claude-only features (effort, refusal fallback middleware).
+- **Nova Pro over Nova 2 Lite**: ≈ $0.006 vs $0.003 per brief — both trivial; `apac.` profile keeps data in Asia-Pacific
+  (Nova 2 Lite is `global.` only). `--model global.amazon.nova-2-lite-v1:0` to compare.
+- `temperature 0`: the same facts should give nearly the same brief — easier to diff week to week.
+
+## Brief on Lambda + EventBridge, failures raise, retries off (Chat 32, 2026-11-05)
+- **Lambda over Glue Python Shell**: the run is ~1 min of Athena polling + 1–2 Bedrock calls; Lambda costs nothing at one
+  run a week and has no cold-start minimum (Glue bills 1 min min. per DPU). pandas comes from AWS's public
+  "AWS SDK for pandas" layer — no Docker image or dependency build in CI.
+- **Not a Step Functions state**: the brief is weekly, the pipeline nightly; a separate rule keeps a brief failure from
+  marking the nightly run red. Runs Monday 08:30 IST, after the 02:00 IST nightly run lands Monday's snapshot.
+- **Own IAM role**, not the ingestors' role: the ingestors stay bronze-write only; the brief role can invoke one model.
+- **Failures raise** (Errors metric → alarm → email) and **async retries = 0**: an unfaithful brief is uploaded with its
+  UNVERIFIED banner, then the run fails loudly; 2 automatic retries would re-pay for the same result. Stale data (latest
+  snapshot > 2 days old) stops the run before any LLM spend.
+- Trade-off: no absence alarm — if the rule is disabled nothing emails. Acceptable for a weekly read-only report.
+
+## Brief "Worth a look" by retrieval, not match_score (Chat 32 part 3, 2026-11-05)
+- **What:** RAG — a profile query retrieves this week's new jobs (cosine on Voyage vectors), then the closest JD section
+  of each top job goes into the prompt. Before: top 5 by match_score (same for every query) + the JD's first 600 chars.
+- **Recipe = eval method `vector_strip_doc`** (best nDCG@10 0.268 on the 108 hand labels vs 0.225 nightly vectors,
+  0.229 dashboard_fixed, 0.184 RRF). Provisional (judged@10 ≈ 6%); Varun chose to go ahead on 108 labels.
+- **Embed in the Lambda, not the nightly vectors:** the nightly vectors are raw HTML without `input_type` (the weaker
+  recipe); the brief only needs ~550 new jobs a week (~0.4M tokens, free tier). Cost: the Lambda reads the Voyage secret.
+- **Plain NumPy cosine, no vector database:** 541 vectors × 1,024 dims is a 2 MB matrix — a database adds nothing here.
+- **One profile query, no BM25 fusion:** RRF scored lower on the labels (0.184) and would add a dependency.
+- **Passage retrieval** (best section per job) instead of the opening 600 chars: the opening is usually company boilerplate.
+- Known weakness: similarity favours a customer-facing Databricks "Forward Deployed Engineer" (match_score 19) whose JD
+  is full of data-engineering words. Measure precision@5 of the picks over a few weeks before adding a match_score floor.
+
+## Brief passage = the JD's "what you'll do" section (Chat 32 part 4, 2026-11-06)
+- **What:** `text_utils.duties_section()` — heading rules find the duties section; closest-to-query chunk only as fallback.
+- **Why:** "Worth a look" should say what the person would do. Similarity to a skills-list query picks the requirements
+  section (4 of 5 on Nov 5). Rules found a duties section in 94% of 4,618 JDs; no embedding needed for those (27 → 0 chunks).
+- **Not chosen:** a second "duties" query for passage retrieval (one more embedding call, still fuzzy); sending two
+  passages (longer prompt, more numbers to copy).
+- Trade-off: regex headings are English-only and template-dependent; the fallback keeps the old behaviour.
+
+## Data notes enforced in code, not only asked for (Chat 32 part 4, 2026-11-06)
+- `one_company_skills` decided in code (≥ 80% of a skill's jobs at one company), not by the model reading "close to".
+- A rotating-source count without its caveat on the same line fails the faithfulness check (`caveat N`) → repair turn.
+- The data notes are also printed by code under the brief, so the reader sees them even if the model drops one.
+- Limit: the check sees numbers, not labels — "Adzuna and Arbeitnow show 7010" (an all-sources number) passed; fixed in
+  the prompt and verified on 3 runs, not enforced.
+
+## Dashboard brief tab reads S3, never calls the LLM (Chat 32 part 4, 2026-11-06)
+- One brief per week is written by the Lambda; the dashboard only displays it (and its log and facts). Opening the
+  dashboard costs no tokens and shows exactly the text that passed (or failed) the check.
+
+## Brief picks: match_score >= 40, at most 1 per company (Chat 33, 2026-11-10)
+- **What:** `brief_retrieval.Retriever` keeps only jobs with match_score >= 40, ranks them by similarity to the profile
+  query, and takes at most one job per company.
+- **Why:** on week 2026-11-09 similarity alone gave 4 Databricks customer-facing roles + 1 Stripe (mean match 26.0);
+  Databricks JDs are dense with data words. Measured three rules on the same vectors; the rule written in the plan
+  beforehand (fewest repeated companies, then highest mean match_score) chose "1 per company + floor 40" (0 repeats,
+  mean 47.4) over "1 per company" (0, 33.8). Writing the decision rule before the numbers keeps it from being picked to fit.
+- **Side effect:** the floor runs before embedding — 28 of 511 jobs embedded, 20.7K Voyage tokens instead of 365K.
+- **Trade-off:** match_score is rule-based (skills, seniority, location...), so the floor inherits its blind spots; a thin
+  week can give fewer than 5 picks (the brief says so). Not chosen: an LLM re-ranker (cost, another thing to evaluate).
+
+## Posting counts called "data roles" are enforced, not only asked for (Chat 33, 2026-11-10)
+- Nov 9: "Complete boards list 4628 open data engineering roles" passed the v2.2 check (numbers right, label wrong).
+- v2.3: `label N` = a count that exists only in `postings` (all roles) in a sentence matching "data (engineering) roles /
+  jobs / positions". Numbers that also appear outside `postings` (a DATA row, a company's data_jobs) are exempt.
+- Per sentence, not per line: the Market section is one line, and the all-sources count beside it was correctly labelled.
+
+## Alarms proven from alarm history, not the inbox (Chat 33, 2026-11-10)
+- A real failure (Lambda invoked with a bad date, raises before any spend) and `set-alarm-state`, then
+  `describe-alarm-history` must show "Successfully executed action ... SNS". Proves alarm → SNS publish; email delivery
+  rests on the confirmed subscription. Chosen so Varun never has to check an inbox.

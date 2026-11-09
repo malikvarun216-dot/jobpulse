@@ -1,6 +1,6 @@
 # JobPulse Roadmap — Data + AI track (Chat 24 onward)
 
-Last updated: **Chat 27 (2026-10-11)**. Update this file at the end of every chat: tick the chat, adjust the next one.
+Last updated: **Chat 32 part 2 (2026-11-05)**. Update this file at the end of every chat: tick the chat, adjust the next one.
 
 ## Why this roadmap exists
 
@@ -23,13 +23,13 @@ Ground rules for every chat:
 | 24 | Stabilize the account and repo (must finish before ~Oct 16) | ✅ done (2026-10-07) |
 | 25 | Fix the failures, go live again | ✅ live 2026-10-08 — nights 1–3 (Oct 9–11) green; closes after the alarm test |
 | 26 | AI concepts lab (learning session) | ✅ built + committed `79aa6ba` (2026-10-10); 90-s drill parked (Varun) |
-| 27 | Evaluation foundations: freeze a corpus, label it | 🟡 part 1 done (2026-10-11): Greenhouse JDs on, freeze script, draft queries · part 2 ⏭ on/after Oct 14 |
+| 27 | Evaluation foundations: freeze a corpus, label it | 🟡 part 2 (2026-10-18): `corpus_v1` frozen (9,266 jobs), pool + label page + judge + κ built · waiting on real queries + 300 human labels |
 | 28 | Baseline + better retrieval (hybrid, chunk grain) | |
-| 29 | Vector stores on AWS: pgvector (RDS) vs S3 Vectors, by eval | |
+| 29 | Vector stores on AWS: pgvector (RDS) vs S3 Vectors, by eval | 🟡 part 1 local (2026-10-29): Docker pgvector loaded + benchmarked vs NumPy · RDS / S3 Vectors after labels |
 | 30 | Embeddings as a real pipeline (incremental, versioned, freshness) | |
 | 31 | Evaluate the LLM extraction (is the LLM worth it?) | |
-| 32 | Grounded generation: weekly AI brief | |
-| 33 | Narrative + resume | |
+| 32 | Grounded generation: weekly AI brief | 🟡 part 1 (2026-11-03): facts + Bedrock (Opus 5.5) + faithfulness check + injection test built, dry run on real data · Claude refused on this account → switched to **Amazon Nova Pro** (Converse API) Nov 5; quotas raised by AWS Support → **first live brief Nov 6: faithful first try, $0.0043; injection test passed (1 run)** · **part 2 (Nov 5): weekly Lambda + EventBridge (Mon 08:30 IST) + error alarm in Terraform, applied; first Lambda run faithful, $0.0043** · **part 3 (Nov 5): RAG — vector retrieval (vector_strip_doc, nDCG 0.268 on 108 labels) + passage per job; live local run faithful, $0.0046** · **part 4 (Nov 6): dashboard "Weekly brief" tab (reads S3) + prompt v2.2 (duties passage, data-notes caveat checked, one-company skills): 6/6 live runs faithful first try** |
+| 33 | Close-out core (narrative + resume done outside the repo 2026-11-07) | ✅ done (2026-11-10): brief picks = match_score ≥ 40 + 1 per company (rule C, mean match 26.0 → 47.4), prompt v2.3 + `label N` check, violations per attempt, both alarms proven from alarm history, cost measured (Oct $5.05, S3 requests = 77%) · merge `dev → main` = Varun's step |
 
 ---
 
@@ -128,19 +128,56 @@ Notebook on ~20 real JDs from the exported silver data:
 >
 > Part 2 (on/after Oct 14): check the Oct 12–14 silver has Greenhouse JDs → `freeze_corpus.py --dates 2026-10-12 2026-10-13 2026-10-14`
 > → Varun swaps draft queries for real ones → pooling (BM25 + NumPy vector + current hybrid, top-20 each) → labeling page → judge → κ.
+> ✅ Part 2 (2026-10-18): `corpus_v1` frozen (9,266 jobs, all with a JD, hash `f8383eff…`). `eval/pool.py` → 2,246 pairs on
+> the drafts (BM25 and vector agree on only 94). `label_app.py`, `judge.py` (Batches, JSON schema), `agreement.py` (κ → qrels).
+> 2026-10-30: 108 human labels; κ vs Sonnet 0.29 → 0.69 after reviewing 52 disagreements (Haiku 0.47). Judge-all (≈ $5)
+> **paused** by choice — resume command in progress.md. Queries rewritten from the resume the same day (2,302 pairs). **Left:** Varun reviews queries → re-pool → label 300 → judge human sample → κ → judge all →
+> `eval/qrels_v1.parquet`. Judge cost (batch): Haiku 5.5 $0.04 / Sonnet 5.5 $0.83 on the 300; all pairs $0.32 / $6.33.
+> Chat 28 (2026-10-30): pool grown to **2,984** pairs (+682 found only by `strip_doc_title` / `chunks`); hand sample
+> unchanged (300). Judge-all estimate now Haiku $0.27 / Sonnet $5.32 raw ≈ **$7.0** calibrated.
+>
+> **Keyword lift (2026-10-19, corpus_v1):** share of jobs mentioning a skill that have a data title vs overall — dbt 22×,
+> Airflow 22×, BigQuery 18×, ETL/ELT 10×, warehouse 9×, Snowflake 9×, Hadoop 8× (strong DE); Kafka 6×, SQL 5×, Spark 4×,
+> Python 4× (shared); Docker 1.7×, AWS 1.4×, Terraform 0.9× (SDE/DevOps). Basis for the `role_family` fix: title says data
+> OR ≥ 2 strong-DE keywords → DATA. Spark is inflated by Databricks boilerplate ("creators of Apache Spark").
+>
+> ✅ role_family fixed in Chat 28 (2026-10-30, ships on push): title rules first, whole-word tags — DATA 263 → 455 on Oct 14 silver.
 > Found in part 1, for later chats: `role_family = Other` on 93% of silver rows (the role filter is useless — fix before
 > the dashboard/brief rely on it); 11 / 30 Greenhouse slugs 404; 8 Adzuna duplicate rows within one snapshot.
 
 ## Chat 28 — Baseline + better retrieval
+
+> 🟡 Harness built early (2026-10-18): `eval/search.py` (bm25, vector, dashboard, rrf) + `eval/run_eval.py` (metrics,
+> judged@10, latency, results file). Waiting only on `qrels_v1`. Still to add here: chunk grain, HTML strip, Voyage
+> `input_type`, reranker, match_score normalization fix.
+>
+> 🟡 Part 1 (2026-10-30): provisional run on the 108 human labels (judged@10 only 2–8% → not a ranking; harness smoke test).
+> Built, not yet measured: `eval/embed_variants.py` (variants `strip`, `strip_doc`, `strip_doc_title`, `chunks`; lab-only)
+> + `run_eval.py --variants` and `dashboard_fixed`; `MatchScorer` `skill_full_at` (off unless set in the profile; at 12 →
+> 404 corpus jobs reach 70, was 0). Dry-run: 50% of jobs lose text at the 4,000 cut after stripping; chunks = 36,115 texts
+> (3.9 / job). Embedded (19.7M Voyage tokens): provisional nDCG@10 vector 0.225 → `strip_doc` 0.268; `input_type` fixes bare
+> keywords (`spark` no longer → DRIVER); chunks' top 10 is 42% outside the pool. **Left:** add variants to the pool → qrels →
+> score → pick by numbers → ship the winner to `embedding_agent.py` / the profile. Reranker not started.
 
 - `eval/run_eval.py`: one interface `search(query, k) -> [job_id]`; writes metrics + latency p50/p95 + cost per run to `eval/results.parquet`.
 - Compare: BM25, NumPy vector (exact), **today's 0.5/0.5 hybrid (baseline)**, RRF hybrid, optional reranker on top-50, optional query rewriting.
 - Chunk grain experiment: one vector per JD (4,000-char cut) vs section chunks (responsibilities / requirements / benefits, max-score roll-up). Report truncation rate.
 - From Chat 26: strip HTML before embedding (Arbeitnow window is ~25% markup; 79% of Arbeitnow JDs cut at 4,000) — a cheap
   candidate to measure first. Query set must mix descriptive queries *and* bare tool names (vector loses those: Snowflake, Airflow, dbt).
+- From Chat 27b: vector search fails bare keywords badly (`snowflake` → sales associate, `spark` → "DRIVER"). Markup is only
+  ~12% of the 4,000-char window, so test also: Voyage `input_type="query"/"document"`, and skipping company boilerplate.
+  The dashboard "hybrid" isn't keyword + vector — it blends in the query-independent match_score.
+- From Chat 27b (profile rebuild): **match_score barely uses skills** — skill overlap averages 1.6 / 50 points because it is
+  divided by the total weight of all profile skills; no corpus job reaches 70. Fix the normalization (e.g. against the job's
+  own skills or the top-N matched) and check it on the eval set before shipping — it also changes the dashboard hybrid.
 - Pick fusion, k and grain **by the numbers**.
 
 ## Chat 29 — Vector stores on AWS, compared by eval
+
+> 🟡 Part 1 local (2026-10-29): `vectorstore/` — Docker Postgres 17 + pgvector 0.8, corpus_v1 loaded, vector / keyword /
+> hybrid-RRF in SQL. Recall@10 vs exact: default HNSW (ef 40) **0.83**, ef 100 0.92, ef 200 0.97; m 32 → 0.97 at ef 100.
+> Filtered HNSW without iterative scan can return short. Planner skips HNSW at this size (seq scan, 33 ms). Left: score pg
+> methods in `run_eval.py` on qrels, then one RDS + S3 Vectors session, decision in decisions.md.
 
 - **pgvector on RDS Postgres** (db.t4g.micro, Terraform). Loader Lambda inside the VPC + **S3 gateway endpoint** (free) + **IAM DB auth** → no NAT gateway (~$30+/mo trap). Laptop access: SG allows only your IP /32, SSL required. HNSW index + `tsvector` hybrid in one SQL query.
 - **Amazon S3 Vectors** (GA in ap-south-1): vector bucket + index (**1024-d** — measured Chat 26; 512 only if Chat 30 re-embeds with `output_dimension=512`, cosine) with metadata (country, seniority, role_family, snapshot_date). No VPC.
@@ -167,15 +204,82 @@ Notebook on ~20 real JDs from the exported silver data:
 - Per-field precision / recall / F1: rules-only vs rules + Haiku; % JDs sent to the LLM; $ per 1K JDs.
 - Fix: budget tracker check-then-reserve race; price constants (Haiku 3.5 numbers in code); `cache_control` on a prompt below the minimum cacheable size; Haiku may wrap JSON in ``` fences (json.loads fails); Message Batches API for the nightly run (measure the saving).
 - CI regression with recorded LLM responses (no API calls in CI).
+- **DynamoDB for the LLM cache + daily budget (added 2026-11-03)** — replaces two S3 JSON patterns that break here:
+  - Found: the extraction cache key is `md5(description)` only (`jd_enrichment_agent._cache_key`) — no model or prompt
+    version, so the Haiku 4.5 vs 5.5 comparison would get the first model's cached answers. The budget is one S3 JSON
+    (`guardrails.BudgetTracker`) updated read-modify-write: safe across threads, not across two runs; no reserve before a call.
+  - One table `jobpulse-llm-cache-dev` (on-demand, Terraform), two item types (single-table design):
+    `pk = JD#<sha256(desc)>`, `sk = EXTRACT#<model>#<prompt_v>` → extraction + tokens + $, TTL 90 days;
+    `pk = BUDGET#<date>`, `sk = TOTAL` → `UpdateItem ADD total_usd :c` with `ConditionExpression total_usd <= :cap_minus_c`
+    = atomic reserve (fails cleanly at the cap), TTL 7 days. `put_item` with `attribute_not_exists(pk)` so two threads
+    never pay for the same JD twice.
+  - IAM: the enrichment Glue role gets `GetItem/PutItem/UpdateItem` on this one table ARN only.
+  - Measure: cache hit rate per night, $ saved, and a 16-thread test that spend never passes the cap. Compare with the S3
+    version (requests, latency, cost) — keep S3 for the nightly embedding check (Chat 30: one batch read beats ~8K lookups).
 
 ## Chat 32 — Weekly AI brief (grounded generation)
+
+> Chat 28 decision: build it on **Claude via Bedrock** (IAM auth, no API key) — check ap-south-1 availability and
+> enable model access first. See decisions.md.
 
 - SQL → facts JSON (week-over-week counts, rising skills, top companies). Claude writes only from the facts, cites `job_id`s.
 - Automated faithfulness check: every number in the brief must match the facts JSON.
 - JD text treated as untrusted (prompt-injection test JD).
 - Every LLM call logged: prompt version, retrieved ids, response, tokens, latency, $.
+- **Part 1 done (2026-11-03):** all four built (`genai/brief_facts.py`, `genai/weekly_brief.py`); dry run on Nov 3 facts.
+- **Part 2:** first live runs (normal + `--inject_test`; Varun accepts the Bedrock terms first) → weekly schedule
+  (Lambda or Glue Python Shell + EventBridge `cron(0 3 ? * MON *)`, IAM `bedrock-mantle:CreateInference` on the one model)
+  → brief tab in the dashboard. Measure: faithful on the first attempt (per week), repair rate, $ per brief.
+- **Part 2 progress (2026-11-05):** schedule built (`genai/brief_lambda.py`, `terraform/envs/dev/brief.tf`, deploy.yml
+  step) — IAM is `bedrock:InvokeModel` on the Nova Pro apac profile. Next: dashboard "Weekly brief" tab (reads
+  `briefs/` from S3) → prompt fix (use `data_notes`), measured over several Mondays.
+- **Part 3 (2026-11-05): RAG** — `genai/brief_retrieval.py` (profile query → this week's new jobs → top 5 → best
+  passage each). Next measurement: label the 5 picks each Monday (precision@5), compare with the match_score pick.
+- **Part 4 (2026-11-06):** dashboard tab (`dashboard/streamlit/brief_store.py`) + prompt `brief-v2.2-rag`: passage =
+  "what you'll do" section (94% of JDs), `one_company_skills` in code, rotating-source caveat enforced by the check,
+  data notes printed under the brief. 6/6 live runs faithful first try. Next: watch the Monday runs (first-try rate),
+  label the picks (precision@5).
 
-## Chat 33 — Narrative + resume
+## Chats 33–41 — Finish everything, zero labelling (plan written 2026-11-10)
+
+**Decision (Varun, 2026-11-10):** do all remaining work, but **Varun spends no time labelling or checking**. His part per
+chat: type the opening line, run the commit + push block at the end (~2–3 min). Claude decides anything that would
+have been a manual pick, using the rules below, and verifies alerts from alarm history instead of the inbox.
+
+**Where we stand (measured 2026-11-10):** 33 / 33 nightly runs green Oct 8 → Nov 9 · 241,450 distinct postings (186 days)
+· weekly RAG brief live (Nov 9: faithful on attempt 2, $0.0108; picks = 4 Databricks customer-facing roles) · `main` 15
+commits behind `dev` · 108 human retrieval labels exist (Sonnet 5.5 judge κ 0.69 on them).
+
+**Totals:** 9 chats · ~28 h of chat time · ~25 min of Varun's time · ~$10–15 LLM spend + RDS only while it is up.
+**Waits:** only nights (Chats 36, 38, 40 change the nightly pipeline; 1–3 nights each). Chats 37 and 39 are placed so they
+run while those nights tick. Never two nightly-pipeline changes in flight at once (a bad night must point at one change).
+
+**Every chat:** start checks (`git fetch` + `status`, last 3 nights, alarms) → work → tests → docs (progress, decisions,
+incidents, runbook, roadmap tick, 🔒 learning + interview guide, backups) → Varun's commit + push block → CI + Deploy green.
+
+| Chat | Opening line for Varun | Work | Done check | Chat time | Wait / cost |
+|---|---|---|---|---|---|
+| **33** | `Chat 33 — close-out core` | (1) Brief picks: retrieval-only run on week 2026-11-09 (Voyage free tier) comparing today's top 5, "≤ 1 job per company", "≤ 1 per company + match_score ≥ 40"; **Claude picks** by rule: fewest repeated companies, then highest mean match_score; build it in `brief_retrieval.py` (log skipped ids). (2) Prompt v2.3: complete-board counts are *all* roles. (3) `llm_log.json` keeps violations **per attempt**. (4) Alarm proof without the inbox: invoke the brief Lambda with `{"week_end": "bad-date"}` (raises before any spend) + `set-alarm-state` on the night alarm; verify "Successfully executed action … SNS" in alarm history. (5) Measured cost: Cost Explorer by tag `project = jobpulse`, Oct + Nov. (6) Adzuna comments "12 countries" → 7. (7) Merge `dev → main` (milestone). | tests green · live brief faithful, ≤ 1 pick per company · 2 alarm actions in history · cost in progress.md · `main` = `dev` | 2 h | none · ~$0.01 |
+| **34** | `Chat 34 — eval with judge labels` | Re-pool with the Chat 28 variants (chunks were 42% outside the pool) → **Sonnet 5.5 judges the whole pool** (Batches API; trusted because κ 0.69 vs the 108 human labels) → `eval/qrels_v1.parquet` (judge labels; human labels win where both exist) → rerun every method (vector, strip_doc, chunks, BM25, RRF, dashboard_fixed) → decide the search recipe for good. | qrels written · judged@10 ≥ 90% · eval table final, "provisional" removed where earned | 2 h | Batches < 24 h (usually < 1 h) · ~$7 |
+| **35** | `Chat 35 — RDS pgvector vs S3 Vectors` | Check S3 Vectors availability in ap-south-1 first (else compare in a supported region and say so). Terraform RDS (t4g.micro, pgvector), load corpus_v1, run the Chat 34 qrels + recall vs exact + latency + $/month; same on S3 Vectors; NumPy as baseline. Decide; **destroy RDS the same session**. | comparison table in decisions.md · RDS destroyed (plan shows no RDS) | 4 h | RDS ~$1–2 if destroyed same day |
+| **36** | `Chat 36 — incremental embeddings` | Embed only new or changed JDs (content hash), `model_id` + `embedding_version` on every vector, the `vector_strip_doc` recipe in the nightly job (same as the brief), a freshness metric (share of open jobs with a current vector) + alarm. Backfill once. **Plus (found Chat 33):** find and cut the S3 PUT/LIST requests (~34K/day and growing ~300/day, ≈ 80% of JobPulse's bill) — which job lists a growing prefix set; measure the drop in Cost Explorer `APS3-Requests-Tier1`. | night 1 embeds only the delta; nights 2–3 delta ≈ new jobs; freshness ≥ 95% | 3–4 h | **2–3 nights** · Voyage free tier |
+| **37** | `Chat 37 — salary vs cost of living` | (runs during Chat 36's nights) Salary parsing (Adzuna salary_min/max + `salary_raw`), FX to USD (dated seed), cost-of-living seed table (public index; source + date recorded), dbt model, dashboard view per country for DATA roles. | dbt tests green · dashboard view · coverage stated (share of jobs with a salary) | 3–4 h | 1 night (dbt in the nightly run) |
+| **38** | `Chat 38 — extraction eval + LLM decision` | After Chat 36 is verified. Reference labels without humans: (a) code-checked precision (every extracted skill must appear in the JD), (b) 150 JDs labelled by a stronger model (Opus 5.5 / Sonnet 5.5) as the reference; score rules vs rules + Haiku. DynamoDB cache (JD hash + model + prompt version) + atomic daily budget. Turn the LLM on **only if** it beats rules on the reference by a margin written down before scoring. Optional: role_family from the extractor (the "Other" ~93%). | eval table · decision recorded · if on: 3 nights within budget, cache hits on night 2 | 5 h (2 chats if needed) | **2–3 nights if turned on** · ~$2–5 |
+| **39** | `Chat 39 — MCP server` | (runs during Chat 38's nights) Local MCP server (stdio) over Athena, read-only: tools `search_jobs`, `latest_brief`, `market_facts`; read-only IAM profile; tests; README section. | tools callable from Claude Code; tests green | 2 h | none |
+| **40** | `Chat 40 — new sources` | After Chat 38 is verified. 2–3 new APIs, one Lambda each (candidates: Lever, Ashby, HN "Who is hiring" via Algolia; check Cloudflare from AWS first), wired into Step Functions with a per-branch catch so one source can't fail the night. | 2 green nights with the new sources; GE + dbt gates pass | 3 h | **1–2 nights** |
+| **41** | `Chat 41 — final close-out` | README final, roadmap all ✅, decisions "maintenance mode", runbook §27 (Monday glance, alarm meanings, how to pause), 🔒 learning + interview guide final, a resume patch file with the new measured numbers (outside the repo, like PATCH_2026-11-07), final merge `dev → main`. | `main` = `dev`; CI + Deploy green; patch file written | 2 h | none |
+
+**Rules fixed in advance (so no chat waits on Varun):**
+- Any choice between options = the measured best on the stated metric; ties → simpler / cheaper.
+- Anything that spends more than **$5 in one step**, or creates a resource billed while idle (RDS), is announced in one
+  line before it runs; RDS is always destroyed in the same chat.
+- Honesty on the resume: judge labels = "LLM judge validated against 108 human labels (κ 0.69)"; extraction reference =
+  "LLM reference labels" (weaker than human; said first in the defense).
+
+**After Chat 41 (maintenance mode):** Monday glance at the dashboard (≈5 min); an alarm email → open a chat with its text;
+monthly Cost Explorer glance.
+
+## Chat 33 (original plan) — Narrative + resume (done outside the repo, 2026-11-07)
 
 - Final pass on `docs/interview_guide.md`.
 - Resume bullets with the measured numbers (templates in the interview guide, section 13).

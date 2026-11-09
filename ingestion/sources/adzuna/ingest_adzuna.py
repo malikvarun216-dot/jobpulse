@@ -31,7 +31,7 @@ ADZUNA_APP_KEY = os.environ["ADZUNA_APP_KEY"]
 
 API_BASE = "https://api.adzuna.com/v1/api/jobs"
 RESULTS_PER_PAGE = 50
-MAX_PAGES_PER_COUNTRY = 6  # 6 × 50 = 300 jobs/country × 12 countries ≈ 3,600 total
+MAX_PAGES_PER_COUNTRY = 6  # 6 × 50 = 300 jobs/country × 7 countries ≈ 2,100 total
 
 COUNTRIES = ["gb", "us", "au", "ca", "in", "nz", "za"]
 
@@ -105,7 +105,7 @@ def fetch_country_jobs(country: str) -> list[dict]:
 
 
 def fetch_all_jobs() -> list[dict]:
-    """Fetch jobs from all 12 Adzuna countries in parallel (6 threads) and tag each with its country code."""
+    """Fetch jobs from all 7 Adzuna countries (COUNTRIES) in parallel (6 threads) and tag each with its country code."""
     all_jobs = []
 
     def _fetch_one(country: str) -> tuple[str, list[dict]]:

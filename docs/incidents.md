@@ -534,3 +534,108 @@ Newest first. Chat 23 entries were reconstructed from AWS history (Step Function
 - Fix: `terraform force-unlock 85025acf-b0e9-c3a4-977f-d28b97aea659` — deleted the DynamoDB lock record manually. Plan succeeded immediately.
 - Prevention: always let `terraform apply` complete or cancel cleanly with Ctrl+C (which triggers lock cleanup). Avoid force-killing the process.
 - Lesson: force-unlock is safe only when certain no other apply is running. One person, one machine, lock from yesterday = safe to force-unlock.
+
+## [2026-10-18] — Corpus freeze crashed on Glue `$folder$` markers
+- What happened: `freeze_corpus.py --dry-run` failed: `Could not open Parquet input source '.../country=AU_$folder$': Parquet file size is 0 bytes`.
+- What I thought: a broken silver file from one night.
+- Root cause: Glue/Hadoop writes zero-byte `<prefix>_$folder$` objects as "this is a folder" markers. The script downloaded
+  every object under the snapshot prefix and pyarrow tried to read all of them as Parquet.
+- Fix: skip `Size == 0` objects on download; build the dataset from `*.parquet` files only (with `partition_base_dir`).
+- Prevention: test `test_load_snapshot_skips_zero_byte_folder_markers`.
+- Lesson: S3 has no folders — anything that lists a prefix must decide which objects are data.
+
+## [2026-10-29] — Docker Desktop crashed on start: stale socket file
+- What happened: "An unexpected error occurred … removing stale socket: remove …\Docker\run\userAnalyticsOtlpHttp.sock:
+  The file cannot be accessed by the system." Engine stopped; `docker version` failed on the named pipe.
+- What I thought: broken install.
+- Root cause: a socket file left from the previous Docker run was still locked by Windows, so startup cleanup failed.
+- Fix: quit Docker Desktop, stop leftover docker processes, `wsl --shutdown`, delete the stale `.sock` (or restart Windows), start again.
+- Prevention: runbook §24. Never "Reset to factory defaults" for this (wipes images and volumes).
+- Lesson: read the exact path in the error — it named the one file to remove.
+
+## [2026-10-29] — pgvector benchmark looked perfect for the wrong reason
+- What happened: unfiltered recall@10 jumped to 0.998 at ef_search 20/40 but was 0.65/0.92 at 10/100; filtered recall was
+  identical at every ef_search.
+- What I thought: HNSW is excellent at 20–40.
+- Root cause: `EXPLAIN` showed the planner chose **Seq Scan** (no index → exact) at ef 20/40, and the **country B-tree +
+  exact sort** for every filtered query. The benchmark was measuring the planner, not the index. Second issue: 12% duplicate
+  vectors made ID-based recall < 1 even for exact search.
+- Fix: measure "HNSW forced" (`enable_seqscan/bitmapscan = off`) separately from "planner's choice"; tie-aware recall.
+- Prevention: `bench_pg.py` reports both; sanity row (exact Postgres vs NumPy) must be 1.000 before any other number counts.
+- Lesson: before believing a benchmark, `EXPLAIN` what actually ran — and check the ground truth agrees with itself.
+
+## [2026-10-30] — Recruiters labeled "Design", retail jobs labeled "DATA"
+- What happened: 173 of 224 Design jobs on Oct 14 silver were recruiters, interns and finance roles; "Retail Promoter" and
+  "Sr. Counsel" were DATA.
+- What I thought: Greenhouse department tags are noisy.
+- Root cause: tag → role matching used substring `keyword in tag`: "ui" is inside "Recruiting" / "Requisitions", "ai" inside
+  "Retail". Hidden because 59% of rows were "Other" and nobody looked at the small families.
+- Fix: whole-word match (`\bkeyword\b`), title rules before category/tags.
+- Prevention: unit tests for the substring cases; role changes measured on a real silver day (before/after per family + samples).
+- Lesson: short keywords in substring matching are a classifier bug waiting to happen — match words, and sample the output.
+
+## [2026-11-03] — "Data jobs +50%" that was a code change
+- What happened: silver DATA postings jumped 285 → 423 between Oct 23 and Oct 24 (Greenhouse 262 → 393 at the same row count).
+- What I thought: the Oct 30 role_family deploy — but the jump sat 6 days before the deploy.
+- Root cause: each nightly Glue run rewrites the trailing ~7 silver partitions from bronze, so the Oct 30 deploy relabelled
+  snapshots back to Oct 24 (S3 LastModified: Oct 23 partition written before the deploy, Oct 24 after).
+- Fix: `brief_facts.KNOWN_BREAKS` — the brief does not compare role families across a labelling break.
+- Prevention: every change to a compared column adds a `KNOWN_BREAKS` entry (runbook §26).
+- Lesson: a grounded LLM faithfully repeats a wrong fact — check the facts before the prose.
+
+## [2026-11-03] — Top skill "go" and a Databricks-shaped market
+- What happened: the first facts said `go` was the top skill (13.5%) and lakehouse / unity catalog were in ~20% of jobs;
+  "new this week" (12,235) was larger than open postings (6,620).
+- What I thought: Go and Databricks are hot; lots of hiring.
+- Root cause: the rule extractor's whole-word match hits the English word "go" (1,483 jobs, 64 companies); 914 of ~920
+  lakehouse / unity catalog jobs are Databricks's own job-ad template (Databricks = 965 of 4,859 complete-board jobs).
+  Adzuna and Arbeitnow return rotating slices, so their job_ids look new every day.
+- Fix: ambiguous skills dropped, top company per skill in the facts, 2 pp minimum move, new jobs + skills from complete
+  boards (Greenhouse, Remotive) only.
+- Prevention: Chat 31 evaluates the extractor per skill; the brief's `data_notes` carry each caveat.
+- Lesson: pick the right population before anything narrates it.
+
+## [2026-11-05] — Bedrock said yes to the model and no to every token
+- What happened: Claude on Bedrock refused ("not available for this account") after the use case form; Amazon Nova accepted
+  the request and threw `Too many tokens per day` on the first call ever.
+- What I thought: Marketplace / India billing entity blocks third-party models; then that Nova had a tiny daily limit.
+- Root cause: every Bedrock Nova quota on the account is **0** (RPM, TPM, tokens/day) — AWS defaults are 500 / 2M / 1.44B.
+  New or low-history accounts get zeroed Bedrock quotas until AWS Support raises them; the Claude refusal fits the same cause.
+- Fix: Support case for a service limit increase (pending). Code already on Nova + Converse, tested with a fake client.
+- Prevention: runbook §26 — check `service-quotas` against the defaults before debugging model access or prompts.
+- Lesson: "access granted" and "capacity granted" are two different switches; read both before blaming the code.
+
+## [2026-11-05] — RAG passages put job-ad numbers into the brief; one CLI invoke ran 3 times
+- What happened: a manual `aws lambda invoke` of the new RAG brief started 3 Lambda runs; 2 of them failed the
+  faithfulness check with `number 7` (alarm fired), 1 passed. S3 kept the last writer: a brief marked UNVERIFIED.
+- What I thought: Voyage or Bedrock throttling from the overlapping runs.
+- Root cause: (1) the run takes ~61–67 s and the AWS CLI's default 60 s read timeout re-sends the invoke; (2) the retrieved
+  passage of a Coinbase job says "7+ years experience" — the model copied the 7, which is not in the facts. The repair turn
+  said only "number 7", and the model returned the same brief again.
+- Fix: prompt rule "never copy a number from <job_postings>", repair message quotes the offending lines (prompt
+  brief-v2.1-rag); runbook invoke uses `--cli-read-timeout 300`.
+- Prevention: tests for the repair message and the prompt rule; the faithfulness check stays strict.
+- Lesson: better retrieval feeds the model better text — including numbers it must not repeat; a repair turn needs to show *where*.
+
+## [2026-11-06] — The brief described jobs by their requirements
+- What happened: "Worth a look" lines said "accounting exposure and deep data modeling", "strong Python or Java backend
+  development skills" — what the ad asks for, not what the job is.
+- What I thought: the prompt wording ("what the role involves") was too loose.
+- Root cause: passage retrieval picked the JD section closest to the profile query — and the query is a list of skills,
+  so the requirements section wins (4 of 5 jobs on 2026-11-05). The model could only describe what it was given.
+- Fix: passage = the "what you'll do" section found by heading rules (94% of JDs), closest chunk only as fallback; a
+  heading test caught "What You'll Bring" being read as a duties heading (it contains "you'll").
+- Prevention: tests on real-shaped JDs; the retriever logs how many passages were duties sections.
+- Lesson: in RAG, check what was retrieved before tuning the prompt — the generator cannot fix the wrong passage.
+
+## [2026-11-09] — The Monday brief recommended four sales-side Databricks roles
+- What happened: the first unattended v2.2 brief's "Worth a look" = Forward Deployed Engineer, TPM FDE, Solutions
+  Engineer, Solutions Architect (all Databricks, match_score 19–29) + one Stripe role; 0 overlap with the match_score top 5.
+  It also called 4,628 complete-board jobs "data engineering roles", and passed only on attempt 2, whose reason was not logged.
+- What I thought: the profile query was too generic.
+- Root cause: similarity rewards JDs dense with data words; Databricks' customer-facing ads are exactly that (17 of the
+  top 20). The faithfulness check sees numbers, not labels; the log kept only the final attempt's violations.
+- Fix (Chat 33): match_score >= 40 + at most 1 per company (chosen by a rule fixed before measuring), `label N` check,
+  violations kept per attempt.
+- Prevention: the retriever logs skipped ids and who took the slot; tests for cap, floor, empty pick, label rule.
+- Lesson: similarity is not suitability — rank by relevance, but gate on fit and diversity.

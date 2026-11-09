@@ -195,7 +195,8 @@ def build_facts(run_query: Callable[[str], pd.DataFrame], week_end: date,
         "top_new_matches": [{**r, "match_score": None if pd.isna(r["match_score"]) else int(r["match_score"])}
                             for r in m.drop(columns=["excerpt"]).to_dict("records")],   # CSV gives 61.0 / NaN
         "top_new_matches_how": {"picked_by": getattr(retriever, "method", "match_score"),
-                                "query": getattr(retriever, "query", None), "candidates": int(len(cand))},
+                                "query": getattr(retriever, "query", None), "candidates": int(len(cand)),
+                                **(retriever.rule() if hasattr(retriever, "rule") else {})},
         "data_notes": STATIC_NOTES + [note for d, f, note in KNOWN_BREAKS
                                       if w["prev_start"] < date.fromisoformat(d) <= w["end"]],
     }

@@ -1663,6 +1663,81 @@ Find the real causes of the Aug–Sep failures, fix them, turn the quality check
 - Tests: 36 brief tests (+10); full suite 297 passed, 17 skipped; CI ruff rules pass. Lab `.venv` lacked plotly → installed.
 
 ### Not done
-- Not committed / not pushed → Lambda still runs v2.1 until Deploy; first v2.2 run in AWS = Monday 2026-11-09 if pushed first.
+- Pushed `6a29bc4`; CI #38 + Deploy #35 green; Lambda code 18:50 UTC, 21,419 bytes, zip checked: `brief-v2.2-rag` +
+  `duties_section`. S3 still holds the v2 brief for 2026-11-05 (no manual invoke). First v2.2 run in AWS = Mon 2026-11-09.
 - The check is per line, the prompt says "same sentence" — a caveat in another paragraph would fail the check (strict on purpose).
 - Precision@5 of the picks still unlabeled.
+
+## Chat 32 part 4 — first scheduled brief checked (2026-11-10)
+
+- **Mon 2026-11-09 08:30 IST run (first unattended v2.2):** fired 08:31, `faithful: true` but on the **2nd attempt**
+  (2 calls, $0.0108; attempt 1 3,925 in / 390 out, attempt 2 4,429 / 385), 64 s, 237 / 512 MB, alarm stayed OK.
+  511 candidates, 365K Voyage tokens, passages 5/5 duties sections (0 chunks embedded). Nights Nov 7–9 green.
+- **Quality findings (not caught by the check):**
+  1. "Worth a look" = 1 Stripe data-infra role + **4 Databricks customer-facing roles** (Forward Deployed Engineer,
+     TPM FDE, Solutions Engineer, Solutions Architect; match_score 19–29). Overlap with the match_score top 5: **0**.
+     Databricks JDs are dense with data words, so similarity favours them — the weakness noted in decisions.md (Chat 32 part 3).
+  2. Mislabel: "Complete boards list 4628 open **data engineering** roles" — complete boards count every role.
+     Same class as the 7,010 label (the check sees numbers, not labels).
+  3. Two pairs of picks got identical descriptions (same Databricks template passage).
+  4. Attempt 1's violation is **not recorded**: `llm_log.json` keeps only the final violations, CloudWatch only the summary.
+- Not a bug: `greenhouse-databricks-8927390002` was also in the Nov 5 brief because that run was off-cycle (Thursday);
+  Monday windows (Nov 3–9 vs Oct 27–Nov 2) don't overlap from now on.
+- Next (decision pending): company diversity cap and/or match_score floor on the picks, log per-attempt violations,
+  prompt: complete-board counts are all roles. Measure on this week's candidates before changing.
+
+## Chat 33 — close-out core (2026-11-10)
+
+- Start checks: on `dev`, up to date; only last chat's plan docs uncommitted (expected). Nights Nov 8, 9, 10 SUCCEEDED
+  (~14 min each); 4 alarms OK.
+- **(1) Brief pick rule, measured first.** Retrieval-only run on week 2026-11-09 (511 candidates, one Voyage embed of
+  365K tokens, cached in `jobpulse_lab_data/briefs/pick_rules_2026-11-09/`). 17 of the top 20 by similarity were Databricks.
+
+  | Rule | Companies repeated | Mean match_score | Mean similarity |
+  |---|---|---|---|
+  | A: top 5 by similarity (v2.2) | 3 (4 Databricks) | 26.0 | 0.501 |
+  | B: at most 1 per company | 0 | 33.8 | 0.476 |
+  | **C: 1 per company + match_score >= 40** | **0** | **47.4** | 0.418 |
+
+  Rule fixed in the plan before measuring (fewest repeated companies, then highest mean match_score) → **C**.
+  Picks: GitLab Intermediate Data Engineer (55), Databricks Sr. Software Engineer AI (52), MongoDB Senior Data Analyst (50),
+  Dropbox Director Data Science & Engineering (40), Roblox Senior SWE Ads Measurement (40). Only 28 of 511 jobs pass the floor.
+- Built in `genai/brief_retrieval.py`: `MIN_MATCH_SCORE = 40`, `MAX_PER_COMPANY = 1`. The floor is applied **before**
+  embedding (20.7K Voyage tokens per run instead of 365K); the cap while walking jobs by similarity (company name
+  lower-cased + trimmed). Log: `rule`, `below_match_floor`, `ranked`, `skipped_company_cap`, `skipped` (first 20, each with
+  `slot_taken_by`). Facts `top_new_matches_how` carries the rule. No job over the floor → empty list, no Voyage call.
+- **(2) Prompt `brief-v2.3-rag`:** every postings count covers all roles — never "data roles". Enforced by the check:
+  `label N` = a postings-only count in a **sentence** that says "data roles / data jobs / data engineering roles" (per
+  sentence, because the Market paragraph is one line). On the real Nov 9 brief it flags `label 4628`, `label 2.3`; the
+  corrected sentence passes. New prompt line for an empty pick list.
+- **(3) Violations per attempt:** each call in `llm_log.json` keeps its own `violations`; plus `violations_per_attempt`
+  in the log and in the Lambda's CloudWatch JSON line (Nov 9's attempt-1 violation had been lost).
+- **Live, local (not uploaded — S3 keeps the Monday brief):** 3/3 runs faithful on the first try, $0.0052 each, 5 picks
+  from 5 companies, Market line "Complete boards list 4628 open roles".
+- **(4) Alarm proof without the inbox (2026-11-10 02:28–02:29 IST):** brief Lambda invoked with `{"week_end": "bad-date"}`
+  → `ValueError` before Athena/Voyage/Bedrock (no spend) → `jobpulse-weekly-brief-dev-errors` OK → ALARM, history:
+  "Successfully executed action ... jobpulse-alerts-dev". `set-alarm-state` on `jobpulse-sfn-no-success-26h-dev` → same
+  line. SNS email subscription confirmed. Both return to OK on their next hourly evaluation.
+- **(5) Measured cost (Cost Explorer, tag `project = jobpulse`, unblended, before credits):**
+
+  | | Oct 2026 | Nov 1–9 |
+  |---|---|---|
+  | S3 | $3.89 | $2.96 |
+  | Glue | $1.10 | $0.41 |
+  | Athena | $0.06 | $0.04 |
+  | Lambda, Step Functions, SNS, CloudWatch, DynamoDB | $0.00 | $0.00 |
+  | **Total** | **$5.05** | **$3.41** |
+
+  Fully offset by credits (the untagged line is the matching negative). Not in the tag: Bedrock (~$0.04 so far), Voyage (free tier).
+- **Finding — S3 cost is requests, not storage:** PUT/COPY/POST/LIST (Tier 1) = 678K requests in October ($3.39) and
+  517K in Nov 1–9 ($2.59); storage $0.03. Daily baseline grows steadily (27.7K on Oct 20 → 33.6K on Nov 8, ~+300/day =
+  something listing a partition set that grows nightly) plus spikes Nov 3 (61K) and Nov 5 (241K, a Chat 32 build day).
+  Bucket `layer` tags are empty, so CE can't split by bucket. Source not yet found → roadmap Chat 36.
+- **(6)** Adzuna comments say 7 countries (`ingest_adzuna.py`, `lambda.tf`; code was already 7).
+- Tests: 40 brief tests (+5); full suite **303 passed, 17 skipped**; ruff (CI rules) pass.
+
+### Not done
+- Not committed / not pushed → the Lambda still runs v2.2 until Deploy; first v2.3 run in AWS = Mon 2026-11-16.
+- (7) `dev → main` merge = Varun's step after CI + Deploy are green.
+- Pick quality is now rule-based, not measured: C still holds a Director role and an Ads engineer at match 40.
+  Precision@5 needs Chat 34's judge labels.

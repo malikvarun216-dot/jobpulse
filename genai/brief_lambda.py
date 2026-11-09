@@ -59,6 +59,7 @@ def run(event: dict, run_query, bedrock, s3, today: date, retriever=None) -> dic
 
     summary = {"event": "weekly_brief", "week_end": str(week_end), "inject_test": inject,
                "faithful": log["faithful"], "violations": log["violations"], "calls": len(log["calls"]),
+               "violations_per_attempt": log["violations_per_attempt"],
                "injection_followed": log["injection_followed"], "usd_est_total": log["usd_est_total"],
                "retrieval": {k: v for k, v in log["retrieval"].items() if k != "retrieved"},
                "retrieved_job_ids": log["retrieved_job_ids"], "s3_keys": keys}

@@ -167,6 +167,18 @@ Region: `ap-south-1`. Environment: `dev`. Last updated: Chat 25 (2026-10-08).
 - Test the email path without breaking anything:
   `aws cloudwatch set-alarm-state --alarm-name jobpulse-sfn-no-success-26h-dev --state-value ALARM --state-reason "test" --region ap-south-1`
   (it re-evaluates to the real state within minutes).
+- `jobpulse-weekly-brief-dev-errors` (Chat 32): any brief Lambda error in a 1-hour window → email; no OK email (it just
+  goes quiet after the hour). See §26.
+- **Prove an alarm without opening the inbox (Chat 33):** cause it (brief: invoke with a bad date — raises before any
+  spend; night: `set-alarm-state` above), then:
+  ```bash
+  aws lambda invoke --function-name jobpulse-weekly-brief-dev --cli-binary-format raw-in-base64-out --payload '{"week_end": "bad-date"}' --cli-read-timeout 300 out.json
+  aws cloudwatch describe-alarm-history --alarm-name jobpulse-weekly-brief-dev-errors --region ap-south-1 --max-items 4 --query "AlarmHistoryItems[].[Timestamp,HistoryItemType,HistorySummary]" --output text
+  ```
+  Pass = an `Action` row "Successfully executed action arn:aws:sns:...:jobpulse-alerts-dev" (≈ 1 min after the invoke).
+  "Failed to execute action" = SNS topic policy / topic deleted. Email delivery itself needs the subscription `Confirmed`
+  (`aws sns list-subscriptions` shows a full ARN, not `PendingConfirmation`).
+
 ## 13. Pause / resume the pipeline
 
 - **Pause:** set `state = "DISABLED"` on `aws_cloudwatch_event_rule.daily_ingest` (`terraform/envs/dev/eventbridge.tf`)
@@ -231,6 +243,16 @@ Region: `ap-south-1`. Environment: `dev`. Last updated: Chat 25 (2026-10-08).
 - Glue Python Shell at 1/16 DPU ≈ $0.03 per hour of runtime; Glue Spark G.1X × 2 ≈ $0.03 per 2-min run (approx.).
 - AWS Budgets (account-wide, shared with ledgerline): `ledgerline-monthly` $20 (50/80/100% + forecast), `ledgerline-daily-spike` $2/day, zero-spend $0.01.
 - Plan state: `aws freetier get-account-plan-state --region us-east-1`.
+- **JobPulse's own cost (Chat 33):** tag `project` is an active cost-allocation tag (since 2026-10-06). Each Cost Explorer
+  API call costs $0.01. Before credits: Oct $5.05, Nov 1–9 $3.41 (S3 ≈ 80%, Glue the rest).
+  ```bash
+  aws ce get-cost-and-usage --region us-east-1 --time-period Start=2026-11-01,End=2026-12-01 --granularity MONTHLY --metrics UnblendedCost --filter '{"Tags":{"Key":"project","Values":["jobpulse"]}}' --group-by Type=DIMENSION,Key=SERVICE
+  ```
+  Swap the group-by for `Type=DIMENSION,Key=USAGE_TYPE` to see *what* inside a service. The untagged group with a
+  negative amount = credits, not a refund of JobPulse.
+- **S3 cost = requests, not storage:** `APS3-Requests-Tier1` (PUT/COPY/POST/LIST, $0.005 per 1,000) was $3.39 of $3.89 in
+  October; storage $0.03. Baseline ~28K → 34K/day and growing; spikes on build days (Nov 5: 241K). Source not found yet
+  (roadmap Chat 36). Bucket `layer` tags are empty, so CE can't split by bucket.
 
 ## 16. Local checkout hygiene (before any session)
 
@@ -427,3 +449,9 @@ All local, `.venv\Scripts\python.exe`, data in `C:\Users\malik\jobpulse_lab_data
   `AWS_DEFAULT_REGION=ap-south-1`). A new Monday brief appears after ≤ 10 min (cache) or **Refresh data**.
   After editing `brief_store.py`, restart Streamlit — it reloads `app.py` on save, not imported modules.
   `ModuleNotFoundError: plotly` = lab `.venv` without dashboard deps → `pip install -r dashboard/streamlit/requirements.txt`.
+- **Prompt v2.3 + pick rule (Chat 33):** `faithfulness check: ['label N']` = a postings count (all roles) called "data
+  roles / data jobs / data engineering roles" in the same sentence. The repair turn explains it.
+  "Worth a look" has fewer than 5 jobs or says none passed = fewer jobs with match_score >= 40 (`MIN_MATCH_SCORE` in
+  `genai/brief_retrieval.py`) this week — read `llm_log.json` → `retrieval.below_match_floor` / `ranked`. Not a bug.
+  A good job missing because its company already had one: `retrieval.skipped` (id, similarity, `slot_taken_by`).
+  Which attempt failed and why: `violations_per_attempt` (log and the CloudWatch JSON line); `calls[i].violations`.

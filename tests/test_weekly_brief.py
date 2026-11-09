@@ -165,6 +165,16 @@ def test_repair_turn_fixes_an_invented_number(facts_and_texts):
     assert client.calls[1]["messages"][1]["role"] == "assistant"            # first answer resent before the repair
 
 
+def test_violations_are_kept_per_attempt(facts_and_texts):
+    """Chat 33: Nov 9 passed on attempt 2 and attempt 1's violation was lost; now every attempt keeps its own."""
+    facts = facts_and_texts[0]
+    client = FakeClient(["Jobs rose 99.9%.", "Complete boards list 900 open jobs."])
+    files, log = wb.write_brief(client, wb.MODEL, facts, [], "prompt", WEEK_END)
+    assert log["faithful"] and log["violations"] == []
+    assert log["violations_per_attempt"] == [["number 99.9"], []]
+    assert [c["violations"] for c in log["calls"]] == [["number 99.9"], []]
+
+
 def test_cut_off_answer_is_not_accepted(facts_and_texts):
     client = FakeClient(["Complete boards list"], stop_reason="max_tokens")
     text, bad, calls = wb.generate(client, wb.MODEL, "prompt", facts_and_texts[0])
@@ -281,7 +291,7 @@ def test_retriever_picks_the_closest_passage():
 
 def test_retriever_embeds_documents_and_query_with_their_input_types():
     fake_embed.calls.clear()
-    br.Retriever(fake_embed, query=QUERY, k=1)(fake_tables()["candidates"])
+    br.Retriever(fake_embed, query=QUERY, k=1, min_match_score=None)(fake_tables()["candidates"])
     assert fake_embed.calls[0] == ("query", 1)
     assert fake_embed.calls[1] == ("document", 3)
     assert all(t == "document" for t, _ in fake_embed.calls[2:])  # passages
@@ -300,7 +310,8 @@ def test_facts_with_retriever_record_how_jobs_were_picked(monkeypatch):
     r = br.Retriever(fake_embed, query=QUERY, k=2)
     facts, texts = bf.build_facts(lambda name: tables[name], WEEK_END, r)
     how = facts["top_new_matches_how"]
-    assert how == {"picked_by": "vector_strip_doc", "query": QUERY, "candidates": 3}
+    assert how == {"picked_by": "vector_strip_doc", "query": QUERY, "candidates": 3,
+                   "min_match_score": 40, "max_per_company": 1}
     top = facts["top_new_matches"][0]
     assert top["job_id"] == "greenhouse-acme-123" and isinstance(top["similarity"], float)
     assert top["similarity"] == round(top["similarity"], 3)          # no float32 noise for the checker
@@ -323,7 +334,8 @@ def test_lambda_logs_retrieval(lambda_query):
     assert out["retrieval"]["method"] == "vector_strip_doc" and out["retrieved_job_ids"][0] == "greenhouse-acme-123"
     log = json.loads(s3.objects[(wb.GOLD_BUCKET, f"briefs/week_end={NOW}/llm_log.json")][0])
     assert log["retrieval"]["retrieved"][0]["job_id"] == "greenhouse-acme-123"
-    assert log["prompt_version"] == wb.PROMPT_VERSION == "brief-v2.2-rag"
+    assert log["prompt_version"] == wb.PROMPT_VERSION == "brief-v2.3-rag"
+    assert out["violations_per_attempt"] == [[]] and log["violations_per_attempt"] == [[]]
 
 
 def test_match_score_event_skips_voyage():
@@ -446,3 +458,55 @@ def test_brief_store_lists_weeks_newest_first_and_loads_files():
 
 def test_brief_headings_shift_down_for_the_dashboard():
     assert brief_store.for_display("# Brief\n## Market\nUp 4.1%. #1 pick") == "### Brief\n#### Market\nUp 4.1%. #1 pick"
+
+
+# ---------------------------------------------------------------------------
+# Chat 33 — pick rule (match_score floor + one job per company) and the "label N" check
+# ---------------------------------------------------------------------------
+
+def same_company_candidates() -> pd.DataFrame:
+    rows = [("db-1", "databricks", 55.0, "Build Spark pipeline on Kafka. Spark pipeline."),
+            ("db-2", "Databricks ", 52.0, "Spark pipeline and Kafka pipeline work."),
+            ("acme-1", "acme", 45.0, "Spark pipeline jobs."),
+            ("low-1", "lowco", 39.0, "Spark Spark pipeline pipeline Kafka Kafka."),
+            ("none-1", "noneco", None, "Spark pipeline Kafka.")]
+    return pd.DataFrame([{"job_id": j, "title": "DE", "company": c, "country": None, "apply_url": "u",
+                          "match_score": m, "description": d} for j, c, m, d in rows])
+
+
+def test_retriever_keeps_one_job_per_company_and_logs_the_skip():
+    r = br.Retriever(fake_embed, query=QUERY, k=5)
+    picked = r(same_company_candidates())
+    assert picked["job_id"].tolist() == ["db-1", "acme-1"]               # db-2 ("Databricks ") shares db-1's slot
+    assert r.log["skipped_company_cap"] == 1
+    assert r.log["skipped"][0]["job_id"] == "db-2" and r.log["skipped"][0]["slot_taken_by"] == "db-1"
+    assert r.log["rule"] == {"min_match_score": 40, "max_per_company": 1}
+
+
+def test_jobs_below_the_floor_are_never_embedded():
+    fake_embed.calls.clear()
+    r = br.Retriever(fake_embed, query=QUERY, k=5)
+    r(same_company_candidates())
+    assert fake_embed.calls[1] == ("document", 3)                        # low-1 (39) and none-1 (null) cut first
+    assert r.log["candidates"] == 5 and r.log["below_match_floor"] == 2 and r.log["ranked"] == 3
+
+
+def test_no_job_over_the_floor_gives_an_empty_pick():
+    cand = same_company_candidates().assign(match_score=10.0)
+    fake_embed.calls.clear()
+    r = br.Retriever(fake_embed, query=QUERY, k=5)
+    picked = r(cand)
+    assert picked.empty and "excerpt" in picked and fake_embed.calls == []   # no Voyage call at all
+    assert r.log["below_match_floor"] == 5 and r.log["retrieved"] == []
+    assert "top_new_matches is empty" in wb.SYSTEM
+
+
+def test_all_roles_count_called_data_roles_is_flagged(facts_and_texts):
+    facts = facts_and_texts[0]
+    bad = wb.check_faithfulness("Complete boards list 900 open data engineering roles.", facts)
+    assert bad == ["label 900"]
+    assert wb.check_faithfulness("Complete boards list 900 open roles.", facts) == []
+    # the DATA row (110) really is data roles; a count in the next sentence is not touched
+    assert wb.check_faithfulness("DATA has 110 data roles. Complete boards list 900 open jobs.", facts) == []
+    assert "label 900" in wb.repair_message("Complete boards list 900 open data roles.", ["label 900"])
+    assert '"data roles"' in wb.SYSTEM

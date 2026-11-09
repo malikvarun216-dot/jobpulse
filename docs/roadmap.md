@@ -29,7 +29,7 @@ Ground rules for every chat:
 | 30 | Embeddings as a real pipeline (incremental, versioned, freshness) | |
 | 31 | Evaluate the LLM extraction (is the LLM worth it?) | |
 | 32 | Grounded generation: weekly AI brief | 🟡 part 1 (2026-11-03): facts + Bedrock (Opus 5.5) + faithfulness check + injection test built, dry run on real data · Claude refused on this account → switched to **Amazon Nova Pro** (Converse API) Nov 5; quotas raised by AWS Support → **first live brief Nov 6: faithful first try, $0.0043; injection test passed (1 run)** · **part 2 (Nov 5): weekly Lambda + EventBridge (Mon 08:30 IST) + error alarm in Terraform, applied; first Lambda run faithful, $0.0043** · **part 3 (Nov 5): RAG — vector retrieval (vector_strip_doc, nDCG 0.268 on 108 labels) + passage per job; live local run faithful, $0.0046** · **part 4 (Nov 6): dashboard "Weekly brief" tab (reads S3) + prompt v2.2 (duties passage, data-notes caveat checked, one-company skills): 6/6 live runs faithful first try** |
-| 33 | Narrative + resume | |
+| 33 | Close-out core (narrative + resume done outside the repo 2026-11-07) | ✅ done (2026-11-10): brief picks = match_score ≥ 40 + 1 per company (rule C, mean match 26.0 → 47.4), prompt v2.3 + `label N` check, violations per attempt, both alarms proven from alarm history, cost measured (Oct $5.05, S3 requests = 77%) · merge `dev → main` = Varun's step |
 
 ---
 
@@ -240,7 +240,46 @@ Notebook on ~20 real JDs from the exported silver data:
   data notes printed under the brief. 6/6 live runs faithful first try. Next: watch the Monday runs (first-try rate),
   label the picks (precision@5).
 
-## Chat 33 — Narrative + resume
+## Chats 33–41 — Finish everything, zero labelling (plan written 2026-11-10)
+
+**Decision (Varun, 2026-11-10):** do all remaining work, but **Varun spends no time labelling or checking**. His part per
+chat: type the opening line, run the commit + push block at the end (~2–3 min). Claude decides anything that would
+have been a manual pick, using the rules below, and verifies alerts from alarm history instead of the inbox.
+
+**Where we stand (measured 2026-11-10):** 33 / 33 nightly runs green Oct 8 → Nov 9 · 241,450 distinct postings (186 days)
+· weekly RAG brief live (Nov 9: faithful on attempt 2, $0.0108; picks = 4 Databricks customer-facing roles) · `main` 15
+commits behind `dev` · 108 human retrieval labels exist (Sonnet 5.5 judge κ 0.69 on them).
+
+**Totals:** 9 chats · ~28 h of chat time · ~25 min of Varun's time · ~$10–15 LLM spend + RDS only while it is up.
+**Waits:** only nights (Chats 36, 38, 40 change the nightly pipeline; 1–3 nights each). Chats 37 and 39 are placed so they
+run while those nights tick. Never two nightly-pipeline changes in flight at once (a bad night must point at one change).
+
+**Every chat:** start checks (`git fetch` + `status`, last 3 nights, alarms) → work → tests → docs (progress, decisions,
+incidents, runbook, roadmap tick, 🔒 learning + interview guide, backups) → Varun's commit + push block → CI + Deploy green.
+
+| Chat | Opening line for Varun | Work | Done check | Chat time | Wait / cost |
+|---|---|---|---|---|---|
+| **33** | `Chat 33 — close-out core` | (1) Brief picks: retrieval-only run on week 2026-11-09 (Voyage free tier) comparing today's top 5, "≤ 1 job per company", "≤ 1 per company + match_score ≥ 40"; **Claude picks** by rule: fewest repeated companies, then highest mean match_score; build it in `brief_retrieval.py` (log skipped ids). (2) Prompt v2.3: complete-board counts are *all* roles. (3) `llm_log.json` keeps violations **per attempt**. (4) Alarm proof without the inbox: invoke the brief Lambda with `{"week_end": "bad-date"}` (raises before any spend) + `set-alarm-state` on the night alarm; verify "Successfully executed action … SNS" in alarm history. (5) Measured cost: Cost Explorer by tag `project = jobpulse`, Oct + Nov. (6) Adzuna comments "12 countries" → 7. (7) Merge `dev → main` (milestone). | tests green · live brief faithful, ≤ 1 pick per company · 2 alarm actions in history · cost in progress.md · `main` = `dev` | 2 h | none · ~$0.01 |
+| **34** | `Chat 34 — eval with judge labels` | Re-pool with the Chat 28 variants (chunks were 42% outside the pool) → **Sonnet 5.5 judges the whole pool** (Batches API; trusted because κ 0.69 vs the 108 human labels) → `eval/qrels_v1.parquet` (judge labels; human labels win where both exist) → rerun every method (vector, strip_doc, chunks, BM25, RRF, dashboard_fixed) → decide the search recipe for good. | qrels written · judged@10 ≥ 90% · eval table final, "provisional" removed where earned | 2 h | Batches < 24 h (usually < 1 h) · ~$7 |
+| **35** | `Chat 35 — RDS pgvector vs S3 Vectors` | Check S3 Vectors availability in ap-south-1 first (else compare in a supported region and say so). Terraform RDS (t4g.micro, pgvector), load corpus_v1, run the Chat 34 qrels + recall vs exact + latency + $/month; same on S3 Vectors; NumPy as baseline. Decide; **destroy RDS the same session**. | comparison table in decisions.md · RDS destroyed (plan shows no RDS) | 4 h | RDS ~$1–2 if destroyed same day |
+| **36** | `Chat 36 — incremental embeddings` | Embed only new or changed JDs (content hash), `model_id` + `embedding_version` on every vector, the `vector_strip_doc` recipe in the nightly job (same as the brief), a freshness metric (share of open jobs with a current vector) + alarm. Backfill once. **Plus (found Chat 33):** find and cut the S3 PUT/LIST requests (~34K/day and growing ~300/day, ≈ 80% of JobPulse's bill) — which job lists a growing prefix set; measure the drop in Cost Explorer `APS3-Requests-Tier1`. | night 1 embeds only the delta; nights 2–3 delta ≈ new jobs; freshness ≥ 95% | 3–4 h | **2–3 nights** · Voyage free tier |
+| **37** | `Chat 37 — salary vs cost of living` | (runs during Chat 36's nights) Salary parsing (Adzuna salary_min/max + `salary_raw`), FX to USD (dated seed), cost-of-living seed table (public index; source + date recorded), dbt model, dashboard view per country for DATA roles. | dbt tests green · dashboard view · coverage stated (share of jobs with a salary) | 3–4 h | 1 night (dbt in the nightly run) |
+| **38** | `Chat 38 — extraction eval + LLM decision` | After Chat 36 is verified. Reference labels without humans: (a) code-checked precision (every extracted skill must appear in the JD), (b) 150 JDs labelled by a stronger model (Opus 5.5 / Sonnet 5.5) as the reference; score rules vs rules + Haiku. DynamoDB cache (JD hash + model + prompt version) + atomic daily budget. Turn the LLM on **only if** it beats rules on the reference by a margin written down before scoring. Optional: role_family from the extractor (the "Other" ~93%). | eval table · decision recorded · if on: 3 nights within budget, cache hits on night 2 | 5 h (2 chats if needed) | **2–3 nights if turned on** · ~$2–5 |
+| **39** | `Chat 39 — MCP server` | (runs during Chat 38's nights) Local MCP server (stdio) over Athena, read-only: tools `search_jobs`, `latest_brief`, `market_facts`; read-only IAM profile; tests; README section. | tools callable from Claude Code; tests green | 2 h | none |
+| **40** | `Chat 40 — new sources` | After Chat 38 is verified. 2–3 new APIs, one Lambda each (candidates: Lever, Ashby, HN "Who is hiring" via Algolia; check Cloudflare from AWS first), wired into Step Functions with a per-branch catch so one source can't fail the night. | 2 green nights with the new sources; GE + dbt gates pass | 3 h | **1–2 nights** |
+| **41** | `Chat 41 — final close-out` | README final, roadmap all ✅, decisions "maintenance mode", runbook §27 (Monday glance, alarm meanings, how to pause), 🔒 learning + interview guide final, a resume patch file with the new measured numbers (outside the repo, like PATCH_2026-11-07), final merge `dev → main`. | `main` = `dev`; CI + Deploy green; patch file written | 2 h | none |
+
+**Rules fixed in advance (so no chat waits on Varun):**
+- Any choice between options = the measured best on the stated metric; ties → simpler / cheaper.
+- Anything that spends more than **$5 in one step**, or creates a resource billed while idle (RDS), is announced in one
+  line before it runs; RDS is always destroyed in the same chat.
+- Honesty on the resume: judge labels = "LLM judge validated against 108 human labels (κ 0.69)"; extraction reference =
+  "LLM reference labels" (weaker than human; said first in the defense).
+
+**After Chat 41 (maintenance mode):** Monday glance at the dashboard (≈5 min); an alarm email → open a chat with its text;
+monthly Cost Explorer glance.
+
+## Chat 33 (original plan) — Narrative + resume (done outside the repo, 2026-11-07)
 
 - Final pass on `docs/interview_guide.md`.
 - Resume bullets with the measured numbers (templates in the interview guide, section 13).

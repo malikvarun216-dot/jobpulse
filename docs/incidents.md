@@ -627,3 +627,15 @@ Newest first. Chat 23 entries were reconstructed from AWS history (Step Function
   heading test caught "What You'll Bring" being read as a duties heading (it contains "you'll").
 - Prevention: tests on real-shaped JDs; the retriever logs how many passages were duties sections.
 - Lesson: in RAG, check what was retrieved before tuning the prompt — the generator cannot fix the wrong passage.
+
+## [2026-11-09] — The Monday brief recommended four sales-side Databricks roles
+- What happened: the first unattended v2.2 brief's "Worth a look" = Forward Deployed Engineer, TPM FDE, Solutions
+  Engineer, Solutions Architect (all Databricks, match_score 19–29) + one Stripe role; 0 overlap with the match_score top 5.
+  It also called 4,628 complete-board jobs "data engineering roles", and passed only on attempt 2, whose reason was not logged.
+- What I thought: the profile query was too generic.
+- Root cause: similarity rewards JDs dense with data words; Databricks' customer-facing ads are exactly that (17 of the
+  top 20). The faithfulness check sees numbers, not labels; the log kept only the final attempt's violations.
+- Fix (Chat 33): match_score >= 40 + at most 1 per company (chosen by a rule fixed before measuring), `label N` check,
+  violations kept per attempt.
+- Prevention: the retriever logs skipped ids and who took the slot; tests for cap, floor, empty pick, label rule.
+- Lesson: similarity is not suitability — rank by relevance, but gate on fit and diversity.

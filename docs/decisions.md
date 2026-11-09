@@ -839,3 +839,25 @@
 ## Dashboard brief tab reads S3, never calls the LLM (Chat 32 part 4, 2026-11-06)
 - One brief per week is written by the Lambda; the dashboard only displays it (and its log and facts). Opening the
   dashboard costs no tokens and shows exactly the text that passed (or failed) the check.
+
+## Brief picks: match_score >= 40, at most 1 per company (Chat 33, 2026-11-10)
+- **What:** `brief_retrieval.Retriever` keeps only jobs with match_score >= 40, ranks them by similarity to the profile
+  query, and takes at most one job per company.
+- **Why:** on week 2026-11-09 similarity alone gave 4 Databricks customer-facing roles + 1 Stripe (mean match 26.0);
+  Databricks JDs are dense with data words. Measured three rules on the same vectors; the rule written in the plan
+  beforehand (fewest repeated companies, then highest mean match_score) chose "1 per company + floor 40" (0 repeats,
+  mean 47.4) over "1 per company" (0, 33.8). Writing the decision rule before the numbers keeps it from being picked to fit.
+- **Side effect:** the floor runs before embedding — 28 of 511 jobs embedded, 20.7K Voyage tokens instead of 365K.
+- **Trade-off:** match_score is rule-based (skills, seniority, location...), so the floor inherits its blind spots; a thin
+  week can give fewer than 5 picks (the brief says so). Not chosen: an LLM re-ranker (cost, another thing to evaluate).
+
+## Posting counts called "data roles" are enforced, not only asked for (Chat 33, 2026-11-10)
+- Nov 9: "Complete boards list 4628 open data engineering roles" passed the v2.2 check (numbers right, label wrong).
+- v2.3: `label N` = a count that exists only in `postings` (all roles) in a sentence matching "data (engineering) roles /
+  jobs / positions". Numbers that also appear outside `postings` (a DATA row, a company's data_jobs) are exempt.
+- Per sentence, not per line: the Market section is one line, and the all-sources count beside it was correctly labelled.
+
+## Alarms proven from alarm history, not the inbox (Chat 33, 2026-11-10)
+- A real failure (Lambda invoked with a bad date, raises before any spend) and `set-alarm-state`, then
+  `describe-alarm-history` must show "Successfully executed action ... SNS". Proves alarm → SNS publish; email delivery
+  rests on the confirmed subscription. Chosen so Varun never has to check an inbox.
